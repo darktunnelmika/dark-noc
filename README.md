@@ -1,4 +1,4 @@
-# DARK NOC Hub v1.6.3 — Nightfall Command
+# DARK NOC Hub v1.7.0 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
@@ -32,6 +32,7 @@ SHA-256 checksum before starting the interactive installer.
 - Allowlisted remote diagnostics and service restarts
 - Auto-Heal with cooldown and hourly restart limits
 - Interactive SSH over authenticated WebSocket
+- Full xterm.js SSH console with ANSI/VT support, two concurrent sessions, PTY resize, search, clipboard, fullscreen and log export
 - Encrypted SSH credentials at rest
 - Scrypt passwords, HTTP-only sessions and audit logs
 - Responsive NIGHTFALL command interface
@@ -119,6 +120,7 @@ sudo journalctl -u dark-noc-agent -f
 - Restrict the Hub with a firewall or trusted management network when possible.
 - Prefer a dedicated SSH key instead of a root password.
 - The browser never receives stored SSH credentials.
+- Terminal libraries are bundled locally; the SSH workspace does not execute third-party CDN code.
 - The first SSH connection pins the server host-key fingerprint. A changed key is rejected until an operator explicitly resets the pin on that node.
 - The Agent executes only defined job types and allowlisted service names.
 - Back up `/var/lib/dark-noc` and `/etc/dark-noc`.

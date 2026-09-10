@@ -3,6 +3,26 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-09-10
+
+### Added
+
+- A self-hosted xterm.js terminal engine with complete ANSI/VT rendering.
+- Two concurrent interactive SSH sessions with server selection and quick tab opening.
+- Terminal search, selection-aware copy, clipboard paste, fullscreen mode and log export.
+- Automatic PTY resizing and clickable web links.
+
+### Fixed
+
+- Bracketed-paste and control escape sequences are no longer printed as visible text.
+- Arrow keys, Tab completion, Ctrl shortcuts and full-screen TUI programs now reach the remote PTY correctly.
+- Automatically generated Hub names are accepted by node validation.
+- Structured API validation errors are rendered as readable messages.
+
+### Security
+
+- All terminal dependencies are vendored locally with their licenses; SSH sessions do not load code from a CDN.
+
 ## [1.6.3] - 2026-09-10
 
 ### Fixed

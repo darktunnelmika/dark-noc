@@ -1,17 +1,17 @@
-# DARK NOC v1.6.3 — Nightfall Command
+# DARK NOC v1.7.0 — Nightfall Terminal
 
 Maintainer: **@mikakhadm**
 
-Usability and connection-fix release for the server inventory and SSH command
-workspace.
+Major browser SSH workspace upgrade focused on replacing day-to-day external
+terminal clients for NOC operations.
 
 ## Highlights
 
-- Correct public Hub address instead of a misleading loopback address.
-- Separate Agent-observed IP and configured SSH destination.
-- Predictable Hub → Iran → Kharej server ordering.
-- Readable server action buttons with SSH setup guidance.
-- Direct server selection from the SSH command page.
-- Actionable authenticated SSH connection errors.
+- Complete ANSI/VT terminal rendering powered by locally vendored xterm.js.
+- Arrow keys, Tab completion, Ctrl shortcuts, bracketed paste and TUI programs.
+- Two simultaneous SSH terminals with real PTY resize.
+- Copy, paste, search, fullscreen, clickable links and downloadable logs.
+- Clear server selection and SSH setup guidance.
+- Readable validation and connection errors.
 
 Read `README.md`, `README.fa.md` and `SECURITY.md` before installation.

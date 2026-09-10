@@ -12,7 +12,7 @@ AGENT_TOKEN="${DARK_NOC_AGENT_TOKEN:-}"
 
 echo ""
 echo "  DARK NOC // NODE BOOTSTRAP"
-echo "  Lightweight Node v1.6.3"
+echo "  Lightweight Node v1.7.0"
 echo ""
 OLD_HUB_URL=""; OLD_AGENT_TOKEN=""
 if [[ -f /etc/dark-noc-agent/config.json ]]; then

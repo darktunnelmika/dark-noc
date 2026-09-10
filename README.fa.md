@@ -1,4 +1,4 @@
-# DARK NOC v1.6.3 — مرکز فرمان NOC
+# DARK NOC v1.7.0 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -32,6 +32,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 - Retry، حذف دوطرفه و Rollback خودکار در شکست نصب
 - Incident، Auto-Heal و هشدار اختیاری تلگرام
 - SSH مرورگری با رمزنگاری اطلاعات ورود و Pin شدن Host Key
+- ترمینال کامل xterm.js با ANSI/VT، دو نشست هم‌زمان، تغییر اندازه PTY، جست‌وجو، کلیپ‌بورد، تمام‌صفحه و ذخیره لاگ
 - نصب HTTPS خودکار با دامنه یا گواهی رمزنگاری‌شده برای IP
 - ساخت خودکار نام کاربری و رمز اولیه قوی
 - نصب جداگانه Hub و Node و حفظ تونل‌های قبلی سرور
@@ -40,10 +41,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v1.6.3.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v1.7.0.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v1.6.3.tar.gz
+tar -xzf DARK-NOC-HUB-v1.7.0.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -55,10 +56,10 @@ sudo bash install-hub.sh
 ## نصب Node
 
 داخل پنل ابتدا **ADD SERVER** را بزنید و Token یک‌بارمصرف آن سرور را بردارید.
-سپس فایل `DARK-NOC-NODE-v1.6.3.tar.gz` را روی همان Node اجرا کنید:
+سپس فایل `DARK-NOC-NODE-v1.7.0.tar.gz` را روی همان Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v1.6.3.tar.gz
+tar -xzf DARK-NOC-NODE-v1.7.0.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh
