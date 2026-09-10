@@ -1,4 +1,4 @@
-# DARK NOC v1.6.2 — مرکز فرمان NOC
+# DARK NOC v1.6.3 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -40,10 +40,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v1.6.2.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v1.6.3.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v1.6.2.tar.gz
+tar -xzf DARK-NOC-HUB-v1.6.3.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -55,10 +55,10 @@ sudo bash install-hub.sh
 ## نصب Node
 
 داخل پنل ابتدا **ADD SERVER** را بزنید و Token یک‌بارمصرف آن سرور را بردارید.
-سپس فایل `DARK-NOC-NODE-v1.6.2.tar.gz` را روی همان Node اجرا کنید:
+سپس فایل `DARK-NOC-NODE-v1.6.3.tar.gz` را روی همان Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v1.6.2.tar.gz
+tar -xzf DARK-NOC-NODE-v1.6.3.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh

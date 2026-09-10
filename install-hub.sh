@@ -17,7 +17,7 @@ LOCAL_ENROLL_SECRET=""
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v1.6.2"
+echo "  Nightfall Command v1.6.3"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"

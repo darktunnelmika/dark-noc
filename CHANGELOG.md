@@ -3,6 +3,21 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.3] - 2026-09-10
+
+### Fixed
+
+- The automatically enrolled Hub now shows its configured public IP/domain instead of `127.0.0.1`.
+- Server inventory ordering is deterministic: Hub, Iran Edge, then Global Exit.
+- SSH no longer opens a guaranteed-to-fail session when credentials are missing.
+- SSH failures now return an actionable connection error to the authenticated operator.
+
+### Changed
+
+- Server actions use readable labels instead of ambiguous abbreviations.
+- The SSH workspace includes a direct server selector and connect button.
+- Agent-observed IP and configured SSH destination are shown separately when they differ.
+
 ## [1.6.2] - 2026-09-09
 
 ### Added
@@ -28,4 +43,3 @@ All notable changes to DARK NOC are documented here. This project follows
 - Release archives are checked for traversal, links and special files.
 - Nginx no longer trusts a client-supplied forwarded-address chain.
 - Node deletion is blocked while an active deployment exists.
-

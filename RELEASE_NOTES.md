@@ -1,19 +1,17 @@
-# DARK NOC v1.6.2 — Nightfall Command
+# DARK NOC v1.6.3 — Nightfall Command
 
 Maintainer: **@mikakhadm**
 
-Production-hardening release focused on safe installation, reliable NOC
-telemetry and coordinated DARK Backhaul operations.
+Usability and connection-fix release for the server inventory and SSH command
+workspace.
 
 ## Highlights
 
-- Dedicated Hub and Node packages.
-- HTTPS-first enrollment with automatically generated credentials and tokens.
-- DARK Backhaul-only tunnel matrix with server IP visibility.
-- Coordinated two-node deployment, retry, removal and rollback.
-- Lower Agent CPU usage through a single connection snapshot per heartbeat.
-- Long-job leases and Live/SSH WebSocket keepalive.
-- Safe Hub upgrade with SQLite backup and service restart.
-- Release asset digest verification and safe archive extraction.
+- Correct public Hub address instead of a misleading loopback address.
+- Separate Agent-observed IP and configured SSH destination.
+- Predictable Hub → Iran → Kharej server ordering.
+- Readable server action buttons with SSH setup guidance.
+- Direct server selection from the SSH command page.
+- Actionable authenticated SSH connection errors.
 
 Read `README.md`, `README.fa.md` and `SECURITY.md` before installation.
