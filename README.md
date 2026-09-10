@@ -4,6 +4,23 @@
 
 DARK NOC is a self-hosted Network Operations Center for Linux servers and tunnel infrastructure. It combines live node telemetry, tunnel health, incidents, controlled remediation jobs and browser-based SSH in one interface.
 
+## Quick install
+
+Run as root on the central Hub server:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) hub
+```
+
+Run as root on every monitored Iran/Kharej Node:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) node
+```
+
+The bootstrapper downloads the latest stable GitHub Release and verifies its
+SHA-256 checksum before starting the interactive installer.
+
 ## Included
 
 - Central FastAPI Hub with SQLite/WAL storage

@@ -5,6 +5,23 @@
 DARK NOC یک پنل NOC مستقل برای مانیتورینگ سرورهای لینوکسی، مدیریت رخدادها،
 کنترل سرویس‌ها، استقرار هماهنگ DARK Backhaul و اتصال SSH از داخل مرورگر است.
 
+## نصب سریع
+
+روی سرور مرکزی Hub با کاربر root اجرا کنید:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) hub
+```
+
+روی هر سرور ایران یا خارج که باید به پنل متصل شود اجرا کنید:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) node
+```
+
+نصاب سریع آخرین Release پایدار را دریافت می‌کند، SHA-256 فایل را بررسی می‌کند
+و سپس نصب تعاملی را آغاز می‌کند.
+
 ## امکانات اصلی
 
 - داشبورد زنده CPU، RAM، دیسک، Load، پهنای باند، Uptime و Connectionها
@@ -77,4 +94,3 @@ sudo bash install-node.sh
 
 برای گزارش باگ، Version، سیستم‌عامل، مراحل تکرار و Log سانسورشده را ارسال کنید.
 هیچ‌وقت Password، Token، Private Key یا اطلاعات کامل سرورها را منتشر نکنید.
-
