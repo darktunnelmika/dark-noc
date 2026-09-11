@@ -76,6 +76,12 @@ jobs:
               exit 1
             fi
             if [[ "$tag_target" != "$target_sha" ]]; then
+              if [[ -n "$release_id" ]]; then
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+                echo "Removed outdated owned draft release #$release_id before moving its tag."
+                release_id=""
+                release_owned_target=""
+              fi
               git tag -d "$release_tag"
               git tag -a "$release_tag" "$target_sha" -m "DARK NOC $release_tag" -m "$marker"
               git push --force origin "refs/tags/$release_tag:refs/tags/$release_tag"
@@ -114,24 +120,24 @@ jobs:
           if [[ -z "$release_id" ]]; then
             notes_file="$(mktemp)"
             { cat RELEASE_NOTES.md; printf '\n\n%s\n' "$marker"; } > "$notes_file"
-            if ! gh release create "$release_tag" --draft --verify-tag --target "$target_sha" \
-              --title "DARK NOC $release_tag" --notes-file "$notes_file"; then
+            if ! release="$(jq -n \
+              --arg tag "$release_tag" \
+              --arg target "$target_sha" \
+              --arg name "DARK NOC $release_tag" \
+              --rawfile body "$notes_file" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: true, prerelease: false}' | \
+              gh api -X POST "repos/$GITHUB_REPOSITORY/releases" --input -)"; then
               all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
               release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
               [[ -n "$release" ]] || { echo "Draft creation failed and no recoverable draft exists." >&2; exit 1; }
-              release_id="$(jq -r .id <<< "$release")"
-              is_draft="$(jq -r .draft <<< "$release")"
-              release_target="$(jq -r .target_commitish <<< "$release")"
-              release_body="$(jq -r '.body // ""' <<< "$release")"
-              if [[ "$is_draft" != true || "$release_target" != "$target_sha" || "$release_body" != *"$marker"* ]]; then
-                echo "Draft creation raced with an unrelated release; refusing to continue." >&2
-                exit 1
-              fi
-            else
-              all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
-              release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
-              release_id="$(jq -r .id <<< "$release")"
-              [[ "$release_id" =~ ^[0-9]+$ ]] || { echo "Could not prove ownership of the new draft." >&2; exit 1; }
+            fi
+            release_id="$(jq -r .id <<< "$release")"
+            is_draft="$(jq -r .draft <<< "$release")"
+            created_tag="$(jq -r .tag_name <<< "$release")"
+            release_body="$(jq -r '.body // ""' <<< "$release")"
+            if [[ ! "$release_id" =~ ^[0-9]+$ || "$is_draft" != true || "$created_tag" != "$release_tag" || "$release_body" != *"$marker"* ]]; then
+              echo "Created draft does not match the owned release transaction." >&2
+              exit 1
             fi
           fi
 
@@ -239,3 +245,17 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             -F draft=false -f make_latest=true >/dev/null
           [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)" == false ]]
+
+          all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
+          marker_prefix="<!-- dark-noc-release:$RELEASE_TAG:"
+          while IFS= read -r stale_id; do
+            [[ -z "$stale_id" ]] && continue
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$stale_id"
+            echo "Removed owned orphan draft release #$stale_id."
+          done < <(jq -r --arg prefix "$marker_prefix" '
+            .[] | select(
+              .draft == true and
+              ((.tag_name // "") | startswith("untagged-")) and
+              ((.body // "") | contains($prefix))
+            ) | .id
+          ' <<< "$all_releases")
