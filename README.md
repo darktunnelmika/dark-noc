@@ -1,4 +1,4 @@
-# DARK NOC Hub v2.6.0 — Nightfall Command
+# DARK NOC Hub v2.7.0 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
@@ -44,8 +44,9 @@ interactive installer.
 - Scrypt passwords, HTTP-only sessions and audit logs
 - Responsive NIGHTFALL command interface
 - Automatic HTTPS reverse proxy with a trusted domain certificate or encrypted IP certificate
-- Random strong first-login credentials and in-panel username/password change
-- Hub bound privately to a chosen or randomly generated localhost port behind Nginx
+- Random strong first-login credentials with server-only username/password management through `darknoc`
+- Configurable public HTTPS panel port (default `9090`) with an automatically isolated private Hub backend
+- Server-only panel domain/IP switching, Let's Encrypt issuance/renewal and transactional Nginx reconfiguration
 - Controlled iperf3 speed tests through a fixed configured endpoint
 - Fleet Operations for safe multi-Node diagnostics, tunnel tests, logs, managed-service actions, Auto-Heal and bounded Agent sync
 - Extensible Tunnel Plugin Store with coordinated two-node deployment
@@ -85,15 +86,17 @@ interactive installer.
 Upload and extract the archive on the server selected as the central Hub, then run:
 
 ```bash
-chmod +x install-hub.sh upgrade.sh uninstall.sh
+chmod +x install-hub.sh upgrade.sh uninstall.sh darknoc
 sudo bash install-hub.sh
 ```
 
 Use the dedicated `DARK-NOC-HUB` archive only on the central management server.
 
-The installer always asks for the panel domain or public IP, including during a Hub upgrade. With a domain, its DNS A/AAAA record must already point to the Hub so Let's Encrypt can validate it; the installer obtains and configures the certificate automatically. With an IP, the installer creates a self-signed certificate containing that IP; traffic is encrypted but the browser shows a trust warning until the certificate is trusted locally.
+On a fresh server, the installer asks for the panel domain or public IP and its public HTTPS port. A fresh installation defaults to port `9090`; upgrades preserve the active address and port without asking, and they can be changed afterward with `sudo darknoc`. With a domain, its DNS A/AAAA record must already point to the Hub so Let's Encrypt can validate it. With an IP, the installer creates a self-signed certificate containing that IP; traffic is encrypted but the browser shows a trust warning until the certificate is trusted locally.
 
-The installer also asks for the internal Hub port. Enter a specific port such as `9090`, or press Enter to generate an unused random port. This backend port binds only to `127.0.0.1`; users always open the domain normally over HTTPS port 443. At the end, the installer prints a randomly generated operator username and password once. Open `https://DOMAIN_OR_IP`, sign in, then use the operator menu to change both.
+The internal FastAPI port is selected automatically, binds only to `127.0.0.1` and is never opened by the firewall. If an old backend already uses the selected public port, the installer moves it safely before Nginx claims that port. At the end, the installer prints a randomly generated operator username and password once. Open `https://DOMAIN_OR_IP:PORT` (the port is omitted only for `443`) and sign in.
+
+Panel address, port, certificate and owner credentials are intentionally not editable in the web UI. Run `sudo darknoc` over SSH on the Hub to view the active URL/credentials, change or generate a password, change the public port, set a domain/IP, issue or renew Let's Encrypt SSL, restart services, inspect logs, create a local backup or launch a verified update. Configuration changes are validated before Nginx reload and roll back when activation fails.
 
 The Hub server is registered as a node automatically and a local Agent is installed for it. Use the separate Node archive and `install-node.sh` for every other server. Agents discover managed DARK Backhaul, DARK Ghost Pro and DARK Packet Pro instances; unrelated tunnel projects are intentionally excluded.
 
@@ -111,7 +114,7 @@ The Node installer asks for no Hub URL and no enrollment token. After it finishe
 
 Running `install-node.sh` again only refreshes prerequisites. Agent updates and configuration are controlled by the Hub while preserving tunnel, service and Auto-Heal rules. After a Hub upgrade, use **SYNC AGENT** on each remote server card to deploy the matching Agent and hardened service unit. Remote Hub addresses always use HTTPS.
 
-For a self-signed IP certificate, the Hub securely copies its exact certificate to the Node and configures certificate pinning instead of disabling TLS verification.
+For any self-signed panel certificate, the Hub securely copies its exact certificate to the Node and configures certificate pinning instead of disabling TLS verification. Remote Agent URLs include the configured public panel port.
 
 ## Configure tunnels and Auto-Heal
 
@@ -158,6 +161,7 @@ systemctl status dark-noc-hub --no-pager
 systemctl status dark-noc-agent --no-pager
 journalctl -u dark-noc-hub -f
 journalctl -u dark-noc-agent -f
+darknoc
 ```
 
 ## Upgrade an existing installation
@@ -168,6 +172,6 @@ The recommended command detects the existing Hub, downloads and verifies the lat
 bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) hub
 ```
 
-For an archive already downloaded and verified, run `sudo bash upgrade.sh hub`. Hub database, credentials, Nodes and telemetry are preserved. A Hub upgrade asks for the desired domain/IP again, rebuilds the Nginx HTTPS configuration, obtains the domain certificate when required, and disables obsolete uvicorn systemd overrides after keeping a backup.
+For an archive already downloaded and verified, run `sudo bash upgrade.sh hub`. Hub database, credentials, Nodes, telemetry and active public address/port are preserved. A Hub upgrade rebuilds the Nginx HTTPS configuration, installs the `darknoc` server command and disables obsolete uvicorn systemd overrides after keeping a backup.
 
 Afterward, select **SYNC AGENT** on every remote Node with SSH credentials. This deploys the matching Agent version and service sandbox while preserving its tunnel, service and Auto-Heal rules. If a Node still points to a legacy HTTP `:9090` URL, the same action migrates it to HTTPS automatically.

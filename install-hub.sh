@@ -10,7 +10,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ADMIN_USER="${DARK_NOC_ADMIN_USER:-}"
 ADMIN_PASSWORD="${DARK_NOC_ADMIN_PASSWORD:-}"
 PUBLIC_HOST="${DARK_NOC_PUBLIC_HOST:-}"
+PUBLIC_PORT="${DARK_NOC_PUBLIC_PORT:-}"
 HUB_PORT="${DARK_NOC_HUB_PORT:-}"
+PANEL_CERT_MODE="${DARK_NOC_PANEL_CERT_MODE:-}"
 TELEGRAM_BOT_TOKEN="${DARK_NOC_TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${DARK_NOC_TELEGRAM_CHAT_ID:-}"
 SSH_UPLOAD_LIMIT_MB="${DARK_NOC_SSH_UPLOAD_LIMIT_MB:-}"
@@ -69,13 +71,20 @@ validate_integer_setting() {
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.6.0"
+echo "  Nightfall Command v2.7.0"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
 DEFAULT_PUBLIC_HOST="$SERVER_IP"
+DEFAULT_PUBLIC_PORT="9090"
+HAD_HUB_ENV=0
 if [[ -f /etc/dark-noc/hub.env ]]; then
+  HAD_HUB_ENV=1
   saved_public_host="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PUBLIC_HOST:-}"' _ /etc/dark-noc/hub.env)"
+  saved_public_port="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PUBLIC_PORT:-}"' _ /etc/dark-noc/hub.env)"
+  saved_cert_mode="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PANEL_CERT_MODE:-}"' _ /etc/dark-noc/hub.env)"
+  saved_admin_user="$(bash -c 'source "$1"; printf %s "${DARK_NOC_ADMIN_USER:-}"' _ /etc/dark-noc/hub.env)"
+  saved_admin_password="$(bash -c 'source "$1"; printf %s "${DARK_NOC_ADMIN_PASSWORD:-}"' _ /etc/dark-noc/hub.env)"
   saved_upload_limit="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_UPLOAD_LIMIT_MB:-}"' _ /etc/dark-noc/hub.env)"
   saved_relay_limit="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_RELAY_LIMIT_MB:-}"' _ /etc/dark-noc/hub.env)"
   saved_transfer_concurrency="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_TRANSFER_CONCURRENCY:-}"' _ /etc/dark-noc/hub.env)"
@@ -93,6 +102,17 @@ if [[ -f /etc/dark-noc/hub.env ]]; then
   saved_hub_lease="$(bash -c 'source "$1"; printf %s "${DARK_NOC_HUB_LEASE_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
   saved_data_dir="$(bash -c 'source "$1"; printf %s "${DARK_NOC_DATA:-}"' _ /etc/dark-noc/hub.env)"
   [[ -z "$saved_public_host" ]] || DEFAULT_PUBLIC_HOST="$saved_public_host"
+  [[ -n "$PUBLIC_HOST" ]] || PUBLIC_HOST="$saved_public_host"
+  # Releases before v2.7.0 exposed the panel on 443 and did not store a public-port key.
+  DEFAULT_PUBLIC_PORT="${saved_public_port:-443}"
+  [[ -n "$PUBLIC_PORT" ]] || PUBLIC_PORT="$saved_public_port"
+  [[ -n "$PANEL_CERT_MODE" ]] || PANEL_CERT_MODE="$saved_cert_mode"
+  if [[ -z "$PANEL_CERT_MODE" && -n "$saved_public_host" && -L /etc/dark-noc/tls/panel.crt ]]; then
+    saved_certificate_target="$(readlink -f /etc/dark-noc/tls/panel.crt 2>/dev/null || true)"
+    [[ "$saved_certificate_target" != /etc/letsencrypt/live/*/fullchain.pem ]] || PANEL_CERT_MODE="letsencrypt"
+  fi
+  [[ -n "$ADMIN_USER" ]] || ADMIN_USER="$saved_admin_user"
+  [[ -n "$ADMIN_PASSWORD" ]] || ADMIN_PASSWORD="$saved_admin_password"
   [[ -n "$SSH_UPLOAD_LIMIT_MB" ]] || SSH_UPLOAD_LIMIT_MB="$saved_upload_limit"
   [[ -n "$SSH_RELAY_LIMIT_MB" ]] || SSH_RELAY_LIMIT_MB="$saved_relay_limit"
   [[ -n "$SSH_TRANSFER_CONCURRENCY" ]] || SSH_TRANSFER_CONCURRENCY="$saved_transfer_concurrency"
@@ -143,7 +163,6 @@ validate_integer_setting DARK_NOC_MONITOR_RETENTION_DAYS "$MONITOR_RETENTION_DAY
 validate_integer_setting DARK_NOC_METRIC_RETENTION_DAYS "$METRIC_RETENTION_DAYS" 1 365
 validate_integer_setting DARK_NOC_ROLLUP_RETENTION_DAYS "$ROLLUP_RETENTION_DAYS" 30 3650
 validate_integer_setting DARK_NOC_HUB_LEASE_SECONDS "$HUB_LEASE_SECONDS" 30 300
-NGINX_UPLOAD_LIMIT_MB=$((10#$SSH_UPLOAD_LIMIT_MB + 1))
 if [[ -z "$PUBLIC_HOST" ]]; then
   read -r -p "Panel domain or public IP [$DEFAULT_PUBLIC_HOST]: " input_host
   PUBLIC_HOST="${input_host:-$DEFAULT_PUBLIC_HOST}"
@@ -165,16 +184,47 @@ PY
 else
   PUBLIC_URL_HOST="$PUBLIC_HOST"
 fi
+AUTO_ISSUE_PANEL_SSL=0
+if [[ -n "${saved_public_host:-}" && "$PUBLIC_HOST" != "$saved_public_host" ]]; then
+  PANEL_CERT_MODE="selfsigned"
+fi
+if [[ ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$PUBLIC_HOST" != *:* && "$PANEL_CERT_MODE" != "letsencrypt" ]]; then
+  AUTO_ISSUE_PANEL_SSL=1
+fi
+if [[ -z "$PUBLIC_PORT" ]]; then
+  if [[ "$HAD_HUB_ENV" -eq 1 ]]; then
+    PUBLIC_PORT="$DEFAULT_PUBLIC_PORT"
+  else
+    read -r -p "Public panel HTTPS port [$DEFAULT_PUBLIC_PORT]: " input_public_port
+    PUBLIC_PORT="${input_public_port:-$DEFAULT_PUBLIC_PORT}"
+  fi
+fi
+if [[ ! "$PUBLIC_PORT" =~ ^[0-9]{1,5}$ ]] || ! (( 10#$PUBLIC_PORT == 443 || (10#$PUBLIC_PORT >= 1024 && 10#$PUBLIC_PORT <= 65535) )) || (( 10#$PUBLIC_PORT == 80 )); then
+  echo "Invalid public panel port: $PUBLIC_PORT (use 443 or 1024-65535; port 80 is reserved for SSL)"
+  exit 1
+fi
+PUBLIC_PORT_SUFFIX=""
+[[ "$PUBLIC_PORT" == "443" ]] || PUBLIC_PORT_SUFFIX=":$PUBLIC_PORT"
+PUBLIC_URL="https://$PUBLIC_URL_HOST$PUBLIC_PORT_SUFFIX"
 OLD_HUB_PORT="9090"
 if [[ -f /etc/dark-noc/hub.env ]]; then
   saved_hub_port="$(bash -c 'source "$1"; printf %s "${DARK_NOC_HUB_PORT:-}"' _ /etc/dark-noc/hub.env)"
   [[ -z "$saved_hub_port" ]] || OLD_HUB_PORT="$saved_hub_port"
 fi
 if [[ -z "$HUB_PORT" ]]; then
-  read -r -p "Internal Hub port [current: $OLD_HUB_PORT, Enter = random]: " input_port
-  HUB_PORT="$input_port"
+  if [[ -f /etc/dark-noc/hub.env ]]; then
+    HUB_PORT="$OLD_HUB_PORT"
+  else
+    HUB_PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1', 0))
+    print(sock.getsockname()[1])
+PY
+)"
+  fi
 fi
-if [[ -z "$HUB_PORT" ]]; then
+if [[ "$HUB_PORT" == "$PUBLIC_PORT" ]]; then
   HUB_PORT="$(python3 - <<'PY'
 import socket
 with socket.socket() as sock:
@@ -182,7 +232,7 @@ with socket.socket() as sock:
     print(sock.getsockname()[1])
 PY
 )"
-  echo "Generated internal Hub port: $HUB_PORT"
+  echo "Public port needed the old backend port; internal Hub moved automatically to $HUB_PORT."
 fi
 if [[ ! "$HUB_PORT" =~ ^[0-9]+$ ]] || (( HUB_PORT < 1024 || HUB_PORT > 65535 )); then
   echo "Invalid internal port: $HUB_PORT (use 1024-65535)"
@@ -200,8 +250,12 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl certbot python3-certbot-nginx iproute2 iputils-ping iptables iperf3 snmp
-for public_port in 80 443; do
+for public_port in 80 "$PUBLIC_PORT"; do
   holder="$(ss -H -ltnp "sport = :$public_port" 2>/dev/null || true)"
+  if [[ "$public_port" == "$OLD_HUB_PORT" && "$holder" == *uvicorn* ]]; then
+    # The old private backend is moved before Nginx claims this public port.
+    continue
+  fi
   if [[ -n "$holder" && "$holder" != *nginx* ]]; then
     echo "Public port $public_port is already used by a non-Nginx service:"
     echo "$holder"
@@ -246,7 +300,9 @@ umask 0077
   printf 'DARK_NOC_DATA=%q\n' "$DATA_DIR"
   printf 'DARK_NOC_COOKIE_SECURE=%q\n' "1"
   printf 'DARK_NOC_PUBLIC_HOST=%q\n' "$PUBLIC_HOST"
+  printf 'DARK_NOC_PUBLIC_PORT=%q\n' "$PUBLIC_PORT"
   printf 'DARK_NOC_HUB_PORT=%q\n' "$HUB_PORT"
+  printf 'DARK_NOC_PANEL_CERT_MODE=%q\n' "${PANEL_CERT_MODE:-selfsigned}"
   printf 'DARK_NOC_TELEGRAM_BOT_TOKEN=%q\n' "$TELEGRAM_BOT_TOKEN"
   printf 'DARK_NOC_TELEGRAM_CHAT_ID=%q\n' "$TELEGRAM_CHAT_ID"
   printf 'DARK_NOC_LOCAL_ENROLL_SECRET=%q\n' "$LOCAL_ENROLL_SECRET"
@@ -267,6 +323,8 @@ umask 0077
   printf 'DARK_NOC_HUB_LEASE_SECONDS=%q\n' "$HUB_LEASE_SECONDS"
 } > /etc/dark-noc/hub.env
 
+install -m 0755 "$SCRIPT_DIR/darknoc" /usr/local/bin/darknoc
+
 install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-hub.service" /etc/systemd/system/dark-noc-hub.service
 install -d -m 0755 /etc/systemd/system/dark-noc-hub.service.d
 {
@@ -280,83 +338,6 @@ if [[ -f /etc/systemd/system/dark-noc-hub.service.d/override.conf ]] && grep -q 
   echo "Legacy uvicorn override disabled; backup: /etc/dark-noc/legacy-systemd-override.conf"
 fi
 
-CERT_DIR="/etc/dark-noc/tls"
-install -d -m 0710 -o root -g darknoc "$CERT_DIR"
-if [[ -f /etc/nginx/sites-available/dark-noc ]]; then
-  if ! grep -qE 'proxy_pass http://127\.0\.0\.1:[0-9]+' /etc/nginx/sites-available/dark-noc; then
-    echo "Existing /etc/nginx/sites-available/dark-noc is not managed by DARK NOC; refusing to overwrite it."
-    exit 1
-  fi
-  install -m 0600 /etc/nginx/sites-available/dark-noc "/etc/dark-noc/nginx-site.backup.$(date +%s)"
-fi
-if [[ "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || "$PUBLIC_HOST" == *:* ]]; then
-  if [[ "$OLD_PUBLIC_HOST" != "$PUBLIC_HOST" || ! -s "$CERT_DIR/panel.key" || ! -s "$CERT_DIR/panel.crt" ]]; then
-    rm -f "$CERT_DIR/panel.key" "$CERT_DIR/panel.crt"
-    openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
-      -keyout "$CERT_DIR/panel.key" -out "$CERT_DIR/panel.crt" \
-      -subj "/CN=$PUBLIC_HOST/O=DARK NOC" -addext "subjectAltName=IP:$PUBLIC_HOST" >/dev/null 2>&1
-  fi
-  chown root:darknoc "$CERT_DIR/panel.crt"
-  chown root:root "$CERT_DIR/panel.key"
-  chmod 0640 "$CERT_DIR/panel.crt"
-  chmod 0600 "$CERT_DIR/panel.key"
-  CERT_KIND="self-signed IP certificate"
-else
-  systemctl enable --now nginx
-  cat > /etc/nginx/sites-available/dark-noc <<EOF
-server { listen 80; listen [::]:80; server_name $PUBLIC_HOST; location / { proxy_pass http://127.0.0.1:$HUB_PORT; } }
-EOF
-  ln -sfn /etc/nginx/sites-available/dark-noc /etc/nginx/sites-enabled/dark-noc
-  nginx -t && systemctl reload nginx
-  certbot --nginx -d "$PUBLIC_HOST" --non-interactive --agree-tos --register-unsafely-without-email --redirect
-  ln -sfn "/etc/letsencrypt/live/$PUBLIC_HOST/fullchain.pem" "$CERT_DIR/panel.crt"
-  ln -sfn "/etc/letsencrypt/live/$PUBLIC_HOST/privkey.pem" "$CERT_DIR/panel.key"
-  CERT_KIND="Let's Encrypt certificate"
-fi
-
-cat > /etc/nginx/sites-available/dark-noc <<EOF
-server {
-  listen 80; listen [::]:80; server_name $PUBLIC_HOST;
-  return 301 https://\$host\$request_uri;
-}
-server {
-  listen 443 ssl http2; listen [::]:443 ssl http2; server_name $PUBLIC_HOST;
-  ssl_certificate $CERT_DIR/panel.crt;
-  ssl_certificate_key $CERT_DIR/panel.key;
-  ssl_protocols TLSv1.2 TLSv1.3;
-  add_header Strict-Transport-Security "max-age=31536000" always;
-  client_max_body_size 1m;
-  location ^~ /api/ssh/upload/ {
-    client_max_body_size ${NGINX_UPLOAD_LIMIT_MB}m;
-    proxy_request_buffering off;
-    proxy_pass http://127.0.0.1:$HUB_PORT;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_connect_timeout 86400;
-    proxy_send_timeout 86400;
-    proxy_read_timeout 86400;
-    send_timeout 86400;
-  }
-  location / {
-    proxy_pass http://127.0.0.1:$HUB_PORT;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 3600;
-  }
-}
-EOF
-ln -sfn /etc/nginx/sites-available/dark-noc /etc/nginx/sites-enabled/dark-noc
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
 systemctl daemon-reload
 systemctl enable --now dark-noc-hub.service
 systemctl restart dark-noc-hub.service
@@ -369,6 +350,20 @@ for attempt in {1..20}; do
   fi
   sleep 1
 done
+
+# The server-only `darknoc` CLI owns public port, Nginx and panel certificate settings.
+darknoc --apply-gateway
+if [[ "$AUTO_ISSUE_PANEL_SSL" -eq 1 ]]; then
+  if darknoc issue-ssl; then
+    PANEL_CERT_MODE="letsencrypt"
+  else
+    PANEL_CERT_MODE="selfsigned"
+    echo "WARNING: Let's Encrypt was not available yet; the panel remains encrypted with a local certificate."
+    echo "Fix DNS/port 80 and run: sudo darknoc -> Get / renew panel SSL"
+  fi
+fi
+PANEL_CERT_MODE="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PANEL_CERT_MODE:-selfsigned}"' _ /etc/dark-noc/hub.env)"
+if [[ "$PANEL_CERT_MODE" == "letsencrypt" ]]; then CERT_KIND="Let's Encrypt certificate"; else CERT_KIND="local self-signed certificate"; fi
 
 # Enroll and run a local Agent so the Hub server appears as a monitored node.
 LOCAL_AGENT_TOKEN="$(curl -fsS -X POST -H "X-Dark-Noc-Bootstrap: $LOCAL_ENROLL_SECRET" "http://127.0.0.1:$HUB_PORT/api/agent/local-enroll" | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_token"])')"
@@ -405,21 +400,18 @@ install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now dark-noc-agent.service
 systemctl restart dark-noc-agent.service
-if [[ "$CERT_KIND" == "self-signed IP certificate" ]]; then
-  curl -fsS --connect-to "$PUBLIC_URL_HOST:443:127.0.0.1:443" --cacert "$CERT_DIR/panel.crt" --max-time 8 "https://$PUBLIC_URL_HOST/healthz" >/dev/null
-else
-  curl -fsS --connect-to "$PUBLIC_URL_HOST:443:127.0.0.1:443" --max-time 8 "https://$PUBLIC_URL_HOST/healthz" >/dev/null
-fi
+curl -kfsS -H "Host: $PUBLIC_HOST" --max-time 8 "https://127.0.0.1:$PUBLIC_PORT/healthz" >/dev/null
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw delete allow "$OLD_HUB_PORT/tcp" >/dev/null 2>&1 || true
   ufw delete allow "$HUB_PORT/tcp" >/dev/null 2>&1 || true
   ufw allow 80/tcp
-  ufw allow 443/tcp
+  ufw allow "$PUBLIC_PORT/tcp"
 fi
 
 echo ""
 echo "DARK NOC Hub is active."
-echo "Open: https://$PUBLIC_URL_HOST"
+echo "Open: $PUBLIC_URL"
+echo "Public panel port: $PUBLIC_PORT/tcp"
 echo "Internal Hub: 127.0.0.1:$HUB_PORT (not exposed publicly)"
 echo "Local monitoring Agent: enabled (Hub node is registered automatically)"
 echo "TLS: $CERT_KIND"
@@ -429,6 +421,7 @@ if [[ "$EXISTING_ACCOUNT" -eq 1 ]]; then
 else
   echo "User: $ADMIN_USER"
   echo "Password: $ADMIN_PASSWORD"
-  echo "Save these credentials now. They are shown only here. Change them from the account menu after login."
+  echo "Save these credentials now. They are shown only here. Change them later with: sudo darknoc"
 fi
 echo "Check: systemctl status dark-noc-hub --no-pager"
+echo "Server control: sudo darknoc"

@@ -3,6 +3,26 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-09-11
+
+### Added
+
+- Server-only `darknoc` control center for status, recoverable credential display, username/password reset, public port, panel domain/IP, Let's Encrypt issuance/renewal, service restart, logs, backup and verified update.
+- A real configurable public HTTPS listener, defaulting to `9090` on fresh installations, while the FastAPI backend remains isolated on an automatically selected localhost port.
+- Atomic environment/Nginx updates, pre-activation validation and automatic rollback for failed public port or address changes.
+- Automatic Certbot deploy hook for Nginx reload and self-signed certificate fallback until domain DNS/port 80 is ready.
+
+### Changed
+
+- Removed web-based owner credential mutation; panel access settings now require root access to the Hub server.
+- Remote Agent enrollment URLs now include the configured public panel port and pin any self-signed Hub certificate, not only certificates issued to IP addresses.
+- Hub upgrades preserve legacy port `443` by default, while fresh installs default to public port `9090`; operators can change either through `darknoc`.
+
+### Fixed
+
+- Prevented public port `9090` from colliding with a legacy Uvicorn backend by moving the private backend before Nginx claims the public listener.
+- Preserved the installer credential environment across upgrades instead of silently replacing it with unrelated generated values.
+
 ## [2.6.0] - 2026-09-11
 
 ### Added

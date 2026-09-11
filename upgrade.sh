@@ -109,7 +109,7 @@ case "${1:-}" in
     backup_dir="$(mktemp -d /tmp/dark-noc-hub-upgrade.XXXXXX)"
     had_hub_env=0; had_nginx_site=0; had_nginx_link=0; had_systemd_override=0; had_systemd_data_path=0
     had_database=0; had_master_key=0; mutation_started=0
-    had_hub_service=0; had_tls=0; had_local_agent_opt=0; had_local_agent_etc=0; had_local_agent_service=0
+    had_hub_service=0; had_tls=0; had_local_agent_opt=0; had_local_agent_etc=0; had_local_agent_service=0; had_darknoc_cli=0
     hub_was_active="$(service_was_active dark-noc-hub.service)"
     hub_was_enabled="$(service_was_enabled dark-noc-hub.service)"
     hub_was_present="$(service_was_present dark-noc-hub.service)"
@@ -126,6 +126,7 @@ case "${1:-}" in
     if [[ -d /opt/dark-noc-agent ]]; then had_local_agent_opt=1; cp -a /opt/dark-noc-agent "$backup_dir/local-agent-opt"; fi
     if [[ -d /etc/dark-noc-agent ]]; then had_local_agent_etc=1; cp -a /etc/dark-noc-agent "$backup_dir/local-agent-etc"; fi
     if [[ -f /etc/systemd/system/dark-noc-agent.service ]]; then had_local_agent_service=1; cp -a /etc/systemd/system/dark-noc-agent.service "$backup_dir/local-agent.service"; fi
+    if [[ -f /usr/local/bin/darknoc ]]; then had_darknoc_cli=1; cp -a /usr/local/bin/darknoc "$backup_dir/darknoc"; fi
     [[ ! -f "$hub_db_path" ]] || had_database=1
     [[ ! -f "$hub_key_path" ]] || had_master_key=1
     if [[ -f /etc/nginx/sites-available/dark-noc ]]; then had_nginx_site=1; cp -a /etc/nginx/sites-available/dark-noc "$backup_dir/nginx-site"; fi
@@ -204,6 +205,11 @@ case "${1:-}" in
         rollback_step "could not restore the local Agent systemd unit" cp -a "$backup_dir/local-agent.service" /etc/systemd/system/dark-noc-agent.service || rollback_failed=1
       else
         rollback_step "could not remove the newly installed local Agent systemd unit" rm -f /etc/systemd/system/dark-noc-agent.service || rollback_failed=1
+      fi
+      if [[ "$had_darknoc_cli" -eq 1 ]]; then
+        rollback_step "could not restore the darknoc server CLI" cp -a "$backup_dir/darknoc" /usr/local/bin/darknoc || rollback_failed=1
+      else
+        rollback_step "could not remove the newly installed darknoc server CLI" rm -f /usr/local/bin/darknoc || rollback_failed=1
       fi
       if [[ "$had_database" -eq 1 && -f "$backup_dir/dark-noc.db" ]]; then
         rollback_step "could not remove database WAL/SHM files" rm -f "$hub_db_path-wal" "$hub_db_path-shm" || rollback_failed=1

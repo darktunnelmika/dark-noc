@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
     os.environ["DARK_NOC_DATA"] = data_dir
     os.environ["DARK_NOC_ADMIN_PASSWORD"] = "TestPassword-1234"
+    os.environ["DARK_NOC_PUBLIC_HOST"] = "noc.example.test"
+    os.environ["DARK_NOC_PUBLIC_PORT"] = "9090"
     hub_dir = Path(__file__).resolve().parents[1] / "hub"
     sys.path.insert(0, str(hub_dir))
     import app
@@ -38,7 +40,8 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
 
     with TestClient(app.app, base_url="https://testserver") as client:
         health = client.get("/healthz")
-        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.6.0"}
+        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.7.0"}
+        assert app.configured_public_hub_url() == "https://noc.example.test:9090"
         assert health.headers["x-content-type-options"] == "nosniff"
         backhaul = next(item for item in app.PLUGIN_CATALOG if item["id"] == "dark-backhaul")
         assert {"wss", "wssmux"}.issubset(backhaul["transports"])
@@ -55,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
         account = client.put("/api/auth/account", json={
             "current_password": "TestPassword-1234", "username": "noc-owner"
         })
-        assert account.status_code == 200 and account.json()["username"] == "noc-owner"
+        assert account.status_code == 403
+        assert "server-only" in account.json()["detail"]
 
         node = client.post("/api/nodes", json={
             "name": "IR-TEST-01", "region": "Iran Edge", "role": "edge",

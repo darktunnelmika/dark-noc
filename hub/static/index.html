@@ -7,7 +7,7 @@
   <meta name="description" content="DARK NOC — Network Operations Command Center" />
   <title>DARK NOC — Nightfall Command</title>
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=5.5.0" />
-  <link rel="stylesheet" href="/static/styles.css?v=2.6.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=2.7.0" />
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -52,7 +52,7 @@
         <div><span>Last sync</span><strong id="sync-time">WAIT</strong></div>
       </div>
 
-      <button class="operator" title="Account settings">
+      <button class="operator" title="Operator session">
         <span class="avatar">MK</span>
         <span><strong>Command Owner</strong><small>Full access</small></span>
         <i>•••</i>
@@ -348,14 +348,11 @@
 
   <div class="modal-backdrop" id="account-modal" aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
-      <div class="modal-head"><div><span class="panel-kicker">OPERATOR SECURITY</span><h2 id="account-title">Account settings</h2></div><button class="modal-close account-close" aria-label="Close">×</button></div>
-      <form id="account-form">
-        <label>USERNAME<input name="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]{3,64}" required /></label>
-        <label class="full-field">CURRENT PASSWORD<input name="current_password" type="password" autocomplete="current-password" required /></label>
-        <label class="full-field">NEW PASSWORD <small>(leave empty to keep it; minimum 12)</small><input name="new_password" type="password" minlength="12" autocomplete="new-password" /></label>
-        <label class="full-field">CONFIRM NEW PASSWORD<input name="confirm_password" type="password" autocomplete="new-password" /></label>
-        <div class="modal-actions"><button type="button" class="danger-outline" id="logout-button">SIGN OUT</button><button type="button" class="ghost-btn account-close">CANCEL</button><button type="submit" class="primary-btn">SAVE ACCOUNT</button></div>
-      </form>
+      <div class="modal-head"><div><span class="panel-kicker">OPERATOR SESSION</span><h2 id="account-title">Signed in as <span id="account-current-user">operator</span></h2></div><button class="modal-close account-close" aria-label="Close">×</button></div>
+      <div class="server-account-panel">
+        <div class="security-note"><span>⌁</span><p><strong>Server-controlled security</strong><small>Username, password, public port, panel domain and SSL are managed only from the Hub server. Connect with SSH and run <code>sudo darknoc</code>.</small></p></div>
+        <div class="modal-actions"><button type="button" class="danger-outline" id="logout-button">SIGN OUT</button><button type="button" class="ghost-btn account-close">CLOSE</button></div>
+      </div>
     </div>
   </div>
 
@@ -364,6 +361,6 @@
   <script src="/static/vendor/xterm/addon-fit.js?v=0.10.0"></script>
   <script src="/static/vendor/xterm/addon-search.js?v=0.15.0"></script>
   <script src="/static/vendor/xterm/addon-web-links.js?v=0.11.0"></script>
-  <script src="/static/app.js?v=2.6.0"></script>
+  <script src="/static/app.js?v=2.7.0"></script>
 </body>
 </html>

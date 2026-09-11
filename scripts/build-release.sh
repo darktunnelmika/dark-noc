@@ -24,6 +24,7 @@ mkdir -p "$DIST_DIR" "$STAGE_DIR/dark-noc-pro" "$STAGE_DIR/dark-noc-node"
 
 cp -a "$ROOT_DIR/hub" "$ROOT_DIR/agent" "$ROOT_DIR/deploy" "$ROOT_DIR/tests" "$STAGE_DIR/dark-noc-pro/"
 cp "$ROOT_DIR/install-hub.sh" "$ROOT_DIR/upgrade.sh" "$ROOT_DIR/uninstall.sh" \
+  "$ROOT_DIR/darknoc" \
   "$ROOT_DIR/README.md" "$ROOT_DIR/README.fa.md" "$ROOT_DIR/LICENSE" \
   "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/SUPPORT.md" "$STAGE_DIR/dark-noc-pro/"
 

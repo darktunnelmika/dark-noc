@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 import psutil
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}

@@ -39,7 +39,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 120
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -50,6 +50,21 @@ def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         value = default
     return min(max(value, minimum), maximum)
+
+
+def configured_public_hub_url() -> str:
+    host = os.getenv("DARK_NOC_PUBLIC_HOST", "").strip()
+    if not host:
+        raise RuntimeError("Hub public address is not configured")
+    try:
+        port = int(os.getenv("DARK_NOC_PUBLIC_PORT", "443"))
+    except ValueError as exc:
+        raise RuntimeError("Hub public port is invalid") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("Hub public port is invalid")
+    url_host = f"[{host}]" if ":" in host else host
+    suffix = "" if port == 443 else f":{port}"
+    return f"https://{url_host}{suffix}"
 
 
 SSH_UPLOAD_LIMIT = bounded_env_int("DARK_NOC_SSH_UPLOAD_LIMIT_MB", 1024, 1, 102_400) * 1024 * 1024
@@ -793,12 +808,6 @@ class LoginBody(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
-class AccountBody(BaseModel):
-    current_password: str = Field(min_length=1, max_length=256)
-    username: str = Field(pattern=r"^[A-Za-z0-9_.-]{3,64}$")
-    new_password: str | None = Field(default=None, min_length=12, max_length=256)
-
-
 class NodeBody(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,48}$")
     region: str = Field(min_length=2, max_length=64)
@@ -1227,16 +1236,11 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                     raise RuntimeError(f"Hub Node payload is missing: {required}")
 
             public_host = os.getenv("DARK_NOC_PUBLIC_HOST", "").strip()
-            if not public_host:
-                raise RuntimeError("Hub public address is not configured")
-            hub_url = f"https://[{public_host}]" if ":" in public_host else f"https://{public_host}"
+            hub_url = configured_public_hub_url()
             tls_verify: bool | str = True
             cert_file = Path("/etc/dark-noc/tls/panel.crt")
-            try:
-                ipaddress.ip_address(public_host)
+            if os.getenv("DARK_NOC_PANEL_CERT_MODE", "selfsigned") == "selfsigned":
                 tls_verify = "/etc/dark-noc-agent/hub-ca.crt"
-            except ValueError:
-                pass
 
             config = {
                 "hub_url": hub_url, "agent_token": enrollment, "verify_tls": tls_verify,
@@ -1455,7 +1459,7 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                     health_command.append(f"{hub_url}/healthz")
                     health_result = await ssh.run(" ".join(shlex.quote(part) for part in health_command), check=False, timeout=30)
                     if health_result.exit_status != 0:
-                        raise RuntimeError("Node cannot reach the Hub HTTPS endpoint; check DNS, firewall and port 443")
+                        raise RuntimeError(f"Node cannot reach the Hub HTTPS endpoint; check DNS, firewall and port {os.getenv('DARK_NOC_PUBLIC_PORT', '443')}")
                     log.append("Hub HTTPS health check passed from Node")
 
                     with db() as activation_db:
@@ -1652,22 +1656,8 @@ def me(user: sqlite3.Row = Depends(current_user)):
 
 
 @app.put("/api/auth/account")
-def update_account(body: AccountBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    if not verify_password(body.current_password, user["password_hash"]):
-        raise HTTPException(403, "Current password is incorrect")
-    password_hash = hash_password(body.new_password) if body.new_password else user["password_hash"]
-    try:
-        with db() as conn:
-            conn.execute("UPDATE users SET username=?,password_hash=? WHERE id=?", (body.username, password_hash, user["id"]))
-            if body.new_password:
-                conn.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Username is already in use")
-    audit(user["id"], "account_update", body.username, "Username/password updated", request.client.host if request.client else None)
-    response = JSONResponse({"ok": True, "username": body.username, "reauthenticate": bool(body.new_password)})
-    if body.new_password:
-        response.delete_cookie("dark_noc_session", secure=os.getenv("DARK_NOC_COOKIE_SECURE", "0") == "1", samesite="strict")
-    return response
+def update_account(_: sqlite3.Row = Depends(current_user)):
+    raise HTTPException(403, "Account changes are server-only. Run sudo darknoc on the Hub server.")
 
 
 @app.get("/api/dashboard")

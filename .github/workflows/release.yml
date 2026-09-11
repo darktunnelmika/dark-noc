@@ -164,10 +164,12 @@ jobs:
           python -m compileall -q hub agent tests
           node --check hub/static/app.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
           python tests/smoke.py
           python tests/agent_logic.py
           python tests/file_ops.py
           python tests/noc_features.py
+          python tests/server_cli.py
 
       - name: Build reproducible packages
         if: steps.version.outputs.publish == 'true'

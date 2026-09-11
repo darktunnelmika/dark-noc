@@ -556,12 +556,13 @@ def nginx_location(source: str, route: str) -> str:
 
 def test_installer_and_release_guards() -> None:
     installer = (ROOT / "install-hub.sh").read_text(encoding="utf-8")
-    upload_location = nginx_location(installer, "/api/ssh/upload/")
-    upload_location_match = re.search(r"location\s+\^~\s+/api/ssh/upload/\s*\{", installer)
+    server_cli = (ROOT / "darknoc").read_text(encoding="utf-8")
+    upload_location = nginx_location(server_cli, "/api/ssh/upload/")
+    upload_location_match = re.search(r"location\s+\^~\s+/api/ssh/upload/\s*\{", server_cli)
     assert upload_location_match
     upload_location_start = upload_location_match.start()
-    assert "client_max_body_size 1m;" in installer[:upload_location_start]
-    assert "client_max_body_size ${NGINX_UPLOAD_LIMIT_MB}m;" in upload_location
+    assert "client_max_body_size 1m;" in server_cli[:upload_location_start]
+    assert "client_max_body_size __UPLOAD_LIMIT__m;" in upload_location
     assert "proxy_request_buffering off;" in upload_location
     for directive in (
         "proxy_connect_timeout 86400;",
@@ -570,8 +571,8 @@ def test_installer_and_release_guards() -> None:
         "send_timeout 86400;",
     ):
         assert directive in upload_location
-    compact_installer = re.sub(r"\s+", "", installer)
-    assert "NGINX_UPLOAD_LIMIT_MB=$((10#$SSH_UPLOAD_LIMIT_MB+1))" in compact_installer
+    compact_cli = re.sub(r"\s+", "", server_cli)
+    assert 'upload_limit=$((10#$upload_limit+1))' in compact_cli
     assert re.search(
         r"validate_integer_setting\s+DARK_NOC_SSH_UPLOAD_LIMIT_MB\s+[^\n]+\s+1\s+102400",
         installer,
@@ -580,11 +581,11 @@ def test_installer_and_release_guards() -> None:
         r"validate_integer_setting\s+DARK_NOC_SSH_RELAY_LIMIT_MB\s+[^\n]+\s+1\s+102400",
         installer,
     )
-    assert re.search(r'install\s+-d\s+-m\s+0710\s+-o\s+root\s+-g\s+darknoc\s+"\$CERT_DIR"', installer)
-    assert re.search(r'chown\s+root:darknoc\s+"\$CERT_DIR/panel\.crt"', installer)
-    assert re.search(r'chown\s+root:root\s+"\$CERT_DIR/panel\.key"', installer)
-    assert re.search(r'chmod\s+0640\s+"\$CERT_DIR/panel\.crt"', installer)
-    assert re.search(r'chmod\s+0600\s+"\$CERT_DIR/panel\.key"', installer)
+    assert re.search(r'install\s+-d\s+-m\s+0710\s+-o\s+root\s+-g\s+"\$CERT_GROUP"\s+"\$CERT_DIR"', server_cli)
+    assert re.search(r'chown\s+"root:\$CERT_GROUP"\s+"\$cert_tmp"', server_cli)
+    assert re.search(r'chown\s+root:root\s+"\$key_tmp"', server_cli)
+    assert re.search(r'chmod\s+0640\s+"\$cert_tmp"', server_cli)
+    assert re.search(r'chmod\s+0600\s+"\$key_tmp"', server_cli)
     assert re.search(r"DARK_NOC_SSH_UPLOAD_LIMIT_MB=%q", installer)
     assert re.search(r"DARK_NOC_SSH_RELAY_LIMIT_MB=%q", installer)
     ssh_tuning = {
@@ -617,9 +618,16 @@ def test_installer_and_release_guards() -> None:
     assert 'printf \'DARK_NOC_DATA=%q\\n\' "$DATA_DIR"' in installer
     assert 'printf \'ReadWritePaths=%s\\n\' "$DATA_DIR"' in installer
     assert 'PUBLIC_URL_HOST="[$PUBLIC_HOST]"' in installer
-    assert '--connect-to "$PUBLIC_URL_HOST:443:127.0.0.1:443"' in installer
-    assert '"https://$PUBLIC_URL_HOST/healthz"' in installer
-    assert 'echo "Open: https://$PUBLIC_URL_HOST"' in installer
+    assert 'printf \'DARK_NOC_PUBLIC_PORT=%q\\n\' "$PUBLIC_PORT"' in installer
+    assert 'printf \'DARK_NOC_PANEL_CERT_MODE=%q\\n\'' in installer
+    assert 'install -m 0755 "$SCRIPT_DIR/darknoc" /usr/local/bin/darknoc' in installer
+    assert 'darknoc --apply-gateway' in installer
+    assert '"https://127.0.0.1:$PUBLIC_PORT/healthz"' in installer
+    assert 'echo "Open: $PUBLIC_URL"' in installer
+    assert 'DARK_NOC_PUBLIC_PORT="${DARK_NOC_PUBLIC_PORT:-443}"' in server_cli
+    assert 'Get / renew panel SSL' in server_cli
+    assert 'certbot certonly --webroot' in server_cli
+    assert 'Account changes are server-only' in (ROOT / "hub" / "app.py").read_text(encoding="utf-8")
 
     upgrader = (ROOT / "upgrade.sh").read_text(encoding="utf-8")
     assert 'hub_data_dir="$(validate_data_dir "$existing_data_dir")"' in upgrader
@@ -637,6 +645,7 @@ def test_installer_and_release_guards() -> None:
     assert 'restore_service_state nginx.service' in hub_success
     assert 'cp -a "$hub_key_path" "$backup_dir/master.key"' in upgrader
     assert 'cp -a "$backup_dir/master.key" "$hub_key_path"' in upgrader
+    assert 'could not restore the darknoc server CLI' in upgrader
     assert 'rm -f "$hub_db_path" "$hub_db_path-wal" "$hub_db_path-shm"' in upgrader
     assert "/var/lib/dark-noc/dark-noc.db" not in upgrader
     agent_upgrade = upgrader[upgrader.index("  agent)") :]
@@ -664,6 +673,9 @@ def test_installer_and_release_guards() -> None:
     assert "INSTALL_ARGS=(hub)" in existing_hub_branch
     assert "verified Hub upgrade with rollback" in existing_hub_branch
     assert quick_installer.index('ACTUAL="$(sha256sum') < quick_installer.index('tar -xzf')
+
+    release_builder = (ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+    assert '"$ROOT_DIR/darknoc"' in release_builder
 
     agent_service = (ROOT / "deploy" / "dark-noc-agent.service").read_text(encoding="utf-8")
     assert re.search(r"^UMask=0077$", agent_service, flags=re.MULTILINE)

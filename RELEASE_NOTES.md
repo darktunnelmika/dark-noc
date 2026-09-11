@@ -1,8 +1,20 @@
-# DARK NOC v2.6.0 — NOC Operations Suite
+# DARK NOC v2.7.0 — Server Control Center
 
 Maintainer: **@mikakhadm**
 
-This release turns DARK NOC into a broader day-to-day Network Operations Center while keeping tunnel automation and browser SSH intact.
+This release adds a root-only server control plane while keeping tunnel automation, monitoring and browser SSH intact.
+
+## `darknoc` server command
+
+Run `sudo darknoc` on the Hub to view the active panel URL and recoverable credentials, change the owner username/password, select the real public HTTPS port, register a domain or IP, issue/renew Let's Encrypt, restart services, follow logs, create a SQLite/config/TLS backup or start a verified update. These sensitive settings are no longer editable from the web panel.
+
+Fresh installations default to `https://HOST:9090`. Nginx owns the selected public port while FastAPI remains on an automatically isolated `127.0.0.1` backend. If a legacy backend already occupies `9090`, the installer moves it before exposing the panel. Existing installations retain their current public port during upgrade unless the operator chooses another one.
+
+Domain certificate requests use ACME webroot validation on port 80, install an automatic Nginx reload hook and retain an encrypted self-signed fallback when validation is not ready. Public port/address changes validate Nginx first and restore the previous configuration on failure.
+
+Remote Node provisioning now writes the configured public port into the Agent Hub URL and securely pins every self-signed panel certificate.
+
+## Previous v2.6.0 operations suite
 
 ## Synthetic monitoring
 

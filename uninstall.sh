@@ -13,6 +13,7 @@ case "$choice" in
     rm -f /etc/systemd/system/dark-noc-agent.service
     rm -rf /opt/dark-noc
     rm -rf /opt/dark-noc-agent
+    rm -f /usr/local/bin/darknoc
     rm -f /etc/nginx/sites-enabled/dark-noc /etc/nginx/sites-available/dark-noc
     if command -v nginx >/dev/null 2>&1; then nginx -t >/dev/null 2>&1 && systemctl reload nginx || true; fi
     systemctl daemon-reload
