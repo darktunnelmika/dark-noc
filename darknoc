@@ -26,19 +26,27 @@ ok() { printf '%s[OK]%s %s\n' "$GREEN" "$RESET" "$*"; }
 warn() { printf '%s[WARN]%s %s\n' "$RED" "$RESET" "$*" >&2; }
 die() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 
-require_root() {
-  if [[ ${EUID:-999} -eq 0 ]]; then
-    return 0
-  fi
+test_mode() {
   # The regression suite runs against an isolated, caller-owned filesystem on
   # GitHub-hosted runners. Never permit the override unless both authoritative
   # paths are contained by that explicit test root.
-  if [[ -n ${DARK_NOC_TEST_ROOT:-} &&
-        "$ENV_FILE" == "$DARK_NOC_TEST_ROOT/"* &&
-        "$HUB_DIR" == "$DARK_NOC_TEST_ROOT/"* ]]; then
-    return 0
-  fi
+  [[ -n ${DARK_NOC_TEST_ROOT:-} &&
+     "$ENV_FILE" == "$DARK_NOC_TEST_ROOT/"* &&
+     "$HUB_DIR" == "$DARK_NOC_TEST_ROOT/"* ]]
+}
+
+require_root() {
+  [[ ${EUID:-999} -eq 0 ]] && return 0
+  test_mode && return 0
   die "Run as root: sudo darknoc"
+}
+
+prepare_cert_dir() {
+  if test_mode; then
+    install -d -m 0710 "$CERT_DIR"
+  else
+    install -d -m 0710 -o root -g "$CERT_GROUP" "$CERT_DIR"
+  fi
 }
 
 require_hub() {
@@ -198,7 +206,7 @@ cert_matches_host() {
 }
 
 make_self_signed() {
-  install -d -m 0710 -o root -g "$CERT_GROUP" "$CERT_DIR" || return 1
+  prepare_cert_dir || return 1
   local san_type="DNS"
   is_ip "$DARK_NOC_PUBLIC_HOST" && san_type="IP"
   local key_tmp cert_tmp
@@ -210,8 +218,10 @@ make_self_signed() {
     rm -f "$key_tmp" "$cert_tmp"
     return 1
   fi
-  chown root:root "$key_tmp" || return 1
-  chown "root:$CERT_GROUP" "$cert_tmp" || return 1
+  if ! test_mode; then
+    chown root:root "$key_tmp" || return 1
+    chown "root:$CERT_GROUP" "$cert_tmp" || return 1
+  fi
   chmod 0600 "$key_tmp" || return 1
   chmod 0640 "$cert_tmp" || return 1
   mv -f "$key_tmp" "$CERT_DIR/panel.key" || return 1
@@ -220,7 +230,7 @@ make_self_signed() {
 }
 
 ensure_certificate() {
-  install -d -m 0710 -o root -g "$CERT_GROUP" "$CERT_DIR" || return 1
+  prepare_cert_dir || return 1
   case "$DARK_NOC_PANEL_CERT_MODE" in
     letsencrypt)
       [[ -s "$LETSENCRYPT_LIVE_ROOT/$DARK_NOC_PUBLIC_HOST/fullchain.pem" ]] || return 1
