@@ -1,5 +1,7 @@
 name: Release
 
+# Explicit source marker: updating this file safely retriggers a missed release run.
+
 on:
   push:
     branches: [main]
