@@ -693,12 +693,16 @@ def test_installer_and_release_guards() -> None:
     assert "python tests/file_ops.py" in workflow[test_step:publish_step]
     assert "python tests/noc_features.py" in workflow[test_step:publish_step]
     assert "--clobber" not in workflow
-    assert "gh api --paginate --slurp" in workflow
+    assert "gh api --paginate" in workflow
+    assert "| jq -s 'add'" in workflow
+    assert "--slurp" not in workflow
     assert 'releases?per_page=100' in workflow
     assert "releases/tags/" not in workflow
     assert "gh release download" not in workflow
     assert "dark-noc-release:$release_tag:$target_sha" in workflow
     assert "git tag -a" in workflow
+    assert "Moved unpublished owned tag" in workflow
+    assert "Retargeted owned draft release" in workflow
     resolve = workflow[:publish_step]
     assert "gh release create" in resolve and "--draft" in resolve and "--verify-tag" in resolve
     publish = workflow[publish_step:]
