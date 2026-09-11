@@ -1,6 +1,9 @@
 import asyncio
 import importlib.util
+import json
+import socket
 from pathlib import Path
+from unittest.mock import patch
 
 
 agent_path = Path(__file__).resolve().parents[1] / "agent" / "agent.py"
@@ -54,5 +57,43 @@ packet = asyncio.run(agent.tunnel_report({
     "target_host": "198.51.100.20", "user_ports": [443, 8443],
 }))
 assert packet["status"] == "healthy" and packet["sessions"] == 4
+
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 0))
+listener.listen(1)
+monitor_port = listener.getsockname()[1]
+tcp_monitor = agent.execute_monitor({
+    "monitor_id": 7, "kind": "tcp", "target": "127.0.0.1",
+    "port": monitor_port, "timeout_seconds": 2,
+})
+assert tcp_monitor["status"] == "up" and tcp_monitor["detail"]["port"] == monitor_port
+listener.close()
+
+dns_monitor = agent.execute_monitor({
+    "monitor_id": 8, "kind": "dns", "target": "localhost", "timeout_seconds": 2,
+})
+assert dns_monitor["status"] == "up" and dns_monitor["detail"]["records"]
+
+with patch.object(agent.shutil, "which", return_value="/usr/bin/snmpget"), patch.object(
+    agent, "run", return_value=(0, "SNMPv2-MIB::sysUpTime.0 = Timeticks: (123) 0:00:01.23")
+) as snmp_run:
+    snmp_monitor = agent.execute_monitor({
+        "monitor_id": 9, "kind": "snmp", "target": "127.0.0.1", "port": 161,
+        "timeout_seconds": 2, "snmp_community": "unit-secret",
+        "snmp_oid": ".1.3.6.1.2.1.1.3.0",
+    })
+assert snmp_monitor["status"] == "up"
+assert "unit-secret" in snmp_run.call_args.args[0]
+
+failed_status, failed_output = agent.execute_job({
+    "kind": "monitor_run", "payload": json.dumps({
+        "monitor_id": 10, "kind": "tcp", "target": "127.0.0.1",
+        "port": monitor_port, "timeout_seconds": 1,
+    })
+}, {})
+assert failed_status == "failed"
+failed_monitor = json.loads(failed_output)
+assert failed_monitor["status"] == "down" and failed_monitor["detail"]["error"]
 
 print("DARK NOC Agent logic test passed")
