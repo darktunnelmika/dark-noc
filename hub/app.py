@@ -17,6 +17,7 @@ import sqlite3
 import stat as statmod
 import threading
 import time
+import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ import asyncssh
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -38,12 +39,83 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 120
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
-SSH_UPLOAD_LIMIT = max(1, int(os.getenv("DARK_NOC_SSH_UPLOAD_LIMIT_MB", "1024"))) * 1024 * 1024
-SSH_RELAY_LIMIT = max(1, int(os.getenv("DARK_NOC_SSH_RELAY_LIMIT_MB", "20480"))) * 1024 * 1024
+
+
+def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
+SSH_UPLOAD_LIMIT = bounded_env_int("DARK_NOC_SSH_UPLOAD_LIMIT_MB", 1024, 1, 102_400) * 1024 * 1024
+SSH_RELAY_LIMIT = bounded_env_int("DARK_NOC_SSH_RELAY_LIMIT_MB", 20_480, 1, 102_400) * 1024 * 1024
 SSH_FILE_CHUNK = 1024 * 1024
+SSH_MULTIPART_OVERHEAD = 1024 * 1024
+SSH_TRANSFER_CONCURRENCY = bounded_env_int("DARK_NOC_SSH_TRANSFER_CONCURRENCY", 4, 1, 32)
+SSH_TRANSFER_TIMEOUT = bounded_env_int("DARK_NOC_SSH_TRANSFER_TIMEOUT_SECONDS", 86_400, 30, 86_400)
+SSH_TRANSFER_IDLE_TIMEOUT = bounded_env_int("DARK_NOC_SSH_IDLE_TIMEOUT_SECONDS", 60, 5, 3600)
+SSH_KEEPALIVE_INTERVAL = bounded_env_int("DARK_NOC_SSH_KEEPALIVE_INTERVAL_SECONDS", 15, 1, 300)
+SSH_KEEPALIVE_COUNT_MAX = bounded_env_int("DARK_NOC_SSH_KEEPALIVE_COUNT_MAX", 3, 1, 20)
+SSH_UPLOAD_QUEUE_TIMEOUT = bounded_env_int("DARK_NOC_SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS", 30, 1, 300)
+NODE_PROVISION_TIMEOUT = bounded_env_int("DARK_NOC_PROVISION_TIMEOUT_SECONDS", 1800, 60, 7200)
+NODE_PROVISION_CONCURRENCY = bounded_env_int("DARK_NOC_PROVISION_CONCURRENCY", 4, 1, 32)
+MONITOR_RESULT_RETENTION_DAYS = bounded_env_int("DARK_NOC_MONITOR_RETENTION_DAYS", 90, 7, 730)
+METRIC_RAW_RETENTION_DAYS = bounded_env_int("DARK_NOC_METRIC_RETENTION_DAYS", 31, 1, 365)
+METRIC_ROLLUP_RETENTION_DAYS = bounded_env_int("DARK_NOC_ROLLUP_RETENTION_DAYS", 730, 30, 3650)
+HUB_LEASE_SECONDS = bounded_env_int("DARK_NOC_HUB_LEASE_SECONDS", 75, 30, 300)
+HUB_INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+SSH_EDITOR_LIMIT = bounded_env_int("DARK_NOC_SSH_EDITOR_LIMIT_KB", 1024, 16, 16_384) * 1024
+SSH_TRANSFER_SEMAPHORE = asyncio.Semaphore(SSH_TRANSFER_CONCURRENCY)
+SSH_UPLOAD_REQUEST_SEMAPHORE = asyncio.Semaphore(SSH_TRANSFER_CONCURRENCY)
+NODE_PROVISION_SEMAPHORE = asyncio.Semaphore(NODE_PROVISION_CONCURRENCY)
+PROVISION_ENDPOINT_LOCKS: weakref.WeakValueDictionary[tuple[str, int], asyncio.Lock] = weakref.WeakValueDictionary()
+SSH_DESTINATION_LOCKS: weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+@asynccontextmanager
+async def disconnect_aware_semaphore(request: Request, semaphore: asyncio.Lock | asyncio.Semaphore):
+    """Acquire a request slot without retaining it after the client leaves."""
+    waiter = asyncio.create_task(semaphore.acquire())
+    acquired = False
+    try:
+        while not waiter.done():
+            done, _ = await asyncio.wait({waiter}, timeout=0.25)
+            if waiter in done:
+                break
+            if await request.is_disconnected():
+                raise HTTPException(499, "Client disconnected")
+        await waiter
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            semaphore.release()
+        else:
+            if not waiter.done():
+                waiter.cancel()
+            outcome = await asyncio.gather(waiter, return_exceptions=True)
+            # The acquire may have won the race with cancellation. Return that
+            # slot exactly once instead of leaking capacity permanently.
+            if outcome and outcome[0] is True:
+                semaphore.release()
+
+
+@asynccontextmanager
+async def bounded_semaphore(semaphore: asyncio.Semaphore):
+    """Bound pre-body work without probing and consuming the ASGI receive channel."""
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=SSH_UPLOAD_QUEUE_TIMEOUT)
+    except TimeoutError as exc:
+        raise HTTPException(503, "Secure upload queue is busy; retry shortly") from exc
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 def utc_ts() -> int:
@@ -59,19 +131,93 @@ def normalize_ip(value: Any) -> str:
         return text.removeprefix("::ffff:")
 
 
+def canonical_node_host(value: Any) -> str:
+    text = str(value or "").strip()
+    try:
+        address = ipaddress.ip_address(text)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            return str(address.ipv4_mapped)
+        return address.compressed.lower()
+    except ValueError:
+        return text.rstrip(".").lower()
+
+
+def node_endpoint_conflict(conn: sqlite3.Connection, host: str, ssh_port: int, exclude_id: int | None = None) -> sqlite3.Row | None:
+    canonical_host = canonical_node_host(host)
+    rows = conn.execute("SELECT id,name,host FROM nodes WHERE ssh_port=?", (ssh_port,)).fetchall()
+    return next(
+        (
+            row for row in rows
+            if row["id"] != exclude_id and canonical_node_host(row["host"]) == canonical_host
+        ),
+        None,
+    )
+
+
+def provision_endpoint_lock(host: str, ssh_port: int) -> asyncio.Lock:
+    key = (canonical_node_host(host), int(ssh_port))
+    lock = PROVISION_ENDPOINT_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        PROVISION_ENDPOINT_LOCKS[key] = lock
+    return lock
+
+
+def ssh_destination_lock(node_id: int, destination_path: str) -> asyncio.Lock:
+    key = (int(node_id), clean_remote_path(destination_path))
+    lock = SSH_DESTINATION_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        SSH_DESTINATION_LOCKS[key] = lock
+    return lock
+
+
 def clean_remote_path(value: str, *, filename: str | None = None) -> str:
-    raw = str(value or "").strip()
-    if not raw or "\x00" in raw or len(raw) > 4096 or not raw.startswith("/"):
+    raw = str(value or "")
+    if raw != raw.strip() or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in raw):
+        raise ValueError("Remote path cannot contain control or leading/trailing whitespace")
+    if not raw or len(raw.encode("utf-8")) > 4096 or not raw.startswith("/"):
         raise ValueError("Remote path must be an absolute Linux path")
     if raw.endswith("/"):
         safe_name = posixpath.basename(str(filename or "").replace("\\", "/"))
-        if not safe_name or safe_name in {".", ".."}:
+        if (
+            not safe_name
+            or safe_name in {".", ".."}
+            or safe_name != safe_name.strip()
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in safe_name)
+        ):
             raise ValueError("A valid file name is required when destination is a directory")
         raw = posixpath.join(raw, safe_name)
+    if len(raw.encode("utf-8")) > 4096 or raw != raw.strip() or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in raw):
+        raise ValueError("Remote path cannot contain control or leading/trailing whitespace")
     normalized = posixpath.normpath(raw)
     if normalized == "/":
         raise ValueError("Remote path must point to a file")
     return normalized
+
+
+def clean_remote_directory(value: str) -> str:
+    raw = str(value or "")
+    if raw != raw.strip() or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in raw):
+        raise ValueError("Remote directory cannot contain control or leading/trailing whitespace")
+    if not raw or len(raw.encode("utf-8")) > 4096 or not raw.startswith("/"):
+        raise ValueError("Remote directory must be an absolute Linux path")
+    return posixpath.normpath(raw)
+
+
+def destructive_remote_path_allowed(path: str) -> bool:
+    protected_roots = {"/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var"}
+    protected_trees = (
+        "/bin", "/boot", "/dev", "/lib", "/lib64", "/proc", "/run", "/sbin", "/sys", "/usr",
+        "/opt/dark-noc", "/var/lib/dark-noc", "/etc/dark-noc",
+    )
+    protected_files = {
+        "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow", "/etc/sudoers",
+        "/etc/fstab", "/etc/crypttab", "/etc/hostname", "/etc/hosts",
+    }
+    if path in protected_roots or path in protected_files:
+        return False
+    return not any(path == prefix or path.startswith(f"{prefix}/") for prefix in protected_trees)
 
 
 def db() -> sqlite3.Connection:
@@ -156,7 +302,13 @@ CREATE TABLE IF NOT EXISTS incidents (
   id INTEGER PRIMARY KEY AUTOINCREMENT, node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
   tunnel_id INTEGER REFERENCES tunnels(id) ON DELETE SET NULL, severity TEXT NOT NULL,
   title TEXT NOT NULL, detail TEXT, status TEXT NOT NULL DEFAULT 'open', opened_at INTEGER NOT NULL,
-  resolved_at INTEGER, autoheal_stage INTEGER DEFAULT 0
+  acknowledged_at INTEGER, resolved_at INTEGER, last_changed_at INTEGER,
+  root_cause TEXT, resolution TEXT, autoheal_stage INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS incident_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL, message TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}',
+  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -190,11 +342,52 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT NOT NULL,
   target TEXT, detail TEXT, ip TEXT, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS monitors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, port INTEGER,
+  secret_enc TEXT, snmp_oid TEXT,
+  interval_seconds INTEGER NOT NULL DEFAULT 60, timeout_seconds INTEGER NOT NULL DEFAULT 5,
+  expected_status INTEGER, enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending',
+  latency_ms REAL, detail TEXT, failure_streak INTEGER NOT NULL DEFAULT 0,
+  next_run_at INTEGER NOT NULL, last_run_at INTEGER, job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  created_by INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(node_id,name)
+);
+CREATE TABLE IF NOT EXISTS monitor_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+  ts INTEGER NOT NULL, status TEXT NOT NULL, latency_ms REAL, detail TEXT
+);
+CREATE TABLE IF NOT EXISTS fleet_operations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'scheduled',
+  scheduled_at INTEGER NOT NULL, created_by INTEGER, created_at INTEGER NOT NULL,
+  started_at INTEGER, finished_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS fleet_operation_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL REFERENCES fleet_operations(id) ON DELETE CASCADE,
+  node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL DEFAULT 'scheduled',
+  UNIQUE(operation_id,node_id)
+);
+CREATE TABLE IF NOT EXISTS hub_leases (
+  name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS metric_rollups (
+  node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, bucket INTEGER NOT NULL,
+  samples INTEGER NOT NULL, cpu_avg REAL, ram_avg REAL, disk_max REAL, load_avg REAL,
+  rx_avg REAL, tx_avg REAL, connections_max INTEGER,
+  PRIMARY KEY(node_id,bucket)
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_node_status ON jobs(node_id,status,id);
 CREATE INDEX IF NOT EXISTS idx_incidents_status_opened ON incidents(status,opened_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tunnels_node ON tunnels(node_id);
 CREATE INDEX IF NOT EXISTS idx_hybrid_node ON hybrid_deployments(iran_node_id,id DESC);
 CREATE INDEX IF NOT EXISTS idx_certificates_node ON certificates(node_id,status);
+CREATE INDEX IF NOT EXISTS idx_incident_events_incident ON incident_events(incident_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_monitors_due ON monitors(enabled,next_run_at);
+CREATE INDEX IF NOT EXISTS idx_monitor_results_monitor_ts ON monitor_results(monitor_id,ts DESC);
+CREATE INDEX IF NOT EXISTS idx_fleet_operations_due ON fleet_operations(status,scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_metric_rollups_bucket ON metric_rollups(bucket);
 """
 
 
@@ -232,6 +425,44 @@ def bootstrap() -> None:
             conn.execute("ALTER TABLE nodes ADD COLUMN autoheal_cooldown INTEGER NOT NULL DEFAULT 300")
         if "autoheal_max_restarts" not in node_columns:
             conn.execute("ALTER TABLE nodes ADD COLUMN autoheal_max_restarts INTEGER NOT NULL DEFAULT 3")
+        incident_columns = {row["name"] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+        for name, definition in {
+            "acknowledged_at": "INTEGER",
+            "last_changed_at": "INTEGER",
+            "root_cause": "TEXT",
+            "resolution": "TEXT",
+        }.items():
+            if name not in incident_columns:
+                conn.execute(f"ALTER TABLE incidents ADD COLUMN {name} {definition}")
+        conn.execute("UPDATE incidents SET last_changed_at=COALESCE(last_changed_at,resolved_at,opened_at)")
+        conn.execute(
+            """INSERT INTO incident_events(incident_id,event_type,message,data,created_at)
+               SELECT incidents.id,'detected','Incident detected',COALESCE(incidents.detail,'{}'),incidents.opened_at
+               FROM incidents
+               WHERE NOT EXISTS (SELECT 1 FROM incident_events WHERE incident_events.incident_id=incidents.id)"""
+        )
+        interrupted_message = "Provisioning was interrupted by a Hub restart before completion. Retry INSTALL/SYNC AGENT."
+        conn.execute(
+            """UPDATE nodes
+               SET provision_status='failed',
+                   provision_output=CASE
+                     WHEN TRIM(COALESCE(provision_output,''))=''
+                       THEN ?
+                     ELSE SUBSTR(provision_output || CHAR(10) || ?, -12000)
+                   END,
+                   updated_at=?
+               WHERE provision_status='provisioning'""",
+            (interrupted_message, interrupted_message, utc_ts()),
+        )
+        conn.execute(
+            """UPDATE fleet_operation_items SET status='failed'
+               WHERE status='running' AND job_id IS NULL"""
+        )
+        interrupted_operations = conn.execute(
+            "SELECT id FROM fleet_operations WHERE status='running'"
+        ).fetchall()
+        for operation in interrupted_operations:
+            finalize_fleet_operation(conn, operation["id"])
         if not conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             password = os.getenv("DARK_NOC_ADMIN_PASSWORD")
             if not password or len(password) < 10:
@@ -242,22 +473,199 @@ def bootstrap() -> None:
             )
 
 
+def append_incident_event(
+    conn: sqlite3.Connection,
+    incident_id: int,
+    event_type: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    actor_id: int | None = None,
+    created_at: int | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO incident_events(incident_id,event_type,message,data,actor_id,created_at) VALUES(?,?,?,?,?,?)",
+        (incident_id, event_type, message[:4000], json.dumps(data or {}), actor_id, created_at or utc_ts()),
+    )
+
+
+def create_incident(
+    conn: sqlite3.Connection,
+    *,
+    node_id: int | None,
+    tunnel_id: int | None,
+    severity: str,
+    title: str,
+    detail: dict[str, Any],
+    opened_at: int | None = None,
+) -> int:
+    now = opened_at or utc_ts()
+    incident_id = int(
+        conn.execute(
+            """INSERT INTO incidents(node_id,tunnel_id,severity,title,detail,status,opened_at,last_changed_at)
+               VALUES(?,?,?,?,?,'open',?,?)""",
+            (node_id, tunnel_id, severity, title, json.dumps(detail), now, now),
+        ).lastrowid
+    )
+    append_incident_event(conn, incident_id, "detected", title, detail, created_at=now)
+    return incident_id
+
+
+def resolve_incident(
+    conn: sqlite3.Connection,
+    incident_id: int,
+    message: str,
+    *,
+    actor_id: int | None = None,
+    resolution: str | None = None,
+) -> bool:
+    now = utc_ts()
+    changed = conn.execute(
+        """UPDATE incidents SET status='resolved',resolved_at=?,last_changed_at=?,
+                   resolution=COALESCE(?,resolution)
+           WHERE id=? AND status IN ('open','acknowledged')""",
+        (now, now, resolution, incident_id),
+    ).rowcount
+    if changed:
+        append_incident_event(conn, incident_id, "resolved", message, actor_id=actor_id, created_at=now)
+    return bool(changed)
+
+
+def acquire_hub_lease(name: str, now: int | None = None) -> bool:
+    current = now or utc_ts()
+    expiry = current + HUB_LEASE_SECONDS
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """INSERT INTO hub_leases(name,holder,expires_at,updated_at) VALUES(?,?,?,?)
+               ON CONFLICT(name) DO UPDATE SET holder=excluded.holder,expires_at=excluded.expires_at,updated_at=excluded.updated_at
+               WHERE hub_leases.holder=excluded.holder OR hub_leases.expires_at<?""",
+            (name, HUB_INSTANCE_ID, expiry, current, current),
+        )
+        row = conn.execute("SELECT holder,expires_at FROM hub_leases WHERE name=?", (name,)).fetchone()
+    return bool(row and row["holder"] == HUB_INSTANCE_ID and int(row["expires_at"]) >= expiry)
+
+
+def queue_due_monitors(conn: sqlite3.Connection, now: int, online_cutoff: int) -> None:
+    due = conn.execute(
+        """SELECT monitors.* FROM monitors JOIN nodes ON nodes.id=monitors.node_id
+           WHERE monitors.enabled=1 AND monitors.next_run_at<=? AND nodes.last_seen>=?
+           ORDER BY monitors.next_run_at,monitors.id LIMIT 100""",
+        (now, online_cutoff),
+    ).fetchall()
+    for monitor in due:
+        active = conn.execute(
+            "SELECT 1 FROM jobs WHERE id=? AND status IN ('queued','running')",
+            (monitor["job_id"],),
+        ).fetchone() if monitor["job_id"] else None
+        if active:
+            continue
+        payload = {
+            "monitor_id": monitor["id"], "kind": monitor["kind"], "target": monitor["target"],
+            "port": monitor["port"], "timeout_seconds": monitor["timeout_seconds"],
+            "expected_status": monitor["expected_status"], "snmp_oid": monitor["snmp_oid"],
+        }
+        try:
+            if monitor["kind"] == "snmp":
+                payload["snmp_community"] = decrypt(monitor["secret_enc"])
+        except Exception:
+            LOGGER.exception("Could not decrypt synthetic monitor secret for monitor %s", monitor["id"])
+            failure_streak = int(monitor["failure_streak"] or 0) + 1
+            detail = json.dumps({"error": "Encrypted monitor secret cannot be read; edit and save the monitor again"})
+            conn.execute(
+                """UPDATE monitors SET status='down',detail=?,failure_streak=?,last_run_at=?,next_run_at=?,updated_at=?
+                   WHERE id=?""",
+                (detail, failure_streak, now, now + int(monitor["interval_seconds"]), now, monitor["id"]),
+            )
+            conn.execute(
+                "INSERT INTO monitor_results(monitor_id,ts,status,detail) VALUES(?,?,'down',?)",
+                (monitor["id"], now, detail),
+            )
+            title = f"Monitor {monitor['name']} is down"
+            active_incident = conn.execute(
+                "SELECT 1 FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
+                (monitor["node_id"], title),
+            ).fetchone()
+            if failure_streak >= 2 and not active_incident:
+                create_incident(
+                    conn, node_id=monitor["node_id"], tunnel_id=None, severity="critical", title=title,
+                    detail={"monitor_id": monitor["id"], "reason": "encrypted_secret_unreadable"}, opened_at=now,
+                )
+            continue
+        job_id = conn.execute(
+            "INSERT INTO jobs(node_id,kind,payload,created_at) VALUES(?,?,?,?)",
+            (monitor["node_id"], "monitor_run", json.dumps(payload), now),
+        ).lastrowid
+        conn.execute(
+            "UPDATE monitors SET job_id=?,next_run_at=?,updated_at=? WHERE id=?",
+            (job_id, now + int(monitor["interval_seconds"]), now, monitor["id"]),
+        )
+
+
+def queue_due_fleet_operations(conn: sqlite3.Connection, now: int) -> None:
+    operations = conn.execute(
+        "SELECT * FROM fleet_operations WHERE status='scheduled' AND scheduled_at<=? ORDER BY scheduled_at,id LIMIT 20",
+        (now,),
+    ).fetchall()
+    for operation in operations:
+        payload = json.loads(operation["payload"] or "{}")
+        items = conn.execute(
+            "SELECT * FROM fleet_operation_items WHERE operation_id=? ORDER BY id",
+            (operation["id"],),
+        ).fetchall()
+        for item in items:
+            if item["job_id"]:
+                continue
+            job_id = conn.execute(
+                "INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)",
+                (item["node_id"], operation["kind"], json.dumps(payload), operation["created_by"], now),
+            ).lastrowid
+            conn.execute(
+                "UPDATE fleet_operation_items SET job_id=?,status='queued' WHERE id=?",
+                (job_id, item["id"]),
+            )
+        conn.execute("UPDATE fleet_operations SET status='running',started_at=? WHERE id=?", (now, operation["id"]))
+
+
+def rollup_previous_hour(conn: sqlite3.Connection, now: int) -> None:
+    bucket = ((now // 3600) - 1) * 3600
+    if bucket < 0:
+        return
+    conn.execute(
+        """INSERT INTO metric_rollups(node_id,bucket,samples,cpu_avg,ram_avg,disk_max,load_avg,rx_avg,tx_avg,connections_max)
+           SELECT node_id,?,COUNT(*),AVG(cpu),AVG(ram),MAX(disk),AVG(load1),AVG(rx_bps),AVG(tx_bps),MAX(connections)
+           FROM metrics WHERE ts>=? AND ts<? GROUP BY node_id
+           ON CONFLICT(node_id,bucket) DO UPDATE SET
+             samples=excluded.samples,cpu_avg=excluded.cpu_avg,ram_avg=excluded.ram_avg,
+             disk_max=excluded.disk_max,load_avg=excluded.load_avg,rx_avg=excluded.rx_avg,
+             tx_avg=excluded.tx_avg,connections_max=excluded.connections_max""",
+        (bucket, bucket, bucket + 3600),
+    )
+
+
 async def maintenance_loop() -> None:
     while True:
         try:
+            if not acquire_hub_lease("maintenance"):
+                await asyncio.sleep(15)
+                continue
             cutoff = utc_ts() - NODE_STALE_AFTER
             with db() as conn:
                 stale_nodes = conn.execute("SELECT id,name FROM nodes WHERE last_seen IS NOT NULL AND last_seen < ?", (cutoff,)).fetchall()
                 for stale in stale_nodes:
                     title = f"Node {stale['name']} is offline"
                     if not conn.execute("SELECT 1 FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')", (stale["id"], title)).fetchone():
-                        conn.execute("INSERT INTO incidents(node_id,severity,title,detail,status,opened_at) VALUES(?,?,?,?,?,?)", (stale["id"], "critical", title, json.dumps({"reason": "heartbeat_timeout"}), "open", utc_ts()))
+                        create_incident(conn, node_id=stale["id"], tunnel_id=None, severity="critical", title=title, detail={"reason": "heartbeat_timeout"})
                 online_nodes = conn.execute("SELECT id FROM nodes WHERE last_seen>=?", (cutoff,)).fetchall()
                 for online in online_nodes:
-                    conn.execute("UPDATE incidents SET status='resolved',resolved_at=? WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')", (utc_ts(), online["id"]))
+                    active = conn.execute("SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')", (online["id"],)).fetchall()
+                    for incident in active:
+                        resolve_incident(conn, incident["id"], "Agent heartbeat recovered")
                 conn.execute("UPDATE nodes SET status='offline' WHERE last_seen IS NOT NULL AND last_seen < ?", (cutoff,))
                 conn.execute("DELETE FROM sessions WHERE expires_at < ?", (utc_ts(),))
-                conn.execute("DELETE FROM metrics WHERE ts < ?", (utc_ts() - 31 * 86400,))
+                rollup_previous_hour(conn, utc_ts())
+                conn.execute("DELETE FROM metrics WHERE ts < ?", (utc_ts() - METRIC_RAW_RETENTION_DAYS * 86400,))
+                conn.execute("DELETE FROM metric_rollups WHERE bucket < ?", (utc_ts() - METRIC_ROLLUP_RETENTION_DAYS * 86400,))
+                conn.execute("DELETE FROM monitor_results WHERE ts < ?", (utc_ts() - MONITOR_RESULT_RETENTION_DAYS * 86400,))
                 conn.execute("UPDATE jobs SET status='queued',started_at=NULL WHERE status='running' AND started_at<?", (utc_ts() - 5 * 60,))
                 conn.execute("DELETE FROM jobs WHERE finished_at IS NOT NULL AND finished_at<?", (utc_ts() - 90 * 86400,))
                 conn.execute("DELETE FROM audit_logs WHERE created_at<?", (utc_ts() - 180 * 86400,))
@@ -269,6 +677,8 @@ async def maintenance_loop() -> None:
                     if pending: continue
                     job_id = conn.execute("INSERT INTO jobs(node_id,kind,payload,created_at) VALUES(?,?,?,?)", (cert["node_id"], "certificate_issue", json.dumps({"certificate_id": cert["id"], "domain": cert["domain"], "renew": True}), utc_ts())).lastrowid
                     conn.execute("UPDATE certificates SET status='renewing',job_id=?,updated_at=? WHERE id=?", (job_id, utc_ts(), cert["id"]))
+                queue_due_monitors(conn, utc_ts(), cutoff)
+                queue_due_fleet_operations(conn, utc_ts())
         except Exception:
             LOGGER.exception("maintenance loop failed")
         await asyncio.sleep(30)
@@ -287,6 +697,11 @@ async def lifespan(_: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        try:
+            with db() as conn:
+                conn.execute("DELETE FROM hub_leases WHERE holder=?", (HUB_INSTANCE_ID,))
+        except Exception:
+            LOGGER.exception("Could not release Hub controller leases")
 
 
 app = FastAPI(title="DARK NOC Hub", version=VERSION, lifespan=lifespan)
@@ -294,7 +709,51 @@ app = FastAPI(title="DARK NOC Hub", version=VERSION, lifespan=lifespan)
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    is_ssh_upload = request.method == "POST" and request.url.path.startswith("/api/ssh/upload/") and request.url.path.removeprefix("/api/ssh/upload/").isdigit()
+
+    async def forward_request():
+        # Multipart parsing happens before the endpoint body runs. Bound that
+        # work separately so authenticated clients cannot spool unlimited
+        # concurrent upload bodies while waiting for an SSH transfer slot.
+        if is_ssh_upload:
+            # Do not call Request.is_disconnected() before Starlette parses the
+            # multipart body: doing so can consume an ASGI http.request frame.
+            async with bounded_semaphore(SSH_UPLOAD_REQUEST_SEMAPHORE):
+                return await call_next(request)
+        return await call_next(request)
+
+    if is_ssh_upload:
+        try:
+            current_user(request, request.cookies.get("dark_noc_session"))
+        except HTTPException as exc:
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        else:
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                    if declared_length < 0:
+                        raise ValueError
+                except ValueError:
+                    response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
+                else:
+                    if declared_length > SSH_UPLOAD_LIMIT + SSH_MULTIPART_OVERHEAD:
+                        response = JSONResponse(
+                            status_code=413,
+                            content={"detail": f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit"},
+                        )
+                    else:
+                        try:
+                            response = await forward_request()
+                        except HTTPException as exc:
+                            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            else:
+                try:
+                    response = await forward_request()
+                except HTTPException as exc:
+                    response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    else:
+        response = await forward_request()
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -356,11 +815,11 @@ class NodeBody(BaseModel):
         value = value.strip()
         try:
             ipaddress.ip_address(value)
-            return value
+            return canonical_node_host(value)
         except ValueError:
             if not value or len(value) > 253 or not all(part and len(part) <= 63 and part.replace("-", "a").isalnum() and not part.startswith("-") and not part.endswith("-") for part in value.rstrip(".").split(".")):
                 raise ValueError("Invalid host or IP address")
-            return value.rstrip(".")
+            return canonical_node_host(value)
 
 
 class NodeUpdateBody(NodeBody):
@@ -382,6 +841,70 @@ class SSHRelayBody(BaseModel):
 
 class IncidentActionBody(BaseModel):
     action: str = Field(pattern=r"^(acknowledge|resolve|reopen)$")
+    note: str | None = Field(default=None, max_length=4000)
+    root_cause: str | None = Field(default=None, max_length=4000)
+    resolution: str | None = Field(default=None, max_length=4000)
+
+
+class IncidentNoteBody(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    event_type: str = Field(default="note", pattern=r"^(note|diagnostic|action)$")
+
+
+class MonitorBody(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,64}$")
+    node_id: int = Field(gt=0)
+    kind: str = Field(pattern=r"^(icmp|tcp|http|https|dns|tls|snmp)$")
+    target: str = Field(min_length=1, max_length=512)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    interval_seconds: int = Field(default=60, ge=15, le=86400)
+    timeout_seconds: int = Field(default=5, ge=1, le=60)
+    expected_status: int | None = Field(default=None, ge=100, le=599)
+    snmp_community: str | None = Field(default=None, min_length=1, max_length=256)
+    snmp_oid: str | None = Field(default=None, pattern=r"^\.?[0-9]+(?:\.[0-9]+)+$")
+    enabled: bool = True
+
+    @field_validator("target")
+    @classmethod
+    def validate_monitor_target(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value):
+            raise ValueError("Invalid monitor target")
+        return value
+
+
+class FleetOperationBody(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,80}$")
+    node_ids: list[int] = Field(min_length=1, max_length=200)
+    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|logs|configure_autoheal|sync_agent)$")
+    service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.@-]{1,128}$")
+    payload: dict[str, Any] = Field(default_factory=dict)
+    scheduled_at: int | None = Field(default=None, ge=0)
+
+
+class SSHFileActionBody(BaseModel):
+    action: str = Field(pattern=r"^(mkdir|rename|delete|chmod)$")
+    path: str = Field(min_length=2, max_length=4096)
+    destination: str | None = Field(default=None, min_length=2, max_length=4096)
+    mode: str | None = Field(default=None, pattern=r"^[0-7]{3,4}$")
+
+    @field_validator("path", "destination")
+    @classmethod
+    def validate_file_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return clean_remote_path(value)
+
+
+class SSHFileWriteBody(BaseModel):
+    path: str = Field(min_length=2, max_length=4096)
+    content: str = Field(max_length=16_777_216)
+    overwrite: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def validate_write_path(cls, value: str) -> str:
+        return clean_remote_path(value)
 
 
 class JobBody(BaseModel):
@@ -551,8 +1074,9 @@ def public_job(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     try:
         payload = json.loads(item.get("payload") or "{}")
-        if "token" in payload:
-            payload["token"] = "[REDACTED]"
+        for key in list(payload):
+            if any(word in key.casefold() for word in ("token", "password", "secret", "community", "private_key")):
+                payload[key] = "[REDACTED]"
         item["payload"] = json.dumps(payload)
     except (TypeError, ValueError):
         item["payload"] = "{}"
@@ -580,8 +1104,53 @@ def public_node(row: sqlite3.Row, metric: sqlite3.Row | None = None) -> dict[str
     data["ssh_host_fingerprint"] = row["ssh_host_fingerprint"]
     data["metric"] = dict(metric) if metric else None
     if data["metric"]:
-        data["metric"].pop("payload", None)
+        try:
+            data["metric"]["detail"] = json.loads(data["metric"].pop("payload", "{}") or "{}")
+        except (TypeError, ValueError):
+            data["metric"]["detail"] = {}
     return data
+
+
+def public_monitor(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item.pop("secret_enc", None)
+    if "node_last_seen" in item:
+        item["runner_status"] = "online" if item["node_last_seen"] and int(item["node_last_seen"]) >= utc_ts() - NODE_STALE_AFTER else "offline"
+    try:
+        item["detail"] = json.loads(item.get("detail") or "{}")
+    except (TypeError, ValueError):
+        item["detail"] = {"message": str(item.get("detail") or "")[:1000]}
+    return item
+
+
+def monitor_values(body: MonitorBody, existing_secret: str | None = None) -> tuple[str, int | None, str | None, str | None]:
+    target = body.target.strip()
+    port = body.port
+    if body.kind in {"icmp", "tcp", "dns", "tls", "snmp"}:
+        if "://" in target or "/" in target:
+            raise HTTPException(422, f"{body.kind.upper()} target must be a hostname or IP address")
+        target = NodeBody.validate_host(target)
+    if body.kind == "tcp" and not port:
+        raise HTTPException(422, "TCP monitor requires a port")
+    if body.kind == "tls":
+        port = port or 443
+    if body.kind == "snmp":
+        port = port or 161
+        if not body.snmp_community and not existing_secret:
+            raise HTTPException(422, "SNMP monitor requires a community string")
+        if not body.snmp_oid:
+            raise HTTPException(422, "SNMP monitor requires an OID")
+    if body.kind in {"http", "https"}:
+        lowered = target.casefold()
+        if "://" in target and not lowered.startswith(f"{body.kind}://"):
+            raise HTTPException(422, f"{body.kind.upper()} monitor must use {body.kind}://")
+    secret = encrypt(body.snmp_community) if body.snmp_community else existing_secret
+    oid = body.snmp_oid
+    if body.kind != "snmp":
+        secret, oid = None, None
+    expected_status = body.expected_status if body.kind in {"http", "https"} else None
+    body.expected_status = expected_status
+    return target, port, secret, oid
 
 
 def ssh_connection_options(node: sqlite3.Row, password: str | None, key: str | None) -> dict[str, Any]:
@@ -607,22 +1176,29 @@ def ssh_connection_options(node: sqlite3.Row, password: str | None, key: str | N
     options: dict[str, Any] = {
         "host": node["host"], "port": node["ssh_port"], "username": node["ssh_user"],
         "known_hosts": ([], [], [], [], [], [], []), "client_factory": PinnedSSHClient,
-        "connect_timeout": 15,
+        "connect_timeout": 15, "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
+        "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
     }
     if key:
         options["client_keys"] = [asyncssh.import_private_key(key)]
-    elif password:
+    if password:
         options["password"] = password
     return options
 
 
-async def provision_node(node_id: int, enrollment: str) -> None:
+async def _provision_node_impl(node_id: int, enrollment: str) -> None:
     log: list[str] = []
+    old_token_hash: str | None = None
+    activated_token_hash: str | None = None
+    token_hash_changed = False
     try:
         with db() as conn_db:
             node = conn_db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not node:
             return
+        if node["provision_status"] != "provisioning":
+            return
+        old_token_hash = node["agent_token_hash"]
         password, key = decrypt(node["ssh_password_enc"]), decrypt(node["ssh_key_enc"])
         if not password and not key:
             raise RuntimeError("SSH password or private key is required for automatic installation")
@@ -633,9 +1209,10 @@ async def provision_node(node_id: int, enrollment: str) -> None:
         async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
             prep = await ssh.run(
                 "export DEBIAN_FRONTEND=noninteractive; "
-                "apt-get update -qq && apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar openssl iproute2 iputils-ping iptables iperf3 && "
+                "apt-get update -qq && apt-get install -y python3 python3-venv python3-pip ca-certificates certbot curl tar openssl iproute2 iputils-ping iptables iperf3 snmp && "
                 "install -d -m 0755 /opt/dark-noc-agent && "
-                "install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro",
+                "install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro && "
+                "install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge",
                 check=False, timeout=600,
             )
             log.append((prep.stdout + prep.stderr).strip()[-6000:])
@@ -667,77 +1244,361 @@ async def provision_node(node_id: int, enrollment: str) -> None:
                 "speedtest": {"host": "", "port": 5201}, "auto_discovery": True,
                 "autoheal": {"enabled": False, "cooldown_seconds": 300, "max_restarts_per_hour": 3},
             }
+            operation_id = secrets.token_hex(8)
+            staged_files: list[dict[str, Any]] = []
+            activated_files: list[dict[str, Any]] = []
+            venv_target = "/opt/dark-noc-agent/venv"
+            venv_stage = f"/opt/dark-noc-agent/.venv.darknoc-{operation_id}.part"
+            venv_backup = f"/opt/dark-noc-agent/.venv.darknoc-{operation_id}.bak"
+            venv_installed = False
+            venv_backup_created = False
+            restart_attempted = False
+            service_was_active = False
+            service_was_enabled = False
+
             async with ssh.start_sftp_client() as sftp:
                 try:
                     async with sftp.open("/etc/dark-noc-agent/config.json", "r") as old_remote_config:
                         old_content = await old_remote_config.read()
+                except asyncssh.SFTPNoSuchFile:
+                    old_config: dict[str, Any] | None = None
+                    log.append("No existing Agent configuration found; preparing a fresh enrollment")
+                else:
                     if isinstance(old_content, bytes):
                         old_content = old_content.decode("utf-8")
                     old_config = json.loads(old_content)
-                    if isinstance(old_config, dict):
-                        old_config.update({"hub_url": hub_url, "agent_token": enrollment, "verify_tls": tls_verify})
-                        old_config.setdefault("interval_seconds", 15)
-                        old_config.setdefault("services", [])
-                        old_config.setdefault("managed_services", [])
-                        old_config.setdefault("tunnels", [])
-                        old_config.setdefault("speedtest", {"host": "", "port": 5201})
-                        old_config.setdefault("auto_discovery", True)
-                        old_config.setdefault("autoheal", {"enabled": False, "cooldown_seconds": 300, "max_restarts_per_hour": 3})
-                        config = old_config
-                        log.append("Existing DARK NOC Agent rules preserved")
-                except Exception:
-                    pass
-                await sftp.put(str(agent_file), "/opt/dark-noc-agent/agent.py")
-                await sftp.put(str(requirements_file), "/opt/dark-noc-agent/requirements.txt")
-                await sftp.put(str(service_file), "/etc/systemd/system/dark-noc-agent.service")
-                async with sftp.open("/etc/dark-noc-agent/config.json", "w") as remote_config:
-                    await remote_config.write(json.dumps(config, indent=2))
-                await sftp.chmod("/etc/dark-noc-agent/config.json", 0o600)
-                await sftp.chmod("/opt/dark-noc-agent/agent.py", 0o755)
+                    if not isinstance(old_config, dict):
+                        raise RuntimeError("Existing Agent configuration is not a JSON object; refusing to overwrite it")
+                    remote_token = old_config.get("agent_token")
+                    if remote_token is not None and not isinstance(remote_token, str):
+                        raise RuntimeError("Existing Agent token is malformed; refusing to overwrite its configuration")
+                    remote_hub_url = old_config.get("hub_url")
+                    if remote_hub_url is not None and not isinstance(remote_hub_url, str):
+                        raise RuntimeError("Existing Agent Hub URL is malformed; refusing to overwrite its configuration")
+                    if remote_token:
+                        remote_token_hash = token_hash(remote_token)
+                        if old_token_hash and hmac.compare_digest(remote_token_hash, old_token_hash):
+                            enrollment = remote_token
+                            log.append("Existing Agent enrollment token verified and reused")
+                        else:
+                            with db() as ownership_db:
+                                owner = ownership_db.execute(
+                                    "SELECT id,name FROM nodes WHERE id<>? AND agent_token_hash=?",
+                                    (node_id, remote_token_hash),
+                                ).fetchone()
+                            if owner:
+                                raise RuntimeError(f"Remote Agent belongs to another DARK NOC Node ({owner['name']}); refusing takeover")
+                            if not remote_hub_url or remote_hub_url.rstrip("/").casefold() != hub_url.rstrip("/").casefold():
+                                raise RuntimeError("Remote Agent points to a different Hub; refusing takeover")
+                            enrollment = remote_token
+                            log.append("Recovered the unowned Agent enrollment token for this Hub")
+                    old_config.update({"hub_url": hub_url, "agent_token": enrollment, "verify_tls": tls_verify})
+                    old_config.setdefault("interval_seconds", 15)
+                    old_config.setdefault("services", [])
+                    old_config.setdefault("managed_services", [])
+                    old_config.setdefault("tunnels", [])
+                    old_config.setdefault("speedtest", {"host": "", "port": 5201})
+                    old_config.setdefault("auto_discovery", True)
+                    old_config.setdefault("autoheal", {"enabled": False, "cooldown_seconds": 300, "max_restarts_per_hour": 3})
+                    config = old_config
+                    log.append("Existing DARK NOC Agent rules preserved")
+
+                activated_token_hash = token_hash(enrollment)
+                payloads: list[tuple[str, bytes, int]] = [
+                    ("/opt/dark-noc-agent/agent.py", agent_file.read_bytes(), 0o755),
+                    ("/opt/dark-noc-agent/requirements.txt", requirements_file.read_bytes(), 0o644),
+                    ("/etc/systemd/system/dark-noc-agent.service", service_file.read_bytes(), 0o644),
+                    ("/etc/dark-noc-agent/config.json", (json.dumps(config, indent=2) + "\n").encode(), 0o600),
+                ]
                 if tls_verify is not True:
                     if not cert_file.is_file():
                         raise RuntimeError("Hub self-signed certificate is missing")
-                    await sftp.put(str(cert_file), "/etc/dark-noc-agent/hub-ca.crt")
-                    await sftp.chmod("/etc/dark-noc-agent/hub-ca.crt", 0o600)
+                    payloads.append(("/etc/dark-noc-agent/hub-ca.crt", cert_file.read_bytes(), 0o600))
 
-            health_command = ["curl", "-fsS", "--max-time", "15"]
-            if tls_verify is not True:
-                health_command.extend(["--cacert", str(tls_verify)])
-            health_command.append(f"{hub_url}/healthz")
-            health_result = await ssh.run(" ".join(shlex.quote(part) for part in health_command), check=False, timeout=30)
-            if health_result.exit_status != 0:
-                raise RuntimeError("Node cannot reach the Hub HTTPS endpoint; check DNS, firewall and port 443")
-            log.append("Hub HTTPS health check passed from Node")
+                async def remove_remote_tree(path: str) -> None:
+                    result = await ssh.run(f"rm -rf -- {shlex.quote(path)}", check=False, timeout=120)
+                    if result.exit_status != 0:
+                        raise RuntimeError(f"Could not remove staged directory {path}")
 
-            install_result = await ssh.run(
-                "python3 -m venv /opt/dark-noc-agent/venv && "
-                "/opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt && "
-                "systemctl daemon-reload && systemctl enable --now dark-noc-agent.service && "
-                "systemctl restart dark-noc-agent.service && systemctl is-active dark-noc-agent.service",
-                check=False, timeout=600,
-            )
-            log.append((install_result.stdout + install_result.stderr).strip()[-6000:])
-            if install_result.exit_status != 0 or "active" not in install_result.stdout:
-                raise RuntimeError(f"Agent service installation failed (exit {install_result.exit_status})")
+                async def backup_remote_file(source: str, backup: str) -> None:
+                    result = await ssh.run(
+                        f"test ! -e {shlex.quote(backup)} && "
+                        f"cp --reflink=auto --preserve=all -- {shlex.quote(source)} {shlex.quote(backup)}",
+                        check=False,
+                        timeout=60,
+                    )
+                    if result.exit_status != 0:
+                        raise RuntimeError(f"Could not stage rollback copy for {source}")
 
-        enrolled = False
-        for _ in range(12):
-            await asyncio.sleep(2.5)
-            with db() as conn_db:
-                heartbeat = conn_db.execute("SELECT last_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
-            if heartbeat and heartbeat["last_seen"] and heartbeat["last_seen"] >= utc_ts() - 45:
-                enrolled = True
-                break
-        if not enrolled:
-            raise RuntimeError("Agent service started but no heartbeat reached the Hub within 30 seconds; open INSTALL LOG and check TLS/network")
-        log.append("Agent heartbeat received; Node is online")
-        with db() as conn_db:
-            conn_db.execute("UPDATE nodes SET provision_status='completed',provision_output=?,updated_at=? WHERE id=?", ("\n".join(log)[-12000:], utc_ts(), node_id))
-    except Exception as exc:
+                try:
+                    for target, payload, final_mode in payloads:
+                        entry = {
+                            "target": target,
+                            "temporary": f"{target}.darknoc-{operation_id}.part",
+                            "backup": f"{target}.darknoc-{operation_id}.bak",
+                            "mode": final_mode,
+                            "stage_created": False,
+                            "backup_created": False,
+                            "installed": False,
+                        }
+                        staged_files.append(entry)
+                        async with sftp.open(
+                            entry["temporary"],
+                            "xb",
+                            attrs=asyncssh.SFTPAttrs(permissions=0o600),
+                        ) as remote_stage:
+                            entry["stage_created"] = True
+                            await remote_stage.write(payload)
+                        staged_attrs = await sftp.stat(entry["temporary"])
+                        if staged_attrs.size is not None and int(staged_attrs.size) != len(payload):
+                            raise RuntimeError(f"Staged Agent payload size mismatch for {target}")
+
+                    requirements_stage = next(entry["temporary"] for entry in staged_files if entry["target"].endswith("requirements.txt"))
+                    venv_result = await ssh.run(
+                        f"test ! -e {shlex.quote(venv_stage)} && "
+                        f"python3 -m venv {shlex.quote(venv_stage)} && "
+                        f"{shlex.quote(venv_stage + '/bin/pip')} install --disable-pip-version-check -r {shlex.quote(requirements_stage)}",
+                        check=False,
+                        timeout=600,
+                    )
+                    log.append((venv_result.stdout + venv_result.stderr).strip()[-6000:])
+                    if venv_result.exit_status != 0:
+                        raise RuntimeError(f"Agent dependency staging failed (exit {venv_result.exit_status})")
+
+                    active_result = await ssh.run("systemctl is-active dark-noc-agent.service", check=False, timeout=15)
+                    enabled_result = await ssh.run("systemctl is-enabled dark-noc-agent.service", check=False, timeout=15)
+                    service_was_active = active_result.stdout.strip() == "active"
+                    service_was_enabled = enabled_result.stdout.strip() == "enabled"
+                except BaseException:
+                    for entry in staged_files:
+                        if entry["stage_created"]:
+                            await asyncio.shield(cleanup_sftp_path(sftp, entry["temporary"]))
+                    try:
+                        await asyncio.shield(remove_remote_tree(venv_stage))
+                    except BaseException:
+                        LOGGER.warning("Could not clean failed Agent staging directory %s", venv_stage, exc_info=True)
+                    raise
+
+                async def rollback_activation() -> None:
+                    nonlocal token_hash_changed
+                    rollback_errors: list[str] = []
+                    if restart_attempted:
+                        try:
+                            await ssh.run("systemctl stop dark-noc-agent.service", check=False, timeout=60)
+                        except BaseException as rollback_exc:
+                            rollback_errors.append(f"service stop: {rollback_exc}")
+                    try:
+                        if venv_installed and await sftp_path_exists(sftp, venv_target):
+                            await remove_remote_tree(venv_target)
+                        if venv_backup_created and await sftp_path_exists(sftp, venv_backup):
+                            await sftp.rename(venv_backup, venv_target)
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(f"venv: {rollback_exc}")
+                    for entry in reversed(activated_files):
+                        try:
+                            if entry["backup_created"] and await sftp_path_exists(sftp, entry["backup"]):
+                                if entry["installed"]:
+                                    await sftp.posix_rename(entry["backup"], entry["target"])
+                                else:
+                                    await sftp.remove(entry["backup"])
+                            elif entry["installed"] and await sftp_path_exists(sftp, entry["target"]):
+                                await sftp.remove(entry["target"])
+                        except BaseException as rollback_exc:
+                            rollback_errors.append(f"{entry['target']}: {rollback_exc}")
+                    if token_hash_changed and activated_token_hash:
+                        try:
+                            with db() as rollback_db:
+                                restored = rollback_db.execute(
+                                    "UPDATE nodes SET agent_token_hash=?,updated_at=? WHERE id=? AND agent_token_hash=?",
+                                    (old_token_hash, utc_ts(), node_id, activated_token_hash),
+                                ).rowcount
+                            if restored != 1:
+                                rollback_errors.append("database enrollment token changed concurrently")
+                            else:
+                                token_hash_changed = False
+                        except BaseException as rollback_exc:
+                            rollback_errors.append(f"database token: {rollback_exc}")
+                    if restart_attempted:
+                        restore_parts = ["systemctl daemon-reload"]
+                        restore_parts.append("systemctl enable dark-noc-agent.service" if service_was_enabled else "systemctl disable dark-noc-agent.service")
+                        restore_parts.append("systemctl restart dark-noc-agent.service" if service_was_active else "systemctl stop dark-noc-agent.service")
+                        try:
+                            restored_service = await ssh.run("; ".join(restore_parts), check=False, timeout=120)
+                            if restored_service.exit_status != 0 and service_was_active:
+                                rollback_errors.append("previous Agent service could not be restarted")
+                        except BaseException as rollback_exc:
+                            rollback_errors.append(f"service restore: {rollback_exc}")
+                    if rollback_errors:
+                        log.append("ROLLBACK WARNINGS: " + "; ".join(rollback_errors))
+
+                try:
+                    for entry in staged_files:
+                        await sftp.chmod(entry["temporary"], entry["mode"])
+                        activated_files.append(entry)
+                        if await sftp_path_exists(sftp, entry["target"]):
+                            await backup_remote_file(entry["target"], entry["backup"])
+                            entry["backup_created"] = True
+                            await sftp.posix_rename(entry["temporary"], entry["target"])
+                        else:
+                            await sftp.rename(entry["temporary"], entry["target"])
+                        entry["installed"] = True
+
+                    if await sftp_path_exists(sftp, venv_target):
+                        await sftp.rename(venv_target, venv_backup)
+                        venv_backup_created = True
+                    await sftp.rename(venv_stage, venv_target)
+                    venv_installed = True
+
+                    health_command = ["curl", "-fsS", "--max-time", "15"]
+                    if tls_verify is not True:
+                        health_command.extend(["--cacert", str(tls_verify)])
+                    health_command.append(f"{hub_url}/healthz")
+                    health_result = await ssh.run(" ".join(shlex.quote(part) for part in health_command), check=False, timeout=30)
+                    if health_result.exit_status != 0:
+                        raise RuntimeError("Node cannot reach the Hub HTTPS endpoint; check DNS, firewall and port 443")
+                    log.append("Hub HTTPS health check passed from Node")
+
+                    with db() as activation_db:
+                        changed = activation_db.execute(
+                            """UPDATE nodes SET agent_token_hash=?,updated_at=?
+                               WHERE id=? AND provision_status='provisioning' AND agent_token_hash IS ?""",
+                            (activated_token_hash, utc_ts(), node_id, old_token_hash),
+                        ).rowcount
+                    if changed != 1:
+                        raise RuntimeError("Node enrollment changed while Agent activation was staged")
+                    token_hash_changed = activated_token_hash != old_token_hash
+
+                    restart_attempted = True
+                    install_result = await ssh.run(
+                        "systemctl daemon-reload && systemctl enable dark-noc-agent.service && "
+                        "systemctl restart dark-noc-agent.service && systemctl is-active dark-noc-agent.service",
+                        check=False,
+                        timeout=120,
+                    )
+                    log.append((install_result.stdout + install_result.stderr).strip()[-6000:])
+                    if install_result.exit_status != 0 or install_result.stdout.strip().splitlines()[-1:] != ["active"]:
+                        raise RuntimeError(f"Agent service activation failed (exit {install_result.exit_status})")
+
+                    with db() as heartbeat_db:
+                        baseline_row = heartbeat_db.execute("SELECT last_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
+                    baseline_last_seen = int(baseline_row["last_seen"] or 0) if baseline_row else 0
+                    enrolled = False
+                    for _ in range(12):
+                        await asyncio.sleep(2.5)
+                        with db() as conn_db:
+                            heartbeat = conn_db.execute("SELECT last_seen FROM nodes WHERE id=?", (node_id,)).fetchone()
+                        if heartbeat and int(heartbeat["last_seen"] or 0) > baseline_last_seen:
+                            enrolled = True
+                            break
+                    if not enrolled:
+                        raise RuntimeError("Agent service started but no new heartbeat reached the Hub within 30 seconds; open INSTALL LOG and check TLS/network")
+                    log.append("Agent heartbeat received; Node is online")
+                    with db() as completion_db:
+                        completed = completion_db.execute(
+                            """UPDATE nodes SET provision_status='completed',provision_output=?,updated_at=?
+                               WHERE id=? AND provision_status='provisioning' AND agent_token_hash IS ?""",
+                            ("\n".join(log)[-12000:], utc_ts(), node_id, activated_token_hash),
+                        ).rowcount
+                    if completed != 1:
+                        raise RuntimeError("Node provisioning state changed before activation completed")
+                except BaseException:
+                    await asyncio.shield(rollback_activation())
+                    raise
+                finally:
+                    for entry in staged_files:
+                        await asyncio.shield(cleanup_sftp_path(sftp, entry["temporary"]))
+                    try:
+                        if await sftp_path_exists(sftp, venv_stage):
+                            await asyncio.shield(remove_remote_tree(venv_stage))
+                    except BaseException:
+                        LOGGER.warning("Could not remove staged Agent virtualenv %s", venv_stage, exc_info=True)
+
+                for entry in activated_files:
+                    if entry["backup_created"]:
+                        try:
+                            await sftp.remove(entry["backup"])
+                        except Exception:
+                            LOGGER.warning("Could not remove Agent backup %s", entry["backup"], exc_info=True)
+                if venv_backup_created:
+                    try:
+                        await remove_remote_tree(venv_backup)
+                    except Exception:
+                        LOGGER.warning("Could not remove Agent virtualenv backup %s", venv_backup, exc_info=True)
+
+    except BaseException as exc:
         log.append(f"ERROR: {str(exc).strip() or exc.__class__.__name__}")
         LOGGER.warning("Automatic provisioning failed for node %s: %s", node_id, exc)
         with db() as conn_db:
-            conn_db.execute("UPDATE nodes SET provision_status='failed',provision_output=?,updated_at=? WHERE id=?", ("\n".join(log)[-12000:], utc_ts(), node_id))
+            conn_db.execute(
+                """UPDATE nodes SET provision_status='failed',provision_output=?,updated_at=?
+                   WHERE id=? AND provision_status='provisioning'""",
+                ("\n".join(log)[-12000:], utc_ts(), node_id),
+            )
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+
+
+async def provision_node(node_id: int, enrollment: str) -> None:
+    with db() as conn_db:
+        node = conn_db.execute("SELECT id,host,ssh_port,provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
+    if not node or node["provision_status"] != "provisioning":
+        return
+    endpoint_lock = provision_endpoint_lock(node["host"], node["ssh_port"])
+    try:
+        async with asyncio.timeout(NODE_PROVISION_TIMEOUT):
+            async with NODE_PROVISION_SEMAPHORE:
+                async with endpoint_lock:
+                    with db() as conn_db:
+                        current = conn_db.execute("SELECT id,host,ssh_port,provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
+                        if not current or current["provision_status"] != "provisioning":
+                            return
+                        conflict = node_endpoint_conflict(conn_db, current["host"], current["ssh_port"], node_id)
+                    if conflict:
+                        message = f"Provisioning refused: SSH endpoint is already registered as {conflict['name']}."
+                        with db() as conn_db:
+                            conn_db.execute(
+                                "UPDATE nodes SET provision_status='failed',provision_output=?,updated_at=? WHERE id=? AND provision_status='provisioning'",
+                                (message, utc_ts(), node_id),
+                            )
+                        return
+                    await _provision_node_impl(node_id, enrollment)
+    except TimeoutError:
+        message = f"Provisioning exceeded the {NODE_PROVISION_TIMEOUT // 60} minute safety timeout and was stopped. Retry INSTALL/SYNC AGENT."
+        with db() as conn_db:
+            conn_db.execute(
+                """UPDATE nodes SET provision_status='failed',provision_output=?,updated_at=?
+                   WHERE id=? AND provision_status IN ('provisioning','failed')""",
+                (message, utc_ts(), node_id),
+            )
+        LOGGER.warning("Automatic provisioning timed out for node %s", node_id)
+
+
+def finalize_fleet_operation(conn: sqlite3.Connection, operation_id: int) -> None:
+    counts = conn.execute(
+        """SELECT COUNT(*) total,
+                  SUM(CASE WHEN status IN ('completed','failed','cancelled') THEN 1 ELSE 0 END) terminal,
+                  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,
+                  SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) cancelled
+           FROM fleet_operation_items WHERE operation_id=?""",
+        (operation_id,),
+    ).fetchone()
+    if counts and counts["total"] and counts["terminal"] == counts["total"]:
+        status = "failed" if counts["failed"] else "cancelled" if counts["cancelled"] else "completed"
+        conn.execute("UPDATE fleet_operations SET status=?,finished_at=? WHERE id=?", (status, utc_ts(), operation_id))
+
+
+async def provision_node_for_fleet(item_id: int, node_id: int, enrollment: str) -> None:
+    try:
+        await provision_node(node_id, enrollment)
+    finally:
+        with db() as conn:
+            item = conn.execute("SELECT operation_id FROM fleet_operation_items WHERE id=?", (item_id,)).fetchone()
+            node = conn.execute("SELECT provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
+            if not item:
+                return
+            status = "completed" if node and node["provision_status"] == "completed" else "failed"
+            conn.execute("UPDATE fleet_operation_items SET status=? WHERE id=?", (status, item_id))
+            finalize_fleet_operation(conn, item["operation_id"])
 
 
 def login_rate_check(ip: str) -> None:
@@ -821,7 +1682,7 @@ def dashboard(_: sqlite3.Row = Depends(current_user)):
     tunnel_counts = {r["status"]: r["count"] for r in tunnel_rows}
     component_total = sum(node_counts.values()) + sum(tunnel_counts.values())
     health_percent = round(100 * (node_counts.get("online", 0) + tunnel_counts.get("healthy", 0)) / component_total, 1) if component_total else 0.0
-    return {"nodes": node_counts, "tunnels": tunnel_counts, "health_percent": health_percent, "rx_bps": totals["rx"], "tx_bps": totals["tx"], "throughput_bps": totals["rx"] + totals["tx"], "connections": totals["connections"], "open_incidents": incidents, "server_time": utc_ts()}
+    return {"nodes": node_counts, "tunnels": tunnel_counts, "health_percent": health_percent, "rx_bps": totals["rx"], "tx_bps": totals["tx"], "throughput_bps": totals["rx"] + totals["tx"], "connections": totals["connections"], "open_incidents": incidents, "server_time": utc_ts(), "limits": {"ssh_upload_bytes": SSH_UPLOAD_LIMIT, "ssh_relay_bytes": SSH_RELAY_LIMIT, "ssh_upload_queue_seconds": SSH_UPLOAD_QUEUE_TIMEOUT}}
 
 
 @app.get("/api/dashboard/traffic")
@@ -876,12 +1737,19 @@ def create_node(body: NodeBody, background: BackgroundTasks, request: Request, u
     now = utc_ts()
     try:
         with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conflict = node_endpoint_conflict(conn, body.host, body.ssh_port)
+            if conflict:
+                raise HTTPException(409, f"SSH endpoint is already registered as {conflict['name']}")
             cursor = conn.execute("INSERT INTO nodes(name,region,role,host,ssh_port,ssh_user,ssh_password_enc,ssh_key_enc,agent_token_hash,status,provision_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (body.name, body.region, body.role, body.host, body.ssh_port, body.ssh_user, encrypt(body.ssh_password), encrypt(body.ssh_private_key), token_hash(enrollment), "pending", "provisioning", now, now))
             node_id = cursor.lastrowid
     except sqlite3.IntegrityError:
         raise HTTPException(409, "Node name already exists")
-    audit(user["id"], "node_create", body.name, f"Node {body.host} registered", request.client.host if request.client else None)
     background.add_task(provision_node, node_id, enrollment)
+    try:
+        audit(user["id"], "node_create", body.name, f"Node {body.host} registered", request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record Node creation audit event")
     return {"id": node_id, "name": body.name, "provisioning": True, "message": "Secure SSH installation started"}
 
 
@@ -889,6 +1757,7 @@ def create_node(body: NodeBody, background: BackgroundTasks, request: Request, u
 def retry_node_provision(node_id: int, background: BackgroundTasks, request: Request, user: sqlite3.Row = Depends(current_user)):
     enrollment = secrets.token_urlsafe(36)
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         node = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not node:
             raise HTTPException(404, "Node not found")
@@ -896,18 +1765,32 @@ def retry_node_provision(node_id: int, background: BackgroundTasks, request: Req
             raise HTTPException(400, "The local Hub Agent is managed by the Hub installer")
         if not node["ssh_password_enc"] and not node["ssh_key_enc"]:
             raise HTTPException(400, "Configure SSH credentials before retrying installation")
-        conn.execute("UPDATE nodes SET agent_token_hash=?,status='pending',last_seen=NULL,provision_status='provisioning',provision_output='',updated_at=? WHERE id=?", (token_hash(enrollment), utc_ts(), node_id))
+        conflict = node_endpoint_conflict(conn, node["host"], node["ssh_port"], node_id)
+        if conflict:
+            raise HTTPException(409, f"SSH endpoint is already registered as {conflict['name']}")
+        changed = conn.execute(
+            """UPDATE nodes SET provision_status='provisioning',provision_output='',updated_at=?
+               WHERE id=? AND COALESCE(provision_status,'')<>'provisioning'""",
+            (utc_ts(), node_id),
+        ).rowcount
+        if changed != 1:
+            raise HTTPException(409, "Agent installation or synchronization is already running")
     background.add_task(provision_node, node_id, enrollment)
-    audit(user["id"], "node_provision_retry", node["name"], "Automatic Agent installation retried", request.client.host if request.client else None)
+    try:
+        audit(user["id"], "node_provision_retry", node["name"], "Automatic Agent installation retried", request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record Agent synchronization audit event")
     return {"ok": True, "provisioning": True}
 
 
 @app.delete("/api/nodes/{node_id}")
 def delete_node(node_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
     with db() as conn:
-        row = conn.execute("SELECT name FROM nodes WHERE id=?", (node_id,)).fetchone()
+        row = conn.execute("SELECT name,provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Node not found")
+        if row["provision_status"] == "provisioning":
+            raise HTTPException(409, "Wait for Agent installation or synchronization to finish before deleting this Node")
         deployment = conn.execute("SELECT id FROM plugin_deployments WHERE lifecycle IN ('active','removing','rolling_back') AND (iran_node_id=? OR kharej_node_id=?) LIMIT 1", (node_id, node_id)).fetchone()
         if deployment:
             raise HTTPException(409, "Remove active DARK NOC tunnel deployments before deleting this node")
@@ -919,9 +1802,15 @@ def delete_node(node_id: int, request: Request, user: sqlite3.Row = Depends(curr
 @app.put("/api/nodes/{node_id}")
 def update_node(node_id: int, body: NodeUpdateBody, request: Request, user: sqlite3.Row = Depends(current_user)):
     with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         current = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not current:
             raise HTTPException(404, "Node not found")
+        if current["provision_status"] == "provisioning":
+            raise HTTPException(409, "Wait for Agent installation or synchronization to finish before editing this Node")
+        conflict = node_endpoint_conflict(conn, body.host, body.ssh_port, node_id)
+        if conflict:
+            raise HTTPException(409, f"SSH endpoint is already registered as {conflict['name']}")
         password_enc = encrypt(body.ssh_password) if body.ssh_password else current["ssh_password_enc"]
         key_enc = encrypt(body.ssh_private_key) if body.ssh_private_key else current["ssh_key_enc"]
         reset_pin = current["host"] != body.host or current["ssh_port"] != body.ssh_port
@@ -939,9 +1828,11 @@ def update_node(node_id: int, body: NodeUpdateBody, request: Request, user: sqli
 @app.delete("/api/nodes/{node_id}/ssh-fingerprint")
 def reset_ssh_fingerprint(node_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
     with db() as conn:
-        row = conn.execute("SELECT name FROM nodes WHERE id=?", (node_id,)).fetchone()
+        row = conn.execute("SELECT name,provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Node not found")
+        if row["provision_status"] == "provisioning":
+            raise HTTPException(409, "Wait for Agent installation or synchronization to finish before resetting its SSH fingerprint")
         conn.execute("UPDATE nodes SET ssh_host_fingerprint=NULL,updated_at=? WHERE id=?", (utc_ts(), node_id))
     audit(user["id"], "ssh_pin_reset", row["name"], "SSH host fingerprint reset", request.client.host if request.client else None)
     return {"ok": True}
@@ -966,20 +1857,68 @@ async def sftp_path_exists(sftp: Any, path: str) -> bool:
         return False
 
 
+async def cleanup_sftp_path(sftp: Any, path: str) -> None:
+    try:
+        if await sftp_path_exists(sftp, path):
+            await sftp.remove(path)
+    except BaseException:
+        LOGGER.warning("Could not clean up temporary SSH file %s", path, exc_info=True)
+
+
 async def finalize_sftp_file(sftp: Any, temporary_path: str, destination_path: str, overwrite: bool) -> None:
-    if await sftp_path_exists(sftp, destination_path):
-        if not overwrite:
-            raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
-        attrs = await sftp.stat(destination_path)
-        if attrs.permissions is not None and statmod.S_ISDIR(attrs.permissions):
-            raise HTTPException(409, "Destination points to a directory")
-        await sftp.remove(destination_path)
-    await sftp.rename(temporary_path, destination_path)
+    if not await sftp_path_exists(sftp, destination_path):
+        await sftp.rename(temporary_path, destination_path)
+        return
+    if not overwrite:
+        raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
+    attrs = await sftp.stat(destination_path)
+    if attrs.permissions is not None and statmod.S_ISDIR(attrs.permissions):
+        raise HTTPException(409, "Destination points to a directory")
+    if attrs.permissions is not None:
+        await sftp.chmod(temporary_path, statmod.S_IMODE(attrs.permissions))
+
+    try:
+        # OpenSSH's POSIX rename extension replaces the destination in one
+        # atomic filesystem operation, so readers never observe a gap.
+        await sftp.posix_rename(temporary_path, destination_path)
+        return
+    except asyncssh.SFTPOpUnsupported:
+        # Older/non-OpenSSH servers get the recoverable backup/swap path.
+        pass
+
+    backup_path = f"{destination_path}.darknoc-{secrets.token_hex(8)}.bak"
+    failed_path = f"{temporary_path}.failed-{secrets.token_hex(4)}"
+    try:
+        await sftp.rename(destination_path, backup_path)
+        await sftp.rename(temporary_path, destination_path)
+    except BaseException:
+        async def rollback() -> None:
+            if not await sftp_path_exists(sftp, backup_path):
+                return
+            if await sftp_path_exists(sftp, destination_path):
+                await sftp.rename(destination_path, failed_path)
+            await sftp.rename(backup_path, destination_path)
+            await cleanup_sftp_path(sftp, failed_path)
+
+        try:
+            await asyncio.shield(rollback())
+        except BaseException:
+            LOGGER.exception("SSH overwrite rollback failed; original is retained at %s", backup_path)
+        raise
+
+    try:
+        await sftp.remove(backup_path)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        LOGGER.warning("Could not remove SSH overwrite backup %s", backup_path, exc_info=True)
 
 
-def ssh_file_error(exc: Exception) -> HTTPException:
+def ssh_file_error(exc: BaseException) -> HTTPException:
     if isinstance(exc, HTTPException):
         return exc
+    if isinstance(exc, TimeoutError):
+        return HTTPException(504, "Secure file operation timed out")
     detail = str(exc).strip().replace("\n", " ")[:260] or exc.__class__.__name__
     LOGGER.warning("SSH file operation failed: %s", detail)
     return HTTPException(502, f"Secure file operation failed: {detail}")
@@ -995,51 +1934,68 @@ async def ssh_upload_file(
     user: sqlite3.Row = Depends(current_user),
 ):
     node, password, key = ssh_file_node(node_id)
+    if file.size is not None and file.size > SSH_UPLOAD_LIMIT:
+        await file.close()
+        raise HTTPException(413, f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit")
     try:
         destination = clean_remote_path(remote_path, filename=file.filename)
     except ValueError as exc:
+        await file.close()
         raise HTTPException(400, str(exc)) from exc
+    if not destructive_remote_path_allowed(destination):
+        await file.close()
+        raise HTTPException(400, "This protected system path cannot be replaced through file upload")
     temporary = f"{destination}.darknoc-{secrets.token_hex(8)}.part"
     transferred = 0
-    sftp = None
     try:
-        async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-            async with ssh.start_sftp_client() as sftp:
-                try:
-                    parent = posixpath.dirname(destination)
-                    parent_attrs = await sftp.stat(parent)
-                    if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
-                        raise HTTPException(400, "Destination parent is not a directory")
-                    if await sftp_path_exists(sftp, destination) and not overwrite:
-                        raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
-                    async with sftp.open(temporary, "wb") as remote:
-                        while True:
-                            chunk = await file.read(SSH_FILE_CHUNK)
-                            if not chunk:
-                                break
-                            transferred += len(chunk)
-                            if transferred > SSH_UPLOAD_LIMIT:
-                                raise HTTPException(413, f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit")
-                            await remote.write(chunk)
-                    await finalize_sftp_file(sftp, temporary, destination, overwrite)
-                except Exception:
-                    try:
-                        if await sftp_path_exists(sftp, temporary):
-                            await sftp.remove(temporary)
-                    except Exception:
-                        pass
-                    raise
-    except Exception as exc:
-        if sftp is not None:
-            try:
-                if await sftp_path_exists(sftp, temporary):
-                    await sftp.remove(temporary)
-            except Exception:
-                pass
+        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
+            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
+                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                    async with ssh.start_sftp_client() as sftp:
+                        try:
+                            parent = posixpath.dirname(destination)
+                            parent_attrs = await sftp.stat(parent)
+                            if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
+                                raise HTTPException(400, "Destination parent is not a directory")
+                            if await sftp_path_exists(sftp, destination) and not overwrite:
+                                raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
+                            async with sftp.open(
+                                temporary,
+                                "xb",
+                                attrs=asyncssh.SFTPAttrs(permissions=0o600),
+                            ) as remote:
+                                while True:
+                                    if await request.is_disconnected():
+                                        raise HTTPException(499, "Client disconnected")
+                                    chunk = await asyncio.wait_for(file.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
+                                    if not chunk:
+                                        break
+                                    transferred += len(chunk)
+                                    if transferred > SSH_UPLOAD_LIMIT:
+                                        raise HTTPException(413, f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit")
+                                    await asyncio.wait_for(remote.write(chunk), SSH_TRANSFER_IDLE_TIMEOUT)
+                            async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], destination)):
+                                if await request.is_disconnected():
+                                    raise HTTPException(499, "Client disconnected")
+                                await finalize_sftp_file(sftp, temporary, destination, overwrite)
+                        except BaseException:
+                            await asyncio.shield(cleanup_sftp_path(sftp, temporary))
+                            raise
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
         raise ssh_file_error(exc) from exc
     finally:
-        await file.close()
-    audit(user["id"], "ssh_file_upload", node["name"], f"Uploaded {transferred} bytes to {destination}", request.client.host if request.client else None)
+        try:
+            await asyncio.shield(file.close())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.warning("Could not close uploaded file", exc_info=True)
+    try:
+        audit(user["id"], "ssh_file_upload", node["name"], f"Uploaded {transferred} bytes to {destination}", request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record successful SSH upload audit event")
     return {"ok": True, "node": node["name"], "path": destination, "bytes": transferred}
 
 
@@ -1049,60 +2005,326 @@ async def ssh_relay_file(body: SSHRelayBody, request: Request, user: sqlite3.Row
     destination, destination_password, destination_key = ssh_file_node(body.destination_node_id)
     if source["id"] == destination["id"] and body.source_path == body.destination_path:
         raise HTTPException(400, "Source and destination are the same file")
+    if not destructive_remote_path_allowed(body.destination_path):
+        raise HTTPException(400, "This protected system path cannot be replaced through file relay")
     temporary = f"{body.destination_path}.darknoc-{secrets.token_hex(8)}.part"
     transferred = 0
-    destination_sftp = None
     try:
-        async with asyncssh.connect(**ssh_connection_options(source, source_password, source_key)) as source_ssh:
-            async with asyncssh.connect(**ssh_connection_options(destination, destination_password, destination_key)) as destination_ssh:
-                async with source_ssh.start_sftp_client() as source_sftp, destination_ssh.start_sftp_client() as destination_sftp:
-                    try:
-                        source_attrs = await source_sftp.stat(body.source_path)
-                        if source_attrs.permissions is not None and not statmod.S_ISREG(source_attrs.permissions):
-                            raise HTTPException(400, "Source path must be a regular file")
-                        source_size = int(source_attrs.size or 0)
-                        if source_size > SSH_RELAY_LIMIT:
-                            raise HTTPException(413, f"File exceeds the {SSH_RELAY_LIMIT // 1024 // 1024} MB relay limit")
-                        parent_attrs = await destination_sftp.stat(posixpath.dirname(body.destination_path))
-                        if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
-                            raise HTTPException(400, "Destination parent is not a directory")
-                        if await sftp_path_exists(destination_sftp, body.destination_path) and not body.overwrite:
-                            raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
-                        async with source_sftp.open(body.source_path, "rb") as reader, destination_sftp.open(temporary, "wb") as writer:
-                            while True:
-                                chunk = await reader.read(SSH_FILE_CHUNK)
-                                if not chunk:
-                                    break
-                                transferred += len(chunk)
-                                if transferred > SSH_RELAY_LIMIT:
+        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
+            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
+                async with asyncssh.connect(**ssh_connection_options(source, source_password, source_key)) as source_ssh:
+                    async with asyncssh.connect(**ssh_connection_options(destination, destination_password, destination_key)) as destination_ssh:
+                        async with source_ssh.start_sftp_client() as source_sftp, destination_ssh.start_sftp_client() as destination_sftp:
+                            try:
+                                source_attrs = await source_sftp.stat(body.source_path)
+                                if source_attrs.permissions is not None and not statmod.S_ISREG(source_attrs.permissions):
+                                    raise HTTPException(400, "Source path must be a regular file")
+                                source_size = int(source_attrs.size or 0)
+                                if source_size > SSH_RELAY_LIMIT:
                                     raise HTTPException(413, f"File exceeds the {SSH_RELAY_LIMIT // 1024 // 1024} MB relay limit")
-                                await writer.write(chunk)
-                        await finalize_sftp_file(destination_sftp, temporary, body.destination_path, body.overwrite)
-                    except Exception:
-                        try:
-                            if await sftp_path_exists(destination_sftp, temporary):
-                                await destination_sftp.remove(temporary)
-                        except Exception:
-                            pass
-                        raise
-    except Exception as exc:
-        if destination_sftp is not None:
-            try:
-                if await sftp_path_exists(destination_sftp, temporary):
-                    await destination_sftp.remove(temporary)
-            except Exception:
-                pass
+                                parent_attrs = await destination_sftp.stat(posixpath.dirname(body.destination_path))
+                                if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
+                                    raise HTTPException(400, "Destination parent is not a directory")
+                                if await sftp_path_exists(destination_sftp, body.destination_path) and not body.overwrite:
+                                    raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
+                                source_mode = statmod.S_IMODE(source_attrs.permissions) if source_attrs.permissions is not None else 0o600
+                                async with source_sftp.open(body.source_path, "rb") as reader, destination_sftp.open(
+                                    temporary,
+                                    "xb",
+                                    attrs=asyncssh.SFTPAttrs(permissions=source_mode),
+                                ) as writer:
+                                    while True:
+                                        if await request.is_disconnected():
+                                            raise HTTPException(499, "Client disconnected")
+                                        chunk = await asyncio.wait_for(reader.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
+                                        if not chunk:
+                                            break
+                                        transferred += len(chunk)
+                                        if transferred > SSH_RELAY_LIMIT:
+                                            raise HTTPException(413, f"File exceeds the {SSH_RELAY_LIMIT // 1024 // 1024} MB relay limit")
+                                        await asyncio.wait_for(writer.write(chunk), SSH_TRANSFER_IDLE_TIMEOUT)
+                                async with disconnect_aware_semaphore(
+                                    request, ssh_destination_lock(destination["id"], body.destination_path)
+                                ):
+                                    if await request.is_disconnected():
+                                        raise HTTPException(499, "Client disconnected")
+                                    await finalize_sftp_file(destination_sftp, temporary, body.destination_path, body.overwrite)
+                            except BaseException:
+                                await asyncio.shield(cleanup_sftp_path(destination_sftp, temporary))
+                                raise
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
         raise ssh_file_error(exc) from exc
-    audit(user["id"], "ssh_file_relay", f"{source['name']} → {destination['name']}", f"Relayed {transferred} bytes: {body.source_path} → {body.destination_path}", request.client.host if request.client else None)
+    try:
+        audit(user["id"], "ssh_file_relay", f"{source['name']} → {destination['name']}", f"Relayed {transferred} bytes: {body.source_path} → {body.destination_path}", request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record successful SSH relay audit event")
     return {"ok": True, "source_node": source["name"], "destination_node": destination["name"], "source_path": body.source_path, "destination_path": body.destination_path, "bytes": transferred}
 
 
+def sftp_entry(name: str, directory: str, attrs: Any) -> dict[str, Any]:
+    permissions = int(getattr(attrs, "permissions", 0) or 0)
+    item_type = "directory" if statmod.S_ISDIR(permissions) else "symlink" if statmod.S_ISLNK(permissions) else "file"
+    return {
+        "name": name,
+        "path": posixpath.join(directory, name) if directory != "/" else f"/{name}",
+        "type": item_type,
+        "size": int(getattr(attrs, "size", 0) or 0),
+        "mode": format(statmod.S_IMODE(permissions), "04o"),
+        "modified_at": int(getattr(attrs, "mtime", 0) or 0),
+    }
+
+
+@app.get("/api/ssh/files/{node_id}")
+async def list_ssh_files(node_id: int, path: str = "/root", _: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    try:
+        directory = clean_remote_directory(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
+            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                async with ssh.start_sftp_client() as sftp:
+                    attrs = await sftp.stat(directory)
+                    if attrs.permissions is not None and not statmod.S_ISDIR(attrs.permissions):
+                        raise HTTPException(400, "Remote path is not a directory")
+                    entries = []
+                    async for entry in sftp.scandir(directory):
+                        name = str(entry.filename)
+                        if name in {".", ".."}:
+                            continue
+                        entries.append(sftp_entry(name, directory, entry.attrs))
+        entries.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
+        parent = None if directory == "/" else posixpath.dirname(directory) or "/"
+        return {"node": node["name"], "path": directory, "parent": parent, "entries": entries[:5000]}
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+
+
+@app.get("/api/ssh/files/{node_id}/read")
+async def read_ssh_file(node_id: int, path: str, _: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    try:
+        remote_path = clean_remote_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
+            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                async with ssh.start_sftp_client() as sftp:
+                    attrs = await sftp.stat(remote_path)
+                    if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
+                        raise HTTPException(400, "Only regular files can be opened in the editor")
+                    if int(attrs.size or 0) > SSH_EDITOR_LIMIT:
+                        raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
+                    async with sftp.open(remote_path, "rb") as remote:
+                        payload = await asyncio.wait_for(remote.read(SSH_EDITOR_LIMIT + 1), SSH_TRANSFER_IDLE_TIMEOUT)
+        if len(payload) > SSH_EDITOR_LIMIT:
+            raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
+        try:
+            content = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(415, "File is not valid UTF-8 text") from exc
+        return {"node": node["name"], "path": remote_path, "content": content, "bytes": len(payload)}
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+
+
+@app.put("/api/ssh/files/{node_id}/write")
+async def write_ssh_file(node_id: int, body: SSHFileWriteBody, request: Request, user: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    if not destructive_remote_path_allowed(body.path):
+        raise HTTPException(400, "This protected system path cannot be edited from File Manager")
+    payload = body.content.encode("utf-8")
+    if len(payload) > SSH_EDITOR_LIMIT:
+        raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
+    temporary = f"{body.path}.darknoc-{secrets.token_hex(8)}.part"
+    try:
+        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 300)):
+            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
+                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                    async with ssh.start_sftp_client() as sftp:
+                        try:
+                            parent = await sftp.stat(posixpath.dirname(body.path))
+                            if parent.permissions is not None and not statmod.S_ISDIR(parent.permissions):
+                                raise HTTPException(400, "Destination parent is not a directory")
+                            if await sftp_path_exists(sftp, body.path) and not body.overwrite:
+                                raise HTTPException(409, "File already exists; enable overwrite to replace it")
+                            async with sftp.open(temporary, "xb", attrs=asyncssh.SFTPAttrs(permissions=0o600)) as remote:
+                                await asyncio.wait_for(remote.write(payload), SSH_TRANSFER_IDLE_TIMEOUT)
+                            async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], body.path)):
+                                await finalize_sftp_file(sftp, temporary, body.path, body.overwrite)
+                        except BaseException:
+                            await asyncio.shield(cleanup_sftp_path(sftp, temporary))
+                            raise
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+    try:
+        audit(user["id"], "ssh_file_write", node["name"], f"Saved {len(payload)} bytes to {body.path}", request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record SSH editor audit event")
+    return {"ok": True, "path": body.path, "bytes": len(payload)}
+
+
+@app.post("/api/ssh/files/{node_id}/action")
+async def ssh_file_action(node_id: int, body: SSHFileActionBody, request: Request, user: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    if not destructive_remote_path_allowed(body.path):
+        raise HTTPException(400, "This protected system path cannot be changed from File Manager")
+    if body.action == "rename":
+        if not body.destination:
+            raise HTTPException(422, "Rename requires a destination path")
+        if not destructive_remote_path_allowed(body.destination):
+            raise HTTPException(400, "This protected destination cannot be changed from File Manager")
+    if body.action == "chmod" and not body.mode:
+        raise HTTPException(422, "CHMOD requires an octal mode")
+    try:
+        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
+            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
+                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                    async with ssh.start_sftp_client() as sftp:
+                        async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], body.destination or body.path)):
+                            if body.action == "mkdir":
+                                await sftp.mkdir(body.path, attrs=asyncssh.SFTPAttrs(permissions=0o750))
+                            elif body.action == "rename":
+                                if await sftp_path_exists(sftp, body.destination or ""):
+                                    raise HTTPException(409, "Destination already exists")
+                                await sftp.rename(body.path, body.destination)
+                            elif body.action == "delete":
+                                attrs = await sftp.lstat(body.path)
+                                if attrs.permissions is not None and statmod.S_ISDIR(attrs.permissions):
+                                    await sftp.rmdir(body.path)
+                                else:
+                                    await sftp.remove(body.path)
+                            else:
+                                await sftp.chmod(body.path, int(body.mode or "600", 8))
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+    target = f"{body.path} -> {body.destination}" if body.destination else body.path
+    try:
+        audit(user["id"], f"ssh_file_{body.action}", node["name"], target, request.client.host if request.client else None)
+    except Exception:
+        LOGGER.exception("Could not record SSH File Manager action")
+    return {"ok": True, "action": body.action, "path": body.path, "destination": body.destination}
+
+
+@app.get("/api/ssh/files/{node_id}/checksum")
+async def checksum_ssh_file(node_id: int, path: str, _: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    try:
+        remote_path = clean_remote_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
+            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                async with ssh.start_sftp_client() as sftp:
+                    attrs = await sftp.stat(remote_path)
+                    if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
+                        raise HTTPException(400, "Checksum requires a regular file")
+                    async with sftp.open(remote_path, "rb") as remote:
+                        while True:
+                            chunk = await asyncio.wait_for(remote.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            digest.update(chunk)
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+    return {"node": node["name"], "path": remote_path, "bytes": size, "sha256": digest.hexdigest()}
+
+
+@app.get("/api/ssh/files/{node_id}/download")
+async def download_ssh_file(node_id: int, path: str, request: Request, user: sqlite3.Row = Depends(current_user)):
+    node, password, key = ssh_file_node(node_id)
+    try:
+        remote_path = clean_remote_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+            async with ssh.start_sftp_client() as sftp:
+                attrs = await sftp.stat(remote_path)
+                if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
+                    raise HTTPException(400, "Only regular files can be downloaded")
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise ssh_file_error(exc) from exc
+
+    async def stream_remote_file():
+        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
+            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
+                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
+                    async with ssh.start_sftp_client() as sftp:
+                        async with sftp.open(remote_path, "rb") as remote:
+                            while True:
+                                if await request.is_disconnected():
+                                    break
+                                chunk = await asyncio.wait_for(remote.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
+                                if not chunk:
+                                    break
+                                yield chunk
+
+    safe_name = posixpath.basename(remote_path).replace('"', "_").replace("\\", "_") or "download.bin"
+    try:
+        audit(user["id"], "ssh_file_download", node["name"], remote_path)
+    except Exception:
+        LOGGER.exception("Could not record SSH download audit event")
+    return StreamingResponse(
+        stream_remote_file(), media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"', "Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/nodes/{node_id}/metrics")
-def metrics(node_id: int, hours: int = 24, _: sqlite3.Row = Depends(current_user)):
-    hours = min(max(hours, 1), 720)
+def metrics(node_id: int, hours: int = 24, resolution: str = "auto", _: sqlite3.Row = Depends(current_user)):
+    hours = min(max(hours, 1), METRIC_ROLLUP_RETENTION_DAYS * 24)
+    if resolution not in {"auto", "raw", "hour"}:
+        raise HTTPException(422, "resolution must be auto, raw or hour")
+    use_hourly = resolution == "hour" or (resolution == "auto" and hours > 48)
+    cutoff = utc_ts() - hours * 3600
     with db() as conn:
-        rows = conn.execute("SELECT ts,cpu,ram,swap,disk,load1,rx_bps,tx_bps,uptime,connections FROM metrics WHERE node_id=? AND ts>? ORDER BY ts", (node_id, utc_ts() - hours * 3600)).fetchall()
-    return [dict(row) for row in rows]
+        if not conn.execute("SELECT 1 FROM nodes WHERE id=?", (node_id,)).fetchone():
+            raise HTTPException(404, "Node not found")
+        if not use_hourly:
+            rows = conn.execute(
+                "SELECT ts,cpu,ram,swap,disk,load1,rx_bps,tx_bps,uptime,connections FROM metrics WHERE node_id=? AND ts>? ORDER BY ts LIMIT 20000",
+                (node_id, cutoff),
+            ).fetchall()
+            return [{**dict(row), "resolution": "raw"} for row in rows]
+        current_bucket = (utc_ts() // 3600) * 3600
+        rolled = conn.execute(
+            """SELECT bucket ts,cpu_avg cpu,ram_avg ram,NULL swap,disk_max disk,load_avg load1,
+                      rx_avg rx_bps,tx_avg tx_bps,NULL uptime,connections_max connections,samples
+               FROM metric_rollups WHERE node_id=? AND bucket>=? AND bucket<? ORDER BY bucket""",
+            (node_id, (cutoff // 3600) * 3600, current_bucket),
+        ).fetchall()
+        raw_hourly = conn.execute(
+            """SELECT (ts/3600)*3600 ts,AVG(cpu) cpu,AVG(ram) ram,AVG(swap) swap,MAX(disk) disk,AVG(load1) load1,
+                      AVG(rx_bps) rx_bps,AVG(tx_bps) tx_bps,MAX(uptime) uptime,MAX(connections) connections,
+                      COUNT(*) samples
+               FROM metrics WHERE node_id=? AND ts>=? GROUP BY (ts/3600)*3600 ORDER BY ts""",
+            (node_id, cutoff),
+        ).fetchall()
+    rollup_buckets = {int(row["ts"]) for row in rolled}
+    combined = [*rolled, *(row for row in raw_hourly if int(row["ts"]) not in rollup_buckets)]
+    combined.sort(key=lambda row: int(row["ts"]))
+    return [{**dict(row), "resolution": "hour"} for row in combined]
 
 
 @app.get("/api/tunnels")
@@ -1688,11 +2910,306 @@ def remove_plugin_deployment(deployment_id: int, request: Request, user: sqlite3
     return {"deployment_id": deployment_id, "status": "queued", "jobs": jobs}
 
 
+@app.get("/api/monitors")
+def list_monitors(_: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT monitors.*,nodes.name node_name,nodes.role node_role,nodes.host node_host,
+                      nodes.last_seen node_last_seen
+               FROM monitors JOIN nodes ON nodes.id=monitors.node_id
+               ORDER BY CASE monitors.status WHEN 'down' THEN 0 WHEN 'degraded' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
+                        monitors.name COLLATE NOCASE"""
+        ).fetchall()
+    return [public_monitor(row) for row in rows]
+
+
+@app.post("/api/monitors", status_code=201)
+def create_monitor(body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
+    target, port, secret, oid = monitor_values(body)
+    now = utc_ts()
+    try:
+        with db() as conn:
+            node = conn.execute("SELECT name FROM nodes WHERE id=?", (body.node_id,)).fetchone()
+            if not node:
+                raise HTTPException(404, "Node not found")
+            monitor_id = conn.execute(
+                """INSERT INTO monitors(node_id,name,kind,target,port,secret_enc,snmp_oid,interval_seconds,
+                       timeout_seconds,expected_status,enabled,status,next_run_at,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (body.node_id, body.name, body.kind, target, port, secret, oid, body.interval_seconds,
+                 body.timeout_seconds, body.expected_status, 1 if body.enabled else 0, "pending", now,
+                 user["id"], now, now),
+            ).lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "A monitor with this name already exists on the selected Node") from exc
+    audit(user["id"], "monitor_create", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
+    return {"id": monitor_id, "status": "pending"}
+
+
+@app.put("/api/monitors/{monitor_id}")
+def update_monitor(monitor_id: int, body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
+    now = utc_ts()
+    try:
+        with db() as conn:
+            current = conn.execute("SELECT * FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+            if not current:
+                raise HTTPException(404, "Monitor not found")
+            if not conn.execute("SELECT 1 FROM nodes WHERE id=?", (body.node_id,)).fetchone():
+                raise HTTPException(404, "Node not found")
+            target, port, secret, oid = monitor_values(body, current["secret_enc"])
+            old_title = f"Monitor {current['name']} is down"
+            old_incidents = conn.execute(
+                "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
+                (current["node_id"], old_title),
+            ).fetchall()
+            for incident in old_incidents:
+                resolve_incident(conn, incident["id"], "Monitor configuration changed", actor_id=user["id"])
+            conn.execute(
+                """UPDATE monitors SET node_id=?,name=?,kind=?,target=?,port=?,secret_enc=?,snmp_oid=?,
+                       interval_seconds=?,timeout_seconds=?,expected_status=?,enabled=?,status='pending',
+                       failure_streak=0,next_run_at=?,updated_at=? WHERE id=?""",
+                (body.node_id, body.name, body.kind, target, port, secret, oid, body.interval_seconds,
+                 body.timeout_seconds, body.expected_status, 1 if body.enabled else 0, now, now, monitor_id),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "A monitor with this name already exists on the selected Node") from exc
+    audit(user["id"], "monitor_update", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@app.delete("/api/monitors/{monitor_id}")
+def delete_monitor(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        row = conn.execute("SELECT node_id,name FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Monitor not found")
+        title = f"Monitor {row['name']} is down"
+        active = conn.execute(
+            "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
+            (row["node_id"], title),
+        ).fetchall()
+        for incident in active:
+            resolve_incident(conn, incident["id"], "Monitor was removed by the operator", actor_id=user["id"])
+        conn.execute("DELETE FROM monitors WHERE id=?", (monitor_id,))
+    audit(user["id"], "monitor_delete", row["name"], str(monitor_id), request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@app.post("/api/monitors/{monitor_id}/run", status_code=202)
+def run_monitor_now(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
+    now = utc_ts()
+    with db() as conn:
+        monitor = conn.execute(
+            "SELECT monitors.*,nodes.last_seen FROM monitors JOIN nodes ON nodes.id=monitors.node_id WHERE monitors.id=?",
+            (monitor_id,),
+        ).fetchone()
+        if not monitor:
+            raise HTTPException(404, "Monitor not found")
+        if not monitor["last_seen"] or monitor["last_seen"] < now - NODE_STALE_AFTER:
+            raise HTTPException(409, "Agent is offline")
+        active = conn.execute("SELECT 1 FROM jobs WHERE id=? AND status IN ('queued','running')", (monitor["job_id"],)).fetchone() if monitor["job_id"] else None
+        if active:
+            raise HTTPException(409, "Monitor check is already running")
+        payload = {
+            "monitor_id": monitor["id"], "kind": monitor["kind"], "target": monitor["target"],
+            "port": monitor["port"], "timeout_seconds": monitor["timeout_seconds"],
+            "expected_status": monitor["expected_status"], "snmp_oid": monitor["snmp_oid"],
+        }
+        if monitor["kind"] == "snmp":
+            try:
+                payload["snmp_community"] = decrypt(monitor["secret_enc"])
+            except Exception as exc:
+                raise HTTPException(409, "Encrypted SNMP community cannot be read; edit and save the monitor again") from exc
+        job_id = conn.execute(
+            "INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)",
+            (monitor["node_id"], "monitor_run", json.dumps(payload), user["id"], now),
+        ).lastrowid
+        conn.execute("UPDATE monitors SET job_id=?,next_run_at=?,updated_at=? WHERE id=?", (job_id, now + monitor["interval_seconds"], now, monitor_id))
+    audit(user["id"], "monitor_run", monitor["name"], str(job_id), request.client.host if request.client else None)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/monitors/{monitor_id}/results")
+def monitor_results(monitor_id: int, limit: int = 200, _: sqlite3.Row = Depends(current_user)):
+    limit = min(max(limit, 1), 2000)
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM monitors WHERE id=?", (monitor_id,)).fetchone():
+            raise HTTPException(404, "Monitor not found")
+        rows = conn.execute(
+            "SELECT ts,status,latency_ms,detail FROM monitor_results WHERE monitor_id=? ORDER BY ts DESC LIMIT ?",
+            (monitor_id, limit),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["detail"] = json.loads(item.get("detail") or "{}")
+        except (TypeError, ValueError):
+            item["detail"] = {"message": str(item.get("detail") or "")[:1000]}
+        result.append(item)
+    return result
+
+
+@app.get("/api/fleet/operations")
+def list_fleet_operations(limit: int = 100, _: sqlite3.Row = Depends(current_user)):
+    limit = min(max(limit, 1), 500)
+    with db() as conn:
+        operations = conn.execute(
+            "SELECT * FROM fleet_operations ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        result = []
+        for operation in operations:
+            item = dict(operation)
+            try:
+                payload = json.loads(item.get("payload") or "{}")
+                for key in list(payload):
+                    if any(word in key.casefold() for word in ("token", "password", "secret", "community", "private_key")):
+                        payload[key] = "[REDACTED]"
+                item["payload"] = payload
+            except (TypeError, ValueError):
+                item["payload"] = {}
+            rows = conn.execute(
+                """SELECT fleet_operation_items.id,fleet_operation_items.node_id,fleet_operation_items.job_id,
+                          fleet_operation_items.status,nodes.name node_name,jobs.output
+                   FROM fleet_operation_items JOIN nodes ON nodes.id=fleet_operation_items.node_id
+                   LEFT JOIN jobs ON jobs.id=fleet_operation_items.job_id
+                   WHERE operation_id=? ORDER BY nodes.name COLLATE NOCASE""",
+                (operation["id"],),
+            ).fetchall()
+            item["items"] = [dict(row) for row in rows]
+            result.append(item)
+    return result
+
+
+@app.post("/api/fleet/operations", status_code=202)
+def create_fleet_operation(
+    body: FleetOperationBody,
+    background: BackgroundTasks,
+    request: Request,
+    user: sqlite3.Row = Depends(current_user),
+):
+    node_ids = list(dict.fromkeys(body.node_ids))
+    now = utc_ts()
+    scheduled_at = int(body.scheduled_at or now)
+    if scheduled_at > now + 366 * 86400:
+        raise HTTPException(422, "Fleet operations can be scheduled at most one year ahead")
+    if body.kind in {"restart_service", "service_status"} and not body.service:
+        raise HTTPException(422, "This fleet operation requires a managed service name")
+    if body.kind == "sync_agent" and scheduled_at > now + 5:
+        raise HTTPException(422, "Agent synchronization must be started immediately")
+    payload = dict(body.payload)
+    if body.service:
+        payload["service"] = body.service
+    with db() as conn:
+        placeholders = ",".join("?" for _ in node_ids)
+        nodes = conn.execute(
+            f"SELECT * FROM nodes WHERE id IN ({placeholders}) ORDER BY id",
+            node_ids,
+        ).fetchall()
+        if len(nodes) != len(node_ids):
+            raise HTTPException(404, "One or more selected Nodes do not exist")
+        if body.kind == "sync_agent":
+            for node in nodes:
+                if node["role"] == "hub" or (not node["ssh_password_enc"] and not node["ssh_key_enc"]):
+                    raise HTTPException(409, f"{node['name']} cannot be synchronized through remote SSH")
+                if node["provision_status"] == "provisioning":
+                    raise HTTPException(409, f"{node['name']} is already synchronizing")
+        operation_id = conn.execute(
+            """INSERT INTO fleet_operations(name,kind,payload,status,scheduled_at,created_by,created_at,started_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (body.name, body.kind, json.dumps(payload), "running" if body.kind == "sync_agent" else "scheduled",
+             scheduled_at, user["id"], now, now if body.kind == "sync_agent" else None),
+        ).lastrowid
+        created_items: list[tuple[int, sqlite3.Row, str | None]] = []
+        for node in nodes:
+            enrollment = secrets.token_urlsafe(36) if body.kind == "sync_agent" else None
+            if body.kind == "sync_agent":
+                conn.execute(
+                    "UPDATE nodes SET provision_status='provisioning',provision_output='',updated_at=? WHERE id=?",
+                    (now, node["id"]),
+                )
+            item_id = conn.execute(
+                "INSERT INTO fleet_operation_items(operation_id,node_id,status) VALUES(?,?,?)",
+                (operation_id, node["id"], "running" if body.kind == "sync_agent" else "scheduled"),
+            ).lastrowid
+            created_items.append((item_id, node, enrollment))
+        if body.kind != "sync_agent" and scheduled_at <= now:
+            queue_due_fleet_operations(conn, now)
+    if body.kind == "sync_agent":
+        for item_id, node, enrollment in created_items:
+            background.add_task(provision_node_for_fleet, item_id, node["id"], enrollment or secrets.token_urlsafe(36))
+    audit(user["id"], "fleet_operation_create", body.name, f"{body.kind}:{len(node_ids)} nodes", request.client.host if request.client else None)
+    return {"id": operation_id, "status": "running" if body.kind == "sync_agent" or scheduled_at <= now else "scheduled", "nodes": len(node_ids)}
+
+
+@app.delete("/api/fleet/operations/{operation_id}")
+def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        operation = conn.execute("SELECT * FROM fleet_operations WHERE id=?", (operation_id,)).fetchone()
+        if not operation:
+            raise HTTPException(404, "Fleet operation not found")
+        if operation["status"] != "scheduled":
+            raise HTTPException(409, "Only a scheduled operation can be cancelled")
+        conn.execute("UPDATE fleet_operations SET status='cancelled',finished_at=? WHERE id=?", (utc_ts(), operation_id))
+        conn.execute("UPDATE fleet_operation_items SET status='cancelled' WHERE operation_id=?", (operation_id,))
+    audit(user["id"], "fleet_operation_cancel", operation["name"], str(operation_id), request.client.host if request.client else None)
+    return {"ok": True}
+
+
 @app.get("/api/incidents")
 def list_incidents(_: sqlite3.Row = Depends(current_user)):
     with db() as conn:
-        rows = conn.execute("SELECT incidents.*,nodes.name node_name,tunnels.name tunnel_name FROM incidents LEFT JOIN nodes ON nodes.id=incidents.node_id LEFT JOIN tunnels ON tunnels.id=incidents.tunnel_id ORDER BY incidents.status='open' DESC,incidents.opened_at DESC LIMIT 200").fetchall()
-    return [dict(row) for row in rows]
+        rows = conn.execute(
+            """SELECT incidents.*,nodes.name node_name,tunnels.name tunnel_name,
+                      (SELECT COUNT(*) FROM incident_events WHERE incident_id=incidents.id) event_count
+               FROM incidents
+               LEFT JOIN nodes ON nodes.id=incidents.node_id
+               LEFT JOIN tunnels ON tunnels.id=incidents.tunnel_id
+               ORDER BY incidents.status='open' DESC,incidents.status='acknowledged' DESC,incidents.opened_at DESC LIMIT 500"""
+        ).fetchall()
+    now = utc_ts()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["downtime_seconds"] = max(0, int(item.get("resolved_at") or now) - int(item["opened_at"]))
+        result.append(item)
+    return result
+
+
+@app.get("/api/incidents/{incident_id}")
+def incident_detail(incident_id: int, _: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        row = conn.execute(
+            """SELECT incidents.*,nodes.name node_name,tunnels.name tunnel_name
+               FROM incidents LEFT JOIN nodes ON nodes.id=incidents.node_id
+               LEFT JOIN tunnels ON tunnels.id=incidents.tunnel_id WHERE incidents.id=?""",
+            (incident_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Incident not found")
+        events = conn.execute(
+            """SELECT incident_events.*,users.username actor
+               FROM incident_events LEFT JOIN users ON users.id=incident_events.actor_id
+               WHERE incident_id=? ORDER BY created_at,id""",
+            (incident_id,),
+        ).fetchall()
+    item = dict(row)
+    item["downtime_seconds"] = max(0, int(item.get("resolved_at") or utc_ts()) - int(item["opened_at"]))
+    item["events"] = [dict(event) for event in events]
+    return item
+
+
+@app.post("/api/incidents/{incident_id}/notes", status_code=201)
+def add_incident_note(incident_id: int, body: IncidentNoteBody, request: Request, user: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        row = conn.execute("SELECT title FROM incidents WHERE id=?", (incident_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Incident not found")
+        append_incident_event(conn, incident_id, body.event_type, body.message, actor_id=user["id"])
+        conn.execute("UPDATE incidents SET last_changed_at=? WHERE id=?", (utc_ts(), incident_id))
+    audit(user["id"], "incident_note", str(incident_id), body.message, request.client.host if request.client else None)
+    return {"ok": True}
 
 
 @app.post("/api/incidents/{incident_id}/action")
@@ -1701,12 +3218,31 @@ def incident_action(incident_id: int, body: IncidentActionBody, request: Request
         row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Incident not found")
+        now = utc_ts()
         if body.action == "acknowledge":
-            conn.execute("UPDATE incidents SET status='acknowledged' WHERE id=? AND status='open'", (incident_id,))
+            if row["status"] != "open":
+                raise HTTPException(409, "Only an open incident can be acknowledged")
+            conn.execute(
+                "UPDATE incidents SET status='acknowledged',acknowledged_at=?,last_changed_at=?,root_cause=COALESCE(?,root_cause) WHERE id=?",
+                (now, now, body.root_cause, incident_id),
+            )
+            append_incident_event(conn, incident_id, "acknowledged", body.note or "Operator acknowledged the incident", actor_id=user["id"], created_at=now)
         elif body.action == "resolve":
-            conn.execute("UPDATE incidents SET status='resolved',resolved_at=? WHERE id=?", (utc_ts(), incident_id))
+            if row["status"] == "resolved":
+                raise HTTPException(409, "Incident is already resolved")
+            conn.execute("UPDATE incidents SET root_cause=COALESCE(?,root_cause) WHERE id=?", (body.root_cause, incident_id))
+            resolve_incident(
+                conn, incident_id, body.note or "Operator resolved the incident",
+                actor_id=user["id"], resolution=body.resolution,
+            )
         else:
-            conn.execute("UPDATE incidents SET status='open',resolved_at=NULL WHERE id=?", (incident_id,))
+            if row["status"] != "resolved":
+                raise HTTPException(409, "Only a resolved incident can be reopened")
+            conn.execute(
+                "UPDATE incidents SET status='open',resolved_at=NULL,last_changed_at=?,resolution=NULL WHERE id=?",
+                (now, incident_id),
+            )
+            append_incident_event(conn, incident_id, "reopened", body.note or "Operator reopened the incident", actor_id=user["id"], created_at=now)
     audit(user["id"], f"incident_{body.action}", str(incident_id), row["title"], request.client.host if request.client else None)
     return {"ok": True, "action": body.action}
 
@@ -1759,8 +3295,22 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             observed_ip = node["host"]
         conn.execute("UPDATE nodes SET status='online',agent_version=?,observed_ip=?,plugin_inventory=?,autoheal_enabled=?,autoheal_cooldown=?,autoheal_max_restarts=?,last_seen=?,updated_at=? WHERE id=?", (report.agent_version, observed_ip, json.dumps(report.plugins), 1 if autoheal.get("enabled") else 0, autoheal_cooldown, autoheal_max, now, now, node["id"]))
         conn.execute("INSERT INTO metrics(node_id,ts,cpu,ram,swap,disk,load1,rx_bps,tx_bps,uptime,connections,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (node["id"], now, m.get("cpu"), m.get("ram"), m.get("swap"), m.get("disk"), m.get("load1"), m.get("rx_bps"), m.get("tx_bps"), m.get("uptime"), m.get("connections"), json.dumps(m)))
-        conn.execute("UPDATE incidents SET status='resolved',resolved_at=? WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')", (now, node["id"]))
-        resource_limits = {"CPU": (m.get("cpu"), 90.0), "RAM": (m.get("ram"), 90.0), "DISK": (m.get("disk"), 90.0), "LOAD": (m.get("load1"), 8.0)}
+        recovered_node_incidents = conn.execute(
+            "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')",
+            (node["id"],),
+        ).fetchall()
+        for incident in recovered_node_incidents:
+            resolve_incident(conn, incident["id"], "Agent heartbeat recovered")
+        inventory = m.get("inventory") if isinstance(m.get("inventory"), dict) else {}
+        docker = inventory.get("docker") if isinstance(inventory.get("docker"), dict) else {}
+        resource_limits = {
+            "CPU": (m.get("cpu"), 90.0), "RAM": (m.get("ram"), 90.0),
+            "DISK": (m.get("disk"), 90.0), "INODE": (m.get("inode_percent"), 90.0),
+            "LOAD": (m.get("load1"), 8.0), "TEMPERATURE": (m.get("temperature_c"), 85.0),
+            "NETWORK ERRORS": (m.get("network_errors_delta"), 10.0),
+            "NETWORK DROPS": (m.get("network_drops_delta"), 100.0),
+            "DOCKER UNHEALTHY": (docker.get("unhealthy"), 1.0),
+        }
         for resource_name, (raw_value, limit) in resource_limits.items():
             if raw_value is None:
                 continue
@@ -1768,10 +3318,13 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             title = f"Node {node['name']} {resource_name} pressure"
             active_resource = conn.execute("SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged') LIMIT 1", (node["id"], title)).fetchone()
             if value >= limit and not active_resource:
-                conn.execute("INSERT INTO incidents(node_id,severity,title,detail,status,opened_at) VALUES(?,?,?,?,?,?)", (node["id"], "warning", title, json.dumps({"resource": resource_name.lower(), "value": value, "threshold": limit}), "open", now))
+                create_incident(
+                    conn, node_id=node["id"], tunnel_id=None, severity="warning", title=title,
+                    detail={"resource": resource_name.lower(), "value": value, "threshold": limit}, opened_at=now,
+                )
                 notifications.append(f"🟠 DARK NOC RESOURCE ALERT\nNode: {node['name']}\n{resource_name}: {value:.1f}\nThreshold: {limit:.1f}")
             elif value < limit * 0.9 and active_resource:
-                conn.execute("UPDATE incidents SET status='resolved',resolved_at=? WHERE id=?", (now, active_resource["id"]))
+                resolve_incident(conn, active_resource["id"], f"{resource_name} returned below the recovery threshold")
         active_services = []
         for service in report.services:
             service_name = str(service.get("name", ""))[:128]
@@ -1800,16 +3353,24 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             threshold = 2 if current == "down" else 3
             if current in {"down", "degraded"} and failure_streak >= threshold and not open_incident:
                 severity = "critical" if current == "down" else "warning"
-                conn.execute("INSERT INTO incidents(node_id,tunnel_id,severity,title,detail,opened_at) VALUES(?,?,?,?,?,?)", (node["id"], tunnel_row["id"], severity, f"Tunnel {name} is {current}", json.dumps(tunnel), now))
+                create_incident(
+                    conn, node_id=node["id"], tunnel_id=tunnel_row["id"], severity=severity,
+                    title=f"Tunnel {name} is {current}", detail=tunnel, opened_at=now,
+                )
                 notifications.append(f"🔴 DARK NOC INCIDENT\nNode: {node['name']}\nTunnel: {name}\nStatus: {current.upper()}\nLatency: {tunnel.get('latency_ms', '—')} ms")
             elif current == "healthy" and open_incident:
-                conn.execute("UPDATE incidents SET status='resolved',resolved_at=? WHERE tunnel_id=? AND status IN ('open','acknowledged')", (now, tunnel_row["id"]))
+                resolve_incident(conn, open_incident["id"], "Tunnel telemetry returned to healthy")
                 notifications.append(f"🟢 DARK NOC RECOVERED\nNode: {node['name']}\nTunnel: {name}\nStatus: HEALTHY")
         active_names = [str(tunnel.get("name", "unnamed"))[:128] for tunnel in report.tunnels if (str(tunnel.get("method", "")) == "DARK Backhaul" and str(tunnel.get("service", "")).startswith("backhaul@")) or (str(tunnel.get("method", "")) == "DARK Ghost Pro" and str(tunnel.get("service", "")).startswith("ghostpro@")) or (str(tunnel.get("method", "")) == "DARK Packet Pro" and str(tunnel.get("service", "")).startswith("paqetpro@"))]
         stale_rows = conn.execute("SELECT id FROM tunnels WHERE node_id=?" + (f" AND name NOT IN ({','.join('?' for _ in active_names)})" if active_names else ""), (node["id"], *active_names)).fetchall()
         if stale_rows:
             stale_ids = [row["id"] for row in stale_rows]
-            conn.executemany("UPDATE incidents SET status='resolved',resolved_at=? WHERE tunnel_id=? AND status IN ('open','acknowledged')", [(now, tunnel_id) for tunnel_id in stale_ids])
+            stale_incidents = conn.execute(
+                f"SELECT id FROM incidents WHERE tunnel_id IN ({','.join('?' for _ in stale_ids)}) AND status IN ('open','acknowledged')",
+                stale_ids,
+            ).fetchall()
+            for incident in stale_incidents:
+                resolve_incident(conn, incident["id"], "Tunnel was removed from the active Agent inventory")
             conn.executemany("DELETE FROM tunnels WHERE id=?", [(tunnel_id,) for tunnel_id in stale_ids])
     for message in notifications:
         await asyncio.to_thread(telegram_notify, message)
@@ -1835,6 +3396,7 @@ def agent_jobs(node: sqlite3.Row = Depends(agent_node)):
 
 @app.post("/api/agent/jobs/result")
 def agent_job_result(result: JobResult, node: sqlite3.Row = Depends(agent_node)):
+    notification: str | None = None
     with db() as conn:
         row = conn.execute("SELECT id,status,kind,payload FROM jobs WHERE id=? AND node_id=?", (result.job_id, node["id"])).fetchone()
         if not row:
@@ -1857,6 +3419,53 @@ def agent_job_result(result: JobResult, node: sqlite3.Row = Depends(agent_node))
                     conn.execute("UPDATE certificates SET status='failed',last_error=?,updated_at=? WHERE id=?", ("Agent returned invalid certificate metadata", utc_ts(), cert_id))
             else:
                 conn.execute("UPDATE certificates SET status='failed',last_error=?,updated_at=? WHERE id=?", (result.output[-2000:], utc_ts(), cert_id))
+        if row["kind"] == "monitor_run":
+            request_payload = json.loads(row["payload"] or "{}")
+            monitor_id = int(request_payload.get("monitor_id", 0) or 0)
+            monitor = conn.execute("SELECT * FROM monitors WHERE id=? AND node_id=?", (monitor_id, node["id"])).fetchone()
+            if monitor:
+                checked_at = utc_ts()
+                try:
+                    report = json.loads(result.output)
+                    monitor_status = "up" if result.status == "completed" and report.get("status") == "up" else "down"
+                    latency = float(report["latency_ms"]) if report.get("latency_ms") is not None else None
+                    detail_value = report.get("detail") if isinstance(report.get("detail"), dict) else {"message": str(report.get("detail") or "")}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    monitor_status, latency = "down", None
+                    detail_value = {"error": result.output[-2000:] or "Agent monitor execution failed"}
+                failure_streak = 0 if monitor_status == "up" else int(monitor["failure_streak"] or 0) + 1
+                detail_json = json.dumps(detail_value)[:8000]
+                conn.execute(
+                    """UPDATE monitors SET status=?,latency_ms=?,detail=?,failure_streak=?,last_run_at=?,updated_at=?
+                       WHERE id=?""",
+                    (monitor_status, latency, detail_json, failure_streak, checked_at, utc_ts(), monitor_id),
+                )
+                conn.execute(
+                    "INSERT INTO monitor_results(monitor_id,ts,status,latency_ms,detail) VALUES(?,?,?,?,?)",
+                    (monitor_id, checked_at, monitor_status, latency, detail_json),
+                )
+                title = f"Monitor {monitor['name']} is down"
+                open_monitor_incident = conn.execute(
+                    "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged') LIMIT 1",
+                    (node["id"], title),
+                ).fetchone()
+                if monitor_status == "down" and failure_streak >= 2 and not open_monitor_incident:
+                    create_incident(
+                        conn, node_id=node["id"], tunnel_id=None, severity="critical", title=title,
+                        detail={"monitor_id": monitor_id, "kind": monitor["kind"], "target": monitor["target"], **detail_value},
+                        opened_at=checked_at,
+                    )
+                    notification = f"🔴 DARK NOC MONITOR\nNode: {node['name']}\nMonitor: {monitor['name']}\nTarget: {monitor['target']}\nStatus: DOWN"
+                elif monitor_status == "up" and open_monitor_incident:
+                    resolve_incident(conn, open_monitor_incident["id"], "Synthetic monitor recovered")
+                    notification = f"🟢 DARK NOC MONITOR RECOVERED\nNode: {node['name']}\nMonitor: {monitor['name']}\nStatus: UP"
+        fleet_item = conn.execute(
+            "SELECT * FROM fleet_operation_items WHERE job_id=?",
+            (result.job_id,),
+        ).fetchone()
+        if fleet_item:
+            conn.execute("UPDATE fleet_operation_items SET status=? WHERE id=?", (result.status, fleet_item["id"]))
+            finalize_fleet_operation(conn, fleet_item["operation_id"])
         deployment = conn.execute("SELECT * FROM plugin_deployments WHERE iran_job_id=? OR kharej_job_id=?", (result.job_id, result.job_id)).fetchone()
         if deployment:
             iran_status = conn.execute("SELECT status FROM jobs WHERE id=?", (deployment["iran_job_id"],)).fetchone()["status"]
@@ -1874,6 +3483,8 @@ def agent_job_result(result: JobResult, node: sqlite3.Row = Depends(agent_node))
                 conn.execute("UPDATE plugin_deployments SET lifecycle='rolled_back' WHERE id=?", (deployment["id"],))
             elif deployment["lifecycle"] == "rolling_back" and result.status == "failed":
                 conn.execute("UPDATE plugin_deployments SET lifecycle='rollback_failed' WHERE id=?", (deployment["id"],))
+    if notification:
+        telegram_notify(notification)
     return {"ok": True}
 
 
@@ -1891,20 +3502,74 @@ async def websocket_user(websocket: WebSocket) -> sqlite3.Row | None:
     if not token:
         return None
     with db() as conn:
-        return conn.execute("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?", (token_hash(token), utc_ts())).fetchone()
+        return conn.execute(
+            """SELECT users.*,sessions.created_at session_created_at,
+                      sessions.expires_at session_expires_at
+               FROM sessions JOIN users ON users.id=sessions.user_id
+               WHERE sessions.token_hash=? AND sessions.expires_at>?
+                 AND sessions.created_at>?""",
+            (token_hash(token), utc_ts(), utc_ts() - SESSION_TTL),
+        ).fetchone()
+
+
+def websocket_session_valid(session_digest: str, user_id: int, lifetime_deadline: int) -> bool:
+    now = utc_ts()
+    if now >= lifetime_deadline:
+        return False
+    with db() as conn:
+        session = conn.execute(
+            "SELECT created_at,expires_at FROM sessions WHERE token_hash=? AND user_id=?",
+            (session_digest, user_id),
+        ).fetchone()
+    if not session:
+        return False
+    effective_expiry = min(int(session["expires_at"]), int(session["created_at"]) + SESSION_TTL, lifetime_deadline)
+    return effective_expiry > now
+
+
+async def websocket_session_guard(session_digest: str, user_id: int, lifetime_deadline: int) -> bool:
+    while websocket_session_valid(session_digest, user_id, lifetime_deadline):
+        remaining = lifetime_deadline - utc_ts()
+        await asyncio.sleep(min(5.0, max(0.1, float(remaining))))
+    return False
 
 
 @app.websocket("/ws/live")
 async def live_updates(websocket: WebSocket):
-    if not await websocket_user(websocket):
+    user = await websocket_user(websocket)
+    if not user:
         await websocket.close(code=4401)
         return
+    session_digest = token_hash(websocket.cookies.get("dark_noc_session", ""))
+    session_deadline = min(
+        int(user["session_expires_at"]),
+        int(user["session_created_at"]) + SESSION_TTL,
+        utc_ts() + SESSION_TTL,
+    )
     await websocket.accept()
     LIVE_CLIENTS.add(websocket)
     try:
         await websocket.send_json({"type": "ready", "server_time": utc_ts()})
-        while True:
-            await websocket.receive_text()
+
+        async def receive_live_messages() -> None:
+            while True:
+                raw_message = await websocket.receive_text()
+                try:
+                    message = json.loads(raw_message)
+                except json.JSONDecodeError:
+                    message = {"type": raw_message}
+                if isinstance(message, dict) and message.get("type") == "ping":
+                    await websocket.send_json({"type": "pong", "server_time": utc_ts()})
+
+        auth_task = asyncio.create_task(websocket_session_guard(session_digest, user["id"], session_deadline))
+        tasks = {asyncio.create_task(receive_live_messages()), auth_task}
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*done, *pending, return_exceptions=True)
+        if auth_task in done and auth_task.result() is False:
+            LIVE_CLIENTS.discard(websocket)
+            await websocket.close(code=4401)
     except WebSocketDisconnect:
         pass
     finally:
@@ -1929,6 +3594,12 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
         await websocket.send_json({"type": "error", "message": "SSH credentials are not configured"})
         await websocket.close()
         return
+    session_digest = token_hash(websocket.cookies.get("dark_noc_session", ""))
+    session_deadline = min(
+        int(user["session_expires_at"]),
+        int(user["session_created_at"]) + SESSION_TTL,
+        utc_ts() + SESSION_TTL,
+    )
     audit(user["id"], "ssh_open", node["name"], "Interactive terminal opened", websocket.client.host if websocket.client else None)
     try:
         expected_fingerprint = node["ssh_host_fingerprint"]
@@ -1953,13 +3624,17 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
         options: dict[str, Any] = {
             "host": node["host"], "port": node["ssh_port"], "username": node["ssh_user"],
             "known_hosts": ([], [], [], [], [], [], []), "client_factory": PinnedSSHClient,
-            "connect_timeout": 12,
+            "connect_timeout": 12, "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
+            "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
         }
         if key:
             options["client_keys"] = [asyncssh.import_private_key(key)]
-        else:
+        if password:
             options["password"] = password
         async with asyncssh.connect(**options) as conn:
+            if not websocket_session_valid(session_digest, user["id"], session_deadline):
+                await websocket.close(code=4401)
+                return
             process = await conn.create_process(term_type="xterm-256color", term_size=(120, 32))
 
             async def ssh_to_ws():
@@ -1975,15 +3650,20 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
                         process.stdin.write(str(message.get("data", "")))
                     elif message.get("type") == "resize":
                         process.change_terminal_size(int(message.get("cols", 120)), int(message.get("rows", 32)))
+                    elif message.get("type") == "ping":
+                        await websocket.send_json({"type": "pong", "server_time": utc_ts()})
 
             with db() as pin_conn:
                 pinned = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
             await websocket.send_json({"type": "connected", "node": node["name"], "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None})
-            tasks = {asyncio.create_task(ssh_to_ws()), asyncio.create_task(ws_to_ssh())}
+            auth_task = asyncio.create_task(websocket_session_guard(session_digest, user["id"], session_deadline))
+            tasks = {asyncio.create_task(ssh_to_ws()), asyncio.create_task(ws_to_ssh()), auth_task}
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
             await asyncio.gather(*done, *pending, return_exceptions=True)
+            if auth_task in done and auth_task.result() is False:
+                await websocket.close(code=4401)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
@@ -2004,6 +3684,41 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "version": VERSION}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        if not KEY_PATH.is_file() or not (STATIC_DIR / "index.html").is_file():
+            raise RuntimeError("Hub runtime files are incomplete")
+    except Exception as exc:
+        raise HTTPException(503, f"Hub is not ready: {str(exc)[:160]}") from exc
+    return {"status": "ready", "version": VERSION, "instance": HUB_INSTANCE_ID}
+
+
+@app.get("/api/system/status")
+def system_status(_: sqlite3.Row = Depends(current_user)):
+    with db() as conn:
+        leader = conn.execute("SELECT holder,expires_at,updated_at FROM hub_leases WHERE name='maintenance'").fetchone()
+        counts = {
+            "nodes": conn.execute("SELECT COUNT(*) count FROM nodes").fetchone()["count"],
+            "monitors": conn.execute("SELECT COUNT(*) count FROM monitors").fetchone()["count"],
+            "queued_jobs": conn.execute("SELECT COUNT(*) count FROM jobs WHERE status='queued'").fetchone()["count"],
+            "metric_samples": conn.execute("SELECT COUNT(*) count FROM metrics").fetchone()["count"],
+            "rollup_samples": conn.execute("SELECT COUNT(*) count FROM metric_rollups").fetchone()["count"],
+        }
+    return {
+        "version": VERSION, "instance": HUB_INSTANCE_ID,
+        "maintenance_leader": dict(leader) if leader else None,
+        "retention": {
+            "raw_metrics_days": METRIC_RAW_RETENTION_DAYS,
+            "rollups_days": METRIC_ROLLUP_RETENTION_DAYS,
+            "monitor_results_days": MONITOR_RESULT_RETENTION_DAYS,
+        },
+        "counts": counts,
+    }
 
 
 @app.get("/")
