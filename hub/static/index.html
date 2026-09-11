@@ -7,7 +7,7 @@
   <meta name="description" content="DARK NOC — Network Operations Command Center" />
   <title>DARK NOC — Nightfall Command</title>
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=5.5.0" />
-  <link rel="stylesheet" href="/static/styles.css?v=2.7.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=2.8.0" />
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -108,7 +108,7 @@
               <div><span class="panel-kicker">GLOBAL TOPOLOGY</span><h2>Live tunnel matrix</h2></div>
               <div class="topology-tools">
                 <input id="topology-search" placeholder="SEARCH NODE / TUNNEL" aria-label="Search topology" />
-                <select id="topology-filter" aria-label="Filter topology"><option value="all">ALL PATHS</option><option value="online">HEALTHY</option><option value="degraded">DEGRADED</option><option value="down">DOWN</option></select>
+                <select id="topology-filter" aria-label="Filter topology"><option value="all">ALL PATHS</option><option value="online">HEALTHY</option><option value="degraded">DEGRADED</option><option value="stale">STALE</option><option value="down">DOWN</option></select>
                 <button id="topology-fullscreen" title="Fullscreen topology">⛶</button>
                 <div class="segmented" role="group" aria-label="Topology view"><button class="active" id="map-view">MAP</button><button id="list-view">LIST</button></div>
               </div>
@@ -117,6 +117,7 @@
             <div class="topology-footer">
               <div><span class="legend green"></span>Healthy <b>0</b></div>
               <div><span class="legend amber"></span>Degraded <b>0</b></div>
+              <div><span class="legend gray"></span>Stale <b>0</b></div>
               <div><span class="legend red"></span>Offline <b>0</b></div>
               <button data-jump="tunnels">OPEN TUNNEL MATRIX →</button>
             </div>
@@ -163,7 +164,7 @@
 
       <section class="view" id="view-fleet">
         <div class="section-toolbar"><div><span>Coordinated execution</span><strong>Fleet operations</strong></div><button class="primary-btn" id="add-fleet-operation">＋ NEW OPERATION</button></div>
-        <article class="panel fleet-hero"><div><span class="panel-kicker">CONTROLLED MULTI-NODE PLAYBOOKS</span><h2>One safe operation. Every selected Agent.</h2><p>Diagnostics, tunnel tests, managed service actions and Agent synchronization run through the existing allowlist.</p></div><span>FLEET</span></article>
+        <article class="panel fleet-hero"><div><span class="panel-kicker">CONTROLLED MULTI-NODE PLAYBOOKS</span><h2>One safe operation. Every selected Agent.</h2><p>Diagnostics, tunnel tests, managed service actions and canary-first Agent upgrades run through the existing allowlist.</p><div class="version-compliance" id="fleet-version-compliance"><b>HUB —</b><span>Waiting for Agent inventory…</span></div></div><span>FLEET</span></article>
         <div class="fleet-list" id="fleet-list"></div>
       </section>
 
@@ -208,7 +209,7 @@
       <section class="view" id="view-terminal">
         <div class="terminal-toolbar">
           <div class="connection-info"><span class="secure-dot"></span><div><small>SECURE SESSION</small><strong>Split command terminal</strong></div></div>
-          <div class="toolbar-actions terminal-connectors"><select id="ssh-node-select" aria-label="Select SSH server"><option value="">SELECT SERVER</option></select><button class="primary-btn" id="ssh-connect" type="button">CONNECT SSH</button><button class="ghost-btn" id="terminal-new-tab" type="button">NEW TAB</button><button class="ghost-btn" id="terminal-copy" type="button">COPY</button><button class="ghost-btn" id="terminal-paste" type="button">PASTE</button><button class="ghost-btn" id="terminal-fullscreen" type="button">FULLSCREEN</button><button class="danger-outline" id="disconnect" type="button">DISCONNECT</button></div>
+          <div class="toolbar-actions terminal-connectors"><select id="ssh-node-select" aria-label="Select SSH server"><option value="">SELECT SERVER</option></select><button class="primary-btn" id="ssh-connect" type="button">CONNECT SSH</button><button class="ghost-btn" id="terminal-new-tab" type="button">＋ PANE</button><select id="terminal-layout-mode" aria-label="Terminal layout"><option value="grid">GRID</option><option value="columns">COLUMNS</option><option value="focus">FOCUS</option></select><button class="ghost-btn" id="terminal-copy" type="button">COPY</button><button class="ghost-btn" id="terminal-paste" type="button">PASTE</button><button class="ghost-btn" id="terminal-fullscreen" type="button">FULLSCREEN</button><button class="danger-outline" id="disconnect" type="button">DISCONNECT ALL</button></div>
         </div>
         <div class="terminal-layout">
           <article class="terminal-card">
@@ -221,7 +222,7 @@
           </article>
         </div>
         <article class="quick-actions panel">
-          <div><span class="panel-kicker">TERMINAL TOOLS</span><h2>Search, logs and diagnostic playbooks</h2><div class="terminal-search"><input id="terminal-search-input" placeholder="Find in active terminal…" /><button id="terminal-search-prev">↑</button><button id="terminal-search-next">↓</button><button id="terminal-download-log">SAVE LOG</button><button id="clear-terminal">CLEAR</button><button id="session-log">JOB HISTORY</button></div></div>
+          <div><span class="panel-kicker">TERMINAL TOOLS</span><h2>Search, persistent sessions, snippets and replay</h2><div class="terminal-search"><input id="terminal-search-input" placeholder="Find in active terminal…" /><button id="terminal-search-prev">↑</button><button id="terminal-search-next">↓</button><button id="terminal-download-log">SAVE LOG</button><button id="terminal-replay">REPLAY</button><button id="clear-terminal">CLEAR</button><button id="session-log">JOB HISTORY</button></div><div class="snippet-bar"><select id="terminal-snippet-select"><option value="">SAVED SNIPPETS</option></select><input id="terminal-snippet-name" placeholder="Snippet name" /><input id="terminal-snippet-command" placeholder="Safe command to save…" /><button id="terminal-snippet-save">SAVE</button><button id="terminal-snippet-run">RUN</button></div></div>
           <div class="action-buttons"><button data-command="systemctl --failed">FAILED SERVICES</button><button data-command="journalctl -u 'backhaul@*' -n 100 --no-pager">TUNNEL LOGS</button><button data-command="ss -s">CONNECTIONS</button><button data-command="ip route">ROUTES</button><button data-command="df -h">DISK HEALTH</button><button data-command="top -bn1 | head -20">SYSTEM LOAD</button></div>
         </article>
         <section class="file-ops-grid">
@@ -291,7 +292,13 @@
 
   <div class="modal-backdrop" id="fleet-modal" aria-hidden="true">
     <div class="modal plugin-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-title"><div class="modal-head"><div><span class="panel-kicker">FLEET PLAYBOOK</span><h2 id="fleet-title">New fleet operation</h2></div><button class="modal-close fleet-close">×</button></div>
-      <form id="fleet-form"><label>OPERATION NAME<input name="name" value="NOC health sweep" required /></label><div class="form-grid"><label>PLAYBOOK<select name="kind"><option value="diagnostics">Diagnostics</option><option value="tunnel_test">Test every tunnel</option><option value="logs">Collect Agent logs</option><option value="service_status">Managed service status</option><option value="restart_service">Restart managed service</option><option value="configure_autoheal">Configure Auto-Heal</option><option value="sync_agent">Synchronize Agent</option></select></label><label>MANAGED SERVICE<input name="service" placeholder="backhaul@name.service" /></label></div><div class="form-grid fleet-autoheal" hidden><label>AUTO-HEAL<select name="autoheal_enabled"><option value="true">Enable</option><option value="false">Disable</option></select></label><label>COOLDOWN (SECONDS)<input name="cooldown_seconds" type="number" min="60" max="86400" value="300" /></label><label>MAX RESTARTS / HOUR<input name="max_restarts_per_hour" type="number" min="1" max="12" value="3" /></label></div><label>RUN AT <small>(leave empty to run now)</small><input name="scheduled_at" type="datetime-local" /></label><div class="fleet-node-picker" id="fleet-node-picker"></div><div class="security-note"><span>✓</span><p><strong>Allowlisted execution only</strong><small>No arbitrary shell command is accepted by Fleet Operations.</small></p></div><div class="modal-actions"><button type="button" class="ghost-btn fleet-close">CANCEL</button><button type="submit" class="primary-btn">QUEUE OPERATION</button></div></form>
+      <form id="fleet-form">
+        <label>OPERATION NAME<input name="name" value="NOC health sweep" required /></label>
+        <div class="form-grid"><label>PLAYBOOK<select name="kind"><option value="diagnostics">Diagnostics</option><option value="tunnel_test">Test every tunnel</option><option value="logs">Collect Agent logs</option><option value="service_status">Managed service status</option><option value="restart_service">Restart managed service</option><option value="configure_autoheal">Configure Auto-Heal</option><option value="sync_agent">Synchronize Agent</option><option value="upgrade_agents">Upgrade Agents · Canary rollout</option></select></label><label>MANAGED SERVICE<input name="service" placeholder="backhaul@name.service" /></label></div>
+        <div class="form-grid fleet-autoheal" hidden><label>AUTO-HEAL<select name="autoheal_enabled"><option value="true">Enable</option><option value="false">Disable</option></select></label><label>COOLDOWN (SECONDS)<input name="cooldown_seconds" type="number" min="60" max="86400" value="300" /></label><label>MAX RESTARTS / HOUR<input name="max_restarts_per_hour" type="number" min="1" max="12" value="3" /></label></div>
+        <div class="fleet-upgrade" hidden><div class="form-grid"><label>CANARY NODE<select name="canary_node_id"><option value="">AUTO · First selected Node</option></select></label><label>BATCH SIZE<input name="batch_size" type="number" min="1" max="10" value="1" /></label></div><div class="form-grid"><label>PAUSE BETWEEN BATCHES (SECONDS)<input name="pause_seconds" type="number" min="0" max="300" value="5" /></label><label class="file-overwrite"><input name="stop_on_failure" type="checkbox" checked /> STOP ROLLOUT ON FIRST FAILURE</label></div><div class="security-note"><span>↻</span><p><strong>Version-verified rollout</strong><small>The canary upgrades alone first. Every batch must heartbeat with the exact Hub version before the rollout continues.</small></p></div></div>
+        <label>RUN AT <small>(leave empty to run now)</small><input name="scheduled_at" type="datetime-local" /></label><div class="fleet-node-picker" id="fleet-node-picker"></div><div class="security-note"><span>✓</span><p><strong>Allowlisted execution only</strong><small>No arbitrary shell command is accepted by Fleet Operations.</small></p></div><div class="modal-actions"><button type="button" class="ghost-btn fleet-close">CANCEL</button><button type="submit" class="primary-btn">QUEUE OPERATION</button></div>
+      </form>
     </div>
   </div>
 
@@ -312,10 +319,18 @@
       <div class="modal-head"><div><span class="panel-kicker">DARK TUNNEL CONTROL</span><h2 id="tunnel-manage-title">Manage tunnel</h2></div><button class="modal-close tunnel-manage-close">×</button></div>
       <div class="tunnel-manager-body">
         <div id="tunnel-manage-summary" class="security-note"></div>
+        <div class="tunnel-ops-kpis" id="tunnel-ops-kpis"><article><span>HEALTH</span><b>—</b></article><article><span>TRAFFIC</span><b>—</b></article><article><span>SESSIONS</span><b>—</b></article><article><span>UPTIME</span><b>—</b></article></div>
+        <div class="tunnel-path-card" id="tunnel-path-card"></div>
+        <div class="tunnel-history"><header><span>24H HEALTH / TRAFFIC TIMELINE</span><b id="tunnel-sample-count">0 SAMPLES</b></header><svg id="tunnel-history-chart" viewBox="0 0 900 150" preserveAspectRatio="none" aria-label="Tunnel health and traffic history"></svg></div>
+        <div class="tunnel-job-timeline" id="tunnel-job-timeline"></div>
         <div class="tunnel-control-grid"><button data-tunnel-action="start">▶ START</button><button data-tunnel-action="stop">■ STOP</button><button data-tunnel-action="restart">↻ RESTART</button><button data-tunnel-action="status">STATUS</button><button data-tunnel-action="logs">LOGS</button><button data-tunnel-action="test">TEST PATH</button></div>
         <form id="tunnel-edit-form"><label>USER PORTS · ADD, REMOVE OR REORDER<input name="user_ports" required /></label><div class="form-grid"><label>TRANSPORT<select name="transport"><option value="tcpmux">TCPMUX</option><option value="tcp">TCP</option><option value="wsmux">WSMUX</option><option value="ws">WebSocket</option><option value="udp">UDP</option></select></label><label>PROFILE<select name="profile"><option value="balanced">Balanced</option><option value="stable">Stable</option><option value="lowping">Low Ping</option><option value="turbo">Turbo</option></select></label></div><label class="full-field">RESTART SCHEDULE<select name="restart_every"><option value="off">Off</option><option value="1h">Every 1 hour</option><option value="6h">Every 6 hours</option><option value="12h">Every 12 hours</option><option value="24h">Every 24 hours</option></select></label><div class="modal-actions"><button type="button" class="danger-outline" id="tunnel-delete">DELETE TUNNEL</button><button type="submit" class="primary-btn">SAVE & REDEPLOY</button></div></form>
       </div>
     </div>
+  </div>
+
+  <div class="modal-backdrop" id="terminal-replay-modal" aria-hidden="true">
+    <div class="output-panel" role="dialog" aria-modal="true"><div class="modal-head"><div><span class="panel-kicker">SSH SESSION RECORDING</span><h2 id="terminal-replay-title">Terminal replay</h2></div><button class="modal-close terminal-replay-close">×</button></div><pre id="terminal-replay-output"></pre><div class="modal-actions output-actions"><span id="terminal-replay-status">READY</span><button class="ghost-btn" id="terminal-replay-stop">STOP</button><button class="primary-btn terminal-replay-close">DONE</button></div></div>
   </div>
 
   <div class="modal-backdrop" id="node-modal" aria-hidden="true">
@@ -361,6 +376,6 @@
   <script src="/static/vendor/xterm/addon-fit.js?v=0.10.0"></script>
   <script src="/static/vendor/xterm/addon-search.js?v=0.15.0"></script>
   <script src="/static/vendor/xterm/addon-web-links.js?v=0.11.0"></script>
-  <script src="/static/app.js?v=2.7.0"></script>
+  <script src="/static/app.js?v=2.8.0"></script>
 </body>
 </html>

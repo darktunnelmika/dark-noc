@@ -33,6 +33,14 @@ assert agent.port_sessions(0) == 0
 agent.systemd_status = lambda service: "active"
 agent.socket_state = lambda port, remote_host=None: (True, 3)
 agent.port_sessions = lambda port: 2
+agent.service_uptime_seconds = lambda service: 3600
+
+
+async def fake_tcp_probe(host, port, timeout=4.0):
+    return True, 22.5
+
+
+agent.tcp_probe = fake_tcp_probe
 
 server = asyncio.run(agent.tunnel_report({
     "name": "dark-link", "method": "DARK Backhaul", "role": "server",
@@ -42,6 +50,7 @@ server = asyncio.run(agent.tunnel_report({
 assert server["status"] == "healthy"
 assert server["sessions"] == 4
 assert server["latency_ms"] is None
+assert server["service_uptime"] == 3600
 
 client = asyncio.run(agent.tunnel_report({
     "name": "dark-link", "method": "DARK Backhaul", "role": "client",
@@ -50,6 +59,14 @@ client = asyncio.run(agent.tunnel_report({
 }))
 assert client["status"] == "healthy"
 assert client["sessions"] == 3
+assert client["latency_ms"] == 22.5
+
+agent._TUNNEL_TRAFFIC_CACHE.clear()
+with patch.object(agent, "run", return_value=(0, "ESTAB 0 0 10.0.0.1:443 198.51.100.2:55000\n cubic bytes_sent:5000 bytes_received:7000\n")):
+    assert agent.socket_byte_snapshot() == [({443, 55000}, 7000, 5000)]
+with patch.object(agent.time, "monotonic", side_effect=[100.0, 102.0]):
+    assert agent.tunnel_traffic_bps("ops", {443}, [({443, 55000}, 1000, 2000)]) == (0.0, 0.0)
+    assert agent.tunnel_traffic_bps("ops", {443}, [({443, 55000}, 3000, 5000)]) == (8000.0, 12000.0)
 
 packet = asyncio.run(agent.tunnel_report({
     "name": "packet-link", "method": "DARK Packet Pro", "role": "client",

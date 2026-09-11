@@ -29,6 +29,7 @@ SSH_EDITOR_LIMIT_KB="${DARK_NOC_SSH_EDITOR_LIMIT_KB:-}"
 MONITOR_RETENTION_DAYS="${DARK_NOC_MONITOR_RETENTION_DAYS:-}"
 METRIC_RETENTION_DAYS="${DARK_NOC_METRIC_RETENTION_DAYS:-}"
 ROLLUP_RETENTION_DAYS="${DARK_NOC_ROLLUP_RETENTION_DAYS:-}"
+TUNNEL_RETENTION_DAYS="${DARK_NOC_TUNNEL_RETENTION_DAYS:-}"
 HUB_LEASE_SECONDS="${DARK_NOC_HUB_LEASE_SECONDS:-}"
 DATA_DIR="${DARK_NOC_DATA:-}"
 LOCAL_ENROLL_SECRET=""
@@ -71,7 +72,7 @@ validate_integer_setting() {
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.7.0"
+echo "  Nightfall Command v2.8.0"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
@@ -99,6 +100,7 @@ if [[ -f /etc/dark-noc/hub.env ]]; then
   saved_monitor_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_MONITOR_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
   saved_metric_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_METRIC_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
   saved_rollup_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_ROLLUP_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_tunnel_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_TUNNEL_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
   saved_hub_lease="$(bash -c 'source "$1"; printf %s "${DARK_NOC_HUB_LEASE_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
   saved_data_dir="$(bash -c 'source "$1"; printf %s "${DARK_NOC_DATA:-}"' _ /etc/dark-noc/hub.env)"
   [[ -z "$saved_public_host" ]] || DEFAULT_PUBLIC_HOST="$saved_public_host"
@@ -127,6 +129,7 @@ if [[ -f /etc/dark-noc/hub.env ]]; then
   [[ -n "$MONITOR_RETENTION_DAYS" ]] || MONITOR_RETENTION_DAYS="$saved_monitor_retention"
   [[ -n "$METRIC_RETENTION_DAYS" ]] || METRIC_RETENTION_DAYS="$saved_metric_retention"
   [[ -n "$ROLLUP_RETENTION_DAYS" ]] || ROLLUP_RETENTION_DAYS="$saved_rollup_retention"
+  [[ -n "$TUNNEL_RETENTION_DAYS" ]] || TUNNEL_RETENTION_DAYS="$saved_tunnel_retention"
   [[ -n "$HUB_LEASE_SECONDS" ]] || HUB_LEASE_SECONDS="$saved_hub_lease"
   # Existing installations retain their data location. Moving the database and
   # master key requires a separate explicit migration, never a routine upgrade.
@@ -146,6 +149,7 @@ SSH_EDITOR_LIMIT_KB="${SSH_EDITOR_LIMIT_KB:-1024}"
 MONITOR_RETENTION_DAYS="${MONITOR_RETENTION_DAYS:-90}"
 METRIC_RETENTION_DAYS="${METRIC_RETENTION_DAYS:-31}"
 ROLLUP_RETENTION_DAYS="${ROLLUP_RETENTION_DAYS:-730}"
+TUNNEL_RETENTION_DAYS="${TUNNEL_RETENTION_DAYS:-31}"
 HUB_LEASE_SECONDS="${HUB_LEASE_SECONDS:-75}"
 DATA_DIR="$(validate_data_dir "${DATA_DIR:-/var/lib/dark-noc}")"
 validate_integer_setting DARK_NOC_SSH_UPLOAD_LIMIT_MB "$SSH_UPLOAD_LIMIT_MB" 1 102400
@@ -162,6 +166,7 @@ validate_integer_setting DARK_NOC_SSH_EDITOR_LIMIT_KB "$SSH_EDITOR_LIMIT_KB" 16 
 validate_integer_setting DARK_NOC_MONITOR_RETENTION_DAYS "$MONITOR_RETENTION_DAYS" 7 730
 validate_integer_setting DARK_NOC_METRIC_RETENTION_DAYS "$METRIC_RETENTION_DAYS" 1 365
 validate_integer_setting DARK_NOC_ROLLUP_RETENTION_DAYS "$ROLLUP_RETENTION_DAYS" 30 3650
+validate_integer_setting DARK_NOC_TUNNEL_RETENTION_DAYS "$TUNNEL_RETENTION_DAYS" 1 365
 validate_integer_setting DARK_NOC_HUB_LEASE_SECONDS "$HUB_LEASE_SECONDS" 30 300
 if [[ -z "$PUBLIC_HOST" ]]; then
   read -r -p "Panel domain or public IP [$DEFAULT_PUBLIC_HOST]: " input_host
@@ -249,7 +254,7 @@ then
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl certbot python3-certbot-nginx iproute2 iputils-ping iptables iperf3 snmp
+apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl certbot python3-certbot-nginx iproute2 iputils-ping iptables iperf3 snmp tmux
 for public_port in 80 "$PUBLIC_PORT"; do
   holder="$(ss -H -ltnp "sport = :$public_port" 2>/dev/null || true)"
   if [[ "$public_port" == "$OLD_HUB_PORT" && "$holder" == *uvicorn* ]]; then
@@ -320,6 +325,7 @@ umask 0077
   printf 'DARK_NOC_MONITOR_RETENTION_DAYS=%q\n' "$MONITOR_RETENTION_DAYS"
   printf 'DARK_NOC_METRIC_RETENTION_DAYS=%q\n' "$METRIC_RETENTION_DAYS"
   printf 'DARK_NOC_ROLLUP_RETENTION_DAYS=%q\n' "$ROLLUP_RETENTION_DAYS"
+  printf 'DARK_NOC_TUNNEL_RETENTION_DAYS=%q\n' "$TUNNEL_RETENTION_DAYS"
   printf 'DARK_NOC_HUB_LEASE_SECONDS=%q\n' "$HUB_LEASE_SECONDS"
 } > /etc/dark-noc/hub.env
 

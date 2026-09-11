@@ -34,8 +34,8 @@ async def fake_provision_node(node_id: int, enrollment: str) -> None:
     enrollment_tokens[node_id] = enrollment
     with hub.db() as conn:
         conn.execute(
-            "UPDATE nodes SET provision_status='completed',updated_at=? WHERE id=?",
-            (hub.utc_ts(), node_id),
+            "UPDATE nodes SET provision_status='completed',agent_version=?,updated_at=? WHERE id=?",
+            (hub.VERSION, hub.utc_ts(), node_id),
         )
 
 
@@ -89,6 +89,32 @@ with TestClient(hub.app, base_url="https://testserver") as client:
     assert hourly_metrics.json()[0]["resolution"] == "hour"
     assert client.get("/api/nodes/999/metrics").status_code == 404
     assert client.get(f"/api/nodes/{node_id}/metrics?resolution=bad").status_code == 422
+
+    tunnel_heartbeat = client.post("/api/agent/heartbeat", headers=auth, json={
+        "agent_version": hub.VERSION,
+        "metrics": {
+            "cpu": 22, "ram": 33, "swap": 0, "disk": 41, "load1": 0.5,
+            "rx_bps": 1400, "tx_bps": 900, "uptime": 4100, "connections": 14,
+        },
+        "services": [{"name": "backhaul@ops.service", "status": "active"}],
+        "tunnels": [{
+            "name": "ops", "method": "DARK Backhaul", "target": "203.0.113.8:3080",
+            "service": "backhaul@ops.service", "listen_port": 3080, "status": "healthy",
+            "latency_ms": 18.5, "packet_loss": 0, "sessions": 7,
+            "rx_bps": 64000, "tx_bps": 32000, "service_uptime": 7200,
+            "role": "server", "target_host": "::ffff:203.0.113.8", "target_port": 3080,
+            "user_ports": [443], "transport": "tcpmux", "profile": "balanced",
+            "restart_every": "off", "peer_ips": ["::ffff:203.0.113.8"],
+            "checks": {"process": True, "path": True},
+        }],
+    })
+    assert tunnel_heartbeat.status_code == 200
+    tunnel = client.get("/api/tunnels").json()[0]
+    assert tunnel["target_host"] == "203.0.113.8"
+    assert tunnel["traffic_bps"] == 96000 and tunnel["health_score"] == 100
+    operations = client.get(f"/api/tunnels/{tunnel['id']}/operations?hours=24")
+    assert operations.status_code == 200
+    assert operations.json()["samples"][0]["service_uptime"] == 7200
 
     monitor = client.post("/api/monitors", json={
         "name": "TCP edge test", "node_id": node_id, "kind": "tcp",
@@ -182,9 +208,19 @@ with TestClient(hub.app, base_url="https://testserver") as client:
     assert scheduled.status_code == 202 and scheduled.json()["status"] == "scheduled"
     assert client.delete(f"/api/fleet/operations/{scheduled.json()['id']}").status_code == 200
 
+    upgrade = client.post("/api/fleet/operations", json={
+        "name": "Agent controlled rollout", "node_ids": [node_id], "kind": "upgrade_agents",
+        "payload": {"canary_node_id": node_id, "batch_size": 1, "pause_seconds": 0, "stop_on_failure": True},
+    })
+    assert upgrade.status_code == 202 and upgrade.json()["status"] == "running"
+    upgrade_result = client.get("/api/fleet/operations").json()[0]
+    assert upgrade_result["kind"] == "upgrade_agents" and upgrade_result["status"] == "completed"
+    assert upgrade_result["payload"]["target_version"] == hub.VERSION
+
     status = client.get("/api/system/status")
     assert status.status_code == 200
     assert status.json()["counts"]["monitors"] == 1
+    assert status.json()["counts"]["tunnel_samples"] == 1
     assert status.json()["retention"]["rollups_days"] >= 30
 
     with hub.db() as conn:

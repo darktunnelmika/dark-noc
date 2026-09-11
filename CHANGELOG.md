@@ -3,6 +3,26 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] - 2026-09-11
+
+### Added
+
+- Tunnel Operations Cockpit with retained samples, health score, traffic/session/uptime KPIs, 24-hour graph, endpoint intelligence, recent job timeline and direct SSH actions.
+- Animated next-generation tree topology with status-specific routes, live traffic particles, route labels, deep hover telemetry and click-through tunnel management.
+- Canary-first Agent Upgrade Orchestrator with bounded batches, configurable pauses, stop-on-failure, exact post-upgrade version verification and Fleet version compliance.
+- Advanced SSH Workspace with unlimited panes, grid/column/focus layouts, remote tmux persistence, exponential reconnect, local command snippets and session recording/replay.
+- Per-tunnel Agent traffic attribution from kernel TCP counters and systemd service uptime telemetry.
+
+### Changed
+
+- Node and Hub prerequisite installation now includes `tmux` for persistent browser SSH sessions.
+- Dashboard API exposes the running Hub version and tunnel retention is independently configurable with `DARK_NOC_TUNNEL_RETENTION_DAYS`.
+
+### Fixed
+
+- Normalized IPv4-mapped IPv6 peer addresses before topology matching and display.
+- Made tunnel service-uptime parsing tolerant of malformed or older Agent reports.
+
 ## [2.7.0] - 2026-09-11
 
 ### Added

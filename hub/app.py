@@ -39,7 +39,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 120
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -82,6 +82,7 @@ NODE_PROVISION_CONCURRENCY = bounded_env_int("DARK_NOC_PROVISION_CONCURRENCY", 4
 MONITOR_RESULT_RETENTION_DAYS = bounded_env_int("DARK_NOC_MONITOR_RETENTION_DAYS", 90, 7, 730)
 METRIC_RAW_RETENTION_DAYS = bounded_env_int("DARK_NOC_METRIC_RETENTION_DAYS", 31, 1, 365)
 METRIC_ROLLUP_RETENTION_DAYS = bounded_env_int("DARK_NOC_ROLLUP_RETENTION_DAYS", 730, 30, 3650)
+TUNNEL_SAMPLE_RETENTION_DAYS = bounded_env_int("DARK_NOC_TUNNEL_RETENTION_DAYS", 31, 1, 365)
 HUB_LEASE_SECONDS = bounded_env_int("DARK_NOC_HUB_LEASE_SECONDS", 75, 30, 300)
 HUB_INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
 SSH_EDITOR_LIMIT = bounded_env_int("DARK_NOC_SSH_EDITOR_LIMIT_KB", 1024, 16, 16_384) * 1024
@@ -313,6 +314,13 @@ CREATE TABLE IF NOT EXISTS tunnels (
   status TEXT, latency_ms REAL, packet_loss REAL, sessions INTEGER, rx_bps REAL, tx_bps REAL,
   last_check INTEGER, details TEXT, failure_streak INTEGER NOT NULL DEFAULT 0, UNIQUE(node_id, name)
 );
+CREATE TABLE IF NOT EXISTS tunnel_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tunnel_id INTEGER NOT NULL REFERENCES tunnels(id) ON DELETE CASCADE,
+  ts INTEGER NOT NULL, status TEXT NOT NULL, latency_ms REAL, packet_loss REAL,
+  sessions INTEGER, rx_bps REAL, tx_bps REAL, service_uptime INTEGER,
+  process_ok INTEGER, path_ok INTEGER
+);
 CREATE TABLE IF NOT EXISTS incidents (
   id INTEGER PRIMARY KEY AUTOINCREMENT, node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
   tunnel_id INTEGER REFERENCES tunnels(id) ON DELETE SET NULL, severity TEXT NOT NULL,
@@ -396,6 +404,7 @@ CREATE TABLE IF NOT EXISTS metric_rollups (
 CREATE INDEX IF NOT EXISTS idx_jobs_node_status ON jobs(node_id,status,id);
 CREATE INDEX IF NOT EXISTS idx_incidents_status_opened ON incidents(status,opened_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tunnels_node ON tunnels(node_id);
+CREATE INDEX IF NOT EXISTS idx_tunnel_samples_tunnel_ts ON tunnel_samples(tunnel_id,ts DESC);
 CREATE INDEX IF NOT EXISTS idx_hybrid_node ON hybrid_deployments(iran_node_id,id DESC);
 CREATE INDEX IF NOT EXISTS idx_certificates_node ON certificates(node_id,status);
 CREATE INDEX IF NOT EXISTS idx_incident_events_incident ON incident_events(incident_id,created_at,id);
@@ -680,6 +689,7 @@ async def maintenance_loop() -> None:
                 rollup_previous_hour(conn, utc_ts())
                 conn.execute("DELETE FROM metrics WHERE ts < ?", (utc_ts() - METRIC_RAW_RETENTION_DAYS * 86400,))
                 conn.execute("DELETE FROM metric_rollups WHERE bucket < ?", (utc_ts() - METRIC_ROLLUP_RETENTION_DAYS * 86400,))
+                conn.execute("DELETE FROM tunnel_samples WHERE ts < ?", (utc_ts() - TUNNEL_SAMPLE_RETENTION_DAYS * 86400,))
                 conn.execute("DELETE FROM monitor_results WHERE ts < ?", (utc_ts() - MONITOR_RESULT_RETENTION_DAYS * 86400,))
                 conn.execute("UPDATE jobs SET status='queued',started_at=NULL WHERE status='running' AND started_at<?", (utc_ts() - 5 * 60,))
                 conn.execute("DELETE FROM jobs WHERE finished_at IS NOT NULL AND finished_at<?", (utc_ts() - 90 * 86400,))
@@ -885,7 +895,7 @@ class MonitorBody(BaseModel):
 class FleetOperationBody(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,80}$")
     node_ids: list[int] = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|logs|configure_autoheal|sync_agent)$")
+    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|logs|configure_autoheal|sync_agent|upgrade_agents)$")
     service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.@-]{1,128}$")
     payload: dict[str, Any] = Field(default_factory=dict)
     scheduled_at: int | None = Field(default=None, ge=0)
@@ -1218,7 +1228,7 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
         async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
             prep = await ssh.run(
                 "export DEBIAN_FRONTEND=noninteractive; "
-                "apt-get update -qq && apt-get install -y python3 python3-venv python3-pip ca-certificates certbot curl tar openssl iproute2 iputils-ping iptables iperf3 snmp && "
+                "apt-get update -qq && apt-get install -y python3 python3-venv python3-pip ca-certificates certbot curl tar openssl iproute2 iputils-ping iptables iperf3 snmp tmux && "
                 "install -d -m 0755 /opt/dark-noc-agent && "
                 "install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro && "
                 "install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge",
@@ -1597,12 +1607,63 @@ async def provision_node_for_fleet(item_id: int, node_id: int, enrollment: str) 
     finally:
         with db() as conn:
             item = conn.execute("SELECT operation_id FROM fleet_operation_items WHERE id=?", (item_id,)).fetchone()
-            node = conn.execute("SELECT provision_status FROM nodes WHERE id=?", (node_id,)).fetchone()
+            node = conn.execute("SELECT provision_status,agent_version FROM nodes WHERE id=?", (node_id,)).fetchone()
             if not item:
                 return
-            status = "completed" if node and node["provision_status"] == "completed" else "failed"
+            status = "completed" if node and node["provision_status"] == "completed" and node["agent_version"] == VERSION else "failed"
+            if node and node["provision_status"] == "completed" and node["agent_version"] != VERSION:
+                conn.execute(
+                    "UPDATE nodes SET provision_status='failed',provision_output=COALESCE(provision_output,'') || ?,updated_at=? WHERE id=?",
+                    (f"\nVERSION CHECK FAILED: expected Agent {VERSION}, received {node['agent_version'] or 'unknown'}", utc_ts(), node_id),
+                )
             conn.execute("UPDATE fleet_operation_items SET status=? WHERE id=?", (status, item_id))
             finalize_fleet_operation(conn, item["operation_id"])
+
+
+async def orchestrate_agent_upgrade(
+    operation_id: int,
+    rollout: list[dict[str, Any]],
+    batch_size: int,
+    pause_seconds: int,
+    stop_on_failure: bool,
+) -> None:
+    """Roll out the current Agent build in a canary-first, bounded sequence."""
+    batches: list[list[dict[str, Any]]] = []
+    remaining = list(rollout)
+    if remaining and remaining[0].get("canary"):
+        batches.append([remaining.pop(0)])
+    batches.extend(remaining[offset:offset + batch_size] for offset in range(0, len(remaining), batch_size))
+    for batch_index, batch in enumerate(batches):
+        with db() as conn:
+            operation = conn.execute("SELECT status FROM fleet_operations WHERE id=?", (operation_id,)).fetchone()
+            if not operation or operation["status"] not in {"running", "scheduled"}:
+                return
+            for entry in batch:
+                conn.execute("UPDATE fleet_operation_items SET status='running' WHERE id=?", (entry["item_id"],))
+                conn.execute(
+                    "UPDATE nodes SET provision_status='provisioning',provision_output='',updated_at=? WHERE id=?",
+                    (utc_ts(), entry["node_id"]),
+                )
+        await asyncio.gather(
+            *(
+                provision_node_for_fleet(entry["item_id"], entry["node_id"], entry["enrollment"])
+                for entry in batch
+            )
+        )
+        with db() as conn:
+            failed = conn.execute(
+                "SELECT COUNT(*) count FROM fleet_operation_items WHERE operation_id=? AND status='failed'",
+                (operation_id,),
+            ).fetchone()["count"]
+            if failed and stop_on_failure:
+                conn.execute(
+                    "UPDATE fleet_operation_items SET status='cancelled' WHERE operation_id=? AND status='scheduled'",
+                    (operation_id,),
+                )
+                finalize_fleet_operation(conn, operation_id)
+                return
+        if batch_index + 1 < len(batches) and pause_seconds:
+            await asyncio.sleep(pause_seconds)
 
 
 def login_rate_check(ip: str) -> None:
@@ -1672,7 +1733,7 @@ def dashboard(_: sqlite3.Row = Depends(current_user)):
     tunnel_counts = {r["status"]: r["count"] for r in tunnel_rows}
     component_total = sum(node_counts.values()) + sum(tunnel_counts.values())
     health_percent = round(100 * (node_counts.get("online", 0) + tunnel_counts.get("healthy", 0)) / component_total, 1) if component_total else 0.0
-    return {"nodes": node_counts, "tunnels": tunnel_counts, "health_percent": health_percent, "rx_bps": totals["rx"], "tx_bps": totals["tx"], "throughput_bps": totals["rx"] + totals["tx"], "connections": totals["connections"], "open_incidents": incidents, "server_time": utc_ts(), "limits": {"ssh_upload_bytes": SSH_UPLOAD_LIMIT, "ssh_relay_bytes": SSH_RELAY_LIMIT, "ssh_upload_queue_seconds": SSH_UPLOAD_QUEUE_TIMEOUT}}
+    return {"version": VERSION, "nodes": node_counts, "tunnels": tunnel_counts, "health_percent": health_percent, "rx_bps": totals["rx"], "tx_bps": totals["tx"], "throughput_bps": totals["rx"] + totals["tx"], "connections": totals["connections"], "open_incidents": incidents, "server_time": utc_ts(), "limits": {"ssh_upload_bytes": SSH_UPLOAD_LIMIT, "ssh_relay_bytes": SSH_RELAY_LIMIT, "ssh_upload_queue_seconds": SSH_UPLOAD_QUEUE_TIMEOUT}}
 
 
 @app.get("/api/dashboard/traffic")
@@ -2317,6 +2378,33 @@ def metrics(node_id: int, hours: int = 24, resolution: str = "auto", _: sqlite3.
     return [{**dict(row), "resolution": "hour"} for row in combined]
 
 
+def tunnel_health_score(item: dict[str, Any]) -> int:
+    status = str(item.get("status") or "unknown").casefold()
+    if status in {"down", "offline"}:
+        return 0
+    score = 35 if status == "stale" else 65 if status == "degraded" else 100
+    try:
+        score -= min(45, round(float(item.get("packet_loss") or 0) * 2))
+    except (TypeError, ValueError):
+        pass
+    try:
+        latency = float(item.get("latency_ms"))
+        if latency > 250:
+            score -= 25
+        elif latency > 120:
+            score -= 12
+        elif latency > 60:
+            score -= 5
+    except (TypeError, ValueError):
+        pass
+    checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+    if checks.get("process") is False:
+        score -= 50
+    if checks.get("path") is False:
+        score -= 35
+    return min(max(score, 0), 100)
+
+
 @app.get("/api/tunnels")
 def list_tunnels(_: sqlite3.Row = Depends(current_user)):
     with db() as conn:
@@ -2339,16 +2427,23 @@ def list_tunnels(_: sqlite3.Row = Depends(current_user)):
         except (TypeError, ValueError):
             details = {}
         item["tunnel_role"] = str(details.get("role") or "")
-        item["target_host"] = str(details.get("target_host") or "")
+        item["target_host"] = normalize_ip(details.get("target_host"))
         item["target_port"] = details.get("target_port")
         item["user_ports"] = details.get("user_ports") if isinstance(details.get("user_ports"), list) else []
         item["transport"] = str(details.get("transport") or "unknown")
         item["profile"] = str(details.get("profile") or "unknown")
         item["restart_every"] = str(details.get("restart_every") or "off")
+        item["checks"] = details.get("checks") if isinstance(details.get("checks"), dict) else {}
+        try:
+            item["service_uptime"] = max(0, int(details.get("service_uptime") or 0))
+        except (TypeError, ValueError):
+            item["service_uptime"] = 0
         item["peer_ips"] = [normalize_ip(value) for value in details.get("peer_ips", []) if value] if isinstance(details.get("peer_ips"), list) else []
         item["node_agent_online"] = bool(item["node_last_seen"] and item["node_last_seen"] >= now - NODE_STALE_AFTER)
         if not item["node_agent_online"]:
             item["status"] = "stale"
+        item["traffic_bps"] = float(item.get("rx_bps") or 0) + float(item.get("tx_bps") or 0)
+        item["health_score"] = tunnel_health_score(item)
         item.pop("details", None)
         result.append(item)
 
@@ -2376,6 +2471,94 @@ def list_tunnels(_: sqlite3.Row = Depends(current_user)):
         item["peer_agent_online"] = bool(peer and peer.get("last_seen") and peer["last_seen"] >= now - NODE_STALE_AFTER)
         item["peer_ssh_configured"] = bool(peer and peer.get("ssh_configured"))
     return result
+
+
+@app.get("/api/tunnels/{tunnel_id}/operations")
+def tunnel_operations(
+    tunnel_id: int,
+    hours: int = 24,
+    user: sqlite3.Row = Depends(current_user),
+):
+    hours = min(max(hours, 1), TUNNEL_SAMPLE_RETENTION_DAYS * 24)
+    inventory = list_tunnels(user)
+    tunnel = next((item for item in inventory if int(item["id"]) == tunnel_id), None)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    peer = next(
+        (
+            item for item in inventory
+            if item["name"] == tunnel["name"]
+            and int(item["node_id"]) == int(tunnel.get("peer_node_id") or 0)
+        ),
+        None,
+    )
+    cutoff = utc_ts() - hours * 3600
+    node_ids = [int(tunnel["node_id"])]
+    if tunnel.get("peer_node_id"):
+        node_ids.append(int(tunnel["peer_node_id"]))
+    with db() as conn:
+        samples = conn.execute(
+            """SELECT ts,status,latency_ms,packet_loss,sessions,rx_bps,tx_bps,
+                      service_uptime,process_ok,path_ok
+               FROM tunnel_samples WHERE tunnel_id=? AND ts>=? ORDER BY ts LIMIT 10000""",
+            (tunnel_id, cutoff),
+        ).fetchall()
+        placeholders = ",".join("?" for _ in node_ids)
+        job_rows = conn.execute(
+            f"SELECT jobs.*,nodes.name node_name FROM jobs JOIN nodes ON nodes.id=jobs.node_id "
+            f"WHERE jobs.node_id IN ({placeholders}) ORDER BY jobs.id DESC LIMIT 100",
+            node_ids,
+        ).fetchall()
+        managed = conn.execute(
+            "SELECT id,plugin_id,lifecycle,created_at,settings FROM plugin_deployments WHERE name=? AND lifecycle!='removed' ORDER BY id DESC LIMIT 1",
+            (tunnel["name"],),
+        ).fetchone()
+        hybrid = conn.execute(
+            "SELECT id,plugin_id,lifecycle,created_at,settings,remote_label FROM hybrid_deployments WHERE name=? AND lifecycle!='removed' ORDER BY id DESC LIMIT 1",
+            (tunnel["name"],),
+        ).fetchone()
+    recent_jobs: list[dict[str, Any]] = []
+    for row in job_rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if (
+            payload.get("name") == tunnel["name"]
+            or payload.get("service") == tunnel.get("service")
+            or row["kind"] == "tunnel_test"
+        ):
+            recent_jobs.append(public_job(row))
+        if len(recent_jobs) >= 20:
+            break
+    deployment = managed or hybrid
+    deployment_info = None
+    if deployment:
+        try:
+            settings = json.loads(deployment["settings"] or "{}")
+        except (TypeError, ValueError):
+            settings = {}
+        deployment_info = {
+            "id": deployment["id"],
+            "plugin_id": deployment["plugin_id"],
+            "mode": "managed" if managed else "pair_code",
+            "lifecycle": deployment["lifecycle"],
+            "created_at": deployment["created_at"],
+            "endpoint": settings.get("endpoint") or settings.get("iran_endpoint"),
+            "tunnel_port": settings.get("tunnel_port"),
+            "certificate_domain": settings.get("certificate_domain"),
+            "remote_label": hybrid["remote_label"] if hybrid else None,
+        }
+    sample_list = [dict(row) for row in samples]
+    return {
+        "tunnel": tunnel,
+        "peer": peer,
+        "deployment": deployment_info,
+        "samples": sample_list,
+        "recent_jobs": recent_jobs,
+        "window_hours": hours,
+        "sample_count": len(sample_list),
+    }
 
 
 @app.post("/api/tunnels/{tunnel_id}/action", status_code=202)
@@ -3086,9 +3269,38 @@ def create_fleet_operation(
         raise HTTPException(422, "Fleet operations can be scheduled at most one year ahead")
     if body.kind in {"restart_service", "service_status"} and not body.service:
         raise HTTPException(422, "This fleet operation requires a managed service name")
-    if body.kind == "sync_agent" and scheduled_at > now + 5:
-        raise HTTPException(422, "Agent synchronization must be started immediately")
+    remote_rollout = body.kind in {"sync_agent", "upgrade_agents"}
+    if remote_rollout and scheduled_at > now + 5:
+        raise HTTPException(422, "Agent synchronization and upgrades must be started immediately")
     payload = dict(body.payload)
+    batch_size = 1
+    pause_seconds = 5
+    stop_on_failure = True
+    canary_node_id: int | None = None
+    if body.kind == "upgrade_agents":
+        try:
+            batch_size = min(max(int(payload.get("batch_size", 1)), 1), 10)
+            pause_seconds = min(max(int(payload.get("pause_seconds", 5)), 0), 300)
+            raw_stop = payload.get("stop_on_failure", True)
+            if isinstance(raw_stop, bool):
+                stop_on_failure = raw_stop
+            elif str(raw_stop).strip().casefold() in {"true", "1", "yes", "on"}:
+                stop_on_failure = True
+            elif str(raw_stop).strip().casefold() in {"false", "0", "no", "off"}:
+                stop_on_failure = False
+            else:
+                raise ValueError("invalid stop_on_failure")
+            raw_canary = payload.get("canary_node_id")
+            canary_node_id = int(raw_canary) if raw_canary not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "Invalid Agent upgrade rollout settings") from exc
+        payload = {
+            "target_version": VERSION,
+            "batch_size": batch_size,
+            "pause_seconds": pause_seconds,
+            "stop_on_failure": stop_on_failure,
+            "canary_node_id": canary_node_id,
+        }
     if body.service:
         payload["service"] = body.service
     with db() as conn:
@@ -3099,21 +3311,26 @@ def create_fleet_operation(
         ).fetchall()
         if len(nodes) != len(node_ids):
             raise HTTPException(404, "One or more selected Nodes do not exist")
-        if body.kind == "sync_agent":
+        if remote_rollout:
             for node in nodes:
                 if node["role"] == "hub" or (not node["ssh_password_enc"] and not node["ssh_key_enc"]):
-                    raise HTTPException(409, f"{node['name']} cannot be synchronized through remote SSH")
+                    raise HTTPException(409, f"{node['name']} cannot be managed through remote SSH")
                 if node["provision_status"] == "provisioning":
-                    raise HTTPException(409, f"{node['name']} is already synchronizing")
+                    raise HTTPException(409, f"{node['name']} is already being provisioned")
+        if body.kind == "upgrade_agents" and canary_node_id is None:
+            canary_node_id = node_ids[0]
+            payload["canary_node_id"] = canary_node_id
+        if canary_node_id is not None and canary_node_id not in node_ids:
+            raise HTTPException(422, "The canary Node must be included in the selected rollout Nodes")
         operation_id = conn.execute(
             """INSERT INTO fleet_operations(name,kind,payload,status,scheduled_at,created_by,created_at,started_at)
                VALUES(?,?,?,?,?,?,?,?)""",
-            (body.name, body.kind, json.dumps(payload), "running" if body.kind == "sync_agent" else "scheduled",
-             scheduled_at, user["id"], now, now if body.kind == "sync_agent" else None),
+            (body.name, body.kind, json.dumps(payload), "running" if remote_rollout else "scheduled",
+             scheduled_at, user["id"], now, now if remote_rollout else None),
         ).lastrowid
         created_items: list[tuple[int, sqlite3.Row, str | None]] = []
         for node in nodes:
-            enrollment = secrets.token_urlsafe(36) if body.kind == "sync_agent" else None
+            enrollment = secrets.token_urlsafe(36) if remote_rollout else None
             if body.kind == "sync_agent":
                 conn.execute(
                     "UPDATE nodes SET provision_status='provisioning',provision_output='',updated_at=? WHERE id=?",
@@ -3124,13 +3341,32 @@ def create_fleet_operation(
                 (operation_id, node["id"], "running" if body.kind == "sync_agent" else "scheduled"),
             ).lastrowid
             created_items.append((item_id, node, enrollment))
-        if body.kind != "sync_agent" and scheduled_at <= now:
+        if not remote_rollout and scheduled_at <= now:
             queue_due_fleet_operations(conn, now)
     if body.kind == "sync_agent":
         for item_id, node, enrollment in created_items:
             background.add_task(provision_node_for_fleet, item_id, node["id"], enrollment or secrets.token_urlsafe(36))
+    elif body.kind == "upgrade_agents":
+        ordered = sorted(created_items, key=lambda item: 0 if item[1]["id"] == canary_node_id else 1)
+        rollout = [
+            {
+                "item_id": item_id,
+                "node_id": node["id"],
+                "enrollment": enrollment or secrets.token_urlsafe(36),
+                "canary": node["id"] == canary_node_id,
+            }
+            for item_id, node, enrollment in ordered
+        ]
+        background.add_task(
+            orchestrate_agent_upgrade,
+            operation_id,
+            rollout,
+            batch_size,
+            pause_seconds,
+            stop_on_failure,
+        )
     audit(user["id"], "fleet_operation_create", body.name, f"{body.kind}:{len(node_ids)} nodes", request.client.host if request.client else None)
-    return {"id": operation_id, "status": "running" if body.kind == "sync_agent" or scheduled_at <= now else "scheduled", "nodes": len(node_ids)}
+    return {"id": operation_id, "status": "running" if remote_rollout or scheduled_at <= now else "scheduled", "nodes": len(node_ids)}
 
 
 @app.delete("/api/fleet/operations/{operation_id}")
@@ -3139,10 +3375,11 @@ def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Ro
         operation = conn.execute("SELECT * FROM fleet_operations WHERE id=?", (operation_id,)).fetchone()
         if not operation:
             raise HTTPException(404, "Fleet operation not found")
-        if operation["status"] != "scheduled":
-            raise HTTPException(409, "Only a scheduled operation can be cancelled")
+        cancellable_rollout = operation["kind"] == "upgrade_agents" and operation["status"] == "running"
+        if operation["status"] != "scheduled" and not cancellable_rollout:
+            raise HTTPException(409, "Only a scheduled operation or active Agent rollout can be cancelled")
         conn.execute("UPDATE fleet_operations SET status='cancelled',finished_at=? WHERE id=?", (utc_ts(), operation_id))
-        conn.execute("UPDATE fleet_operation_items SET status='cancelled' WHERE operation_id=?", (operation_id,))
+        conn.execute("UPDATE fleet_operation_items SET status='cancelled' WHERE operation_id=? AND status='scheduled'", (operation_id,))
     audit(user["id"], "fleet_operation_cancel", operation["name"], str(operation_id), request.client.host if request.client else None)
     return {"ok": True}
 
@@ -3337,6 +3574,19 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             current = str(tunnel.get("status", "unknown"))
             previous = old["status"] if old else None
             tunnel_row = conn.execute("SELECT id FROM tunnels WHERE node_id=? AND name=?", (node["id"], name)).fetchone()
+            checks = tunnel.get("checks") if isinstance(tunnel.get("checks"), dict) else {}
+            conn.execute(
+                """INSERT INTO tunnel_samples(
+                       tunnel_id,ts,status,latency_ms,packet_loss,sessions,rx_bps,tx_bps,
+                       service_uptime,process_ok,path_ok
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    tunnel_row["id"], now, current, tunnel.get("latency_ms"),
+                    tunnel.get("packet_loss"), tunnel.get("sessions"), tunnel.get("rx_bps"),
+                    tunnel.get("tx_bps"), tunnel.get("service_uptime"),
+                    1 if checks.get("process") else 0, 1 if checks.get("path") else 0,
+                ),
+            )
             failure_streak = (int(old["failure_streak"] or 0) + 1) if old and current in {"down", "degraded"} else (1 if current in {"down", "degraded"} else 0)
             conn.execute("UPDATE tunnels SET failure_streak=? WHERE id=?", (failure_streak, tunnel_row["id"]))
             open_incident = conn.execute("SELECT id FROM incidents WHERE tunnel_id=? AND status IN ('open','acknowledged') LIMIT 1", (tunnel_row["id"],)).fetchone()
@@ -3590,6 +3840,12 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
         int(user["session_created_at"]) + SESSION_TTL,
         utc_ts() + SESSION_TTL,
     )
+    requested_session = str(websocket.query_params.get("session", "workspace"))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", requested_session):
+        await websocket.send_json({"type": "error", "message": "Invalid persistent terminal session name"})
+        await websocket.close(code=4400)
+        return
+    terminal_session = f"dn-{user['id']}-{node_id}-{requested_session}"[:64]
     audit(user["id"], "ssh_open", node["name"], "Interactive terminal opened", websocket.client.host if websocket.client else None)
     try:
         expected_fingerprint = node["ssh_host_fingerprint"]
@@ -3625,7 +3881,13 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
             if not websocket_session_valid(session_digest, user["id"], session_deadline):
                 await websocket.close(code=4401)
                 return
-            process = await conn.create_process(term_type="xterm-256color", term_size=(120, 32))
+            tmux_probe = await conn.run("command -v tmux >/dev/null 2>&1", check=False)
+            persistent = tmux_probe.exit_status == 0
+            if persistent:
+                command = f"exec tmux new-session -A -s {shlex.quote(terminal_session)}"
+                process = await conn.create_process(command, term_type="xterm-256color", term_size=(120, 32))
+            else:
+                process = await conn.create_process(term_type="xterm-256color", term_size=(120, 32))
 
             async def ssh_to_ws():
                 while not process.stdout.at_eof():
@@ -3645,7 +3907,13 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
 
             with db() as pin_conn:
                 pinned = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-            await websocket.send_json({"type": "connected", "node": node["name"], "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None})
+            await websocket.send_json({
+                "type": "connected",
+                "node": node["name"],
+                "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None,
+                "persistent": persistent,
+                "session": terminal_session,
+            })
             auth_task = asyncio.create_task(websocket_session_guard(session_digest, user["id"], session_deadline))
             tasks = {asyncio.create_task(ssh_to_ws()), asyncio.create_task(ws_to_ssh()), auth_task}
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -3698,6 +3966,7 @@ def system_status(_: sqlite3.Row = Depends(current_user)):
             "queued_jobs": conn.execute("SELECT COUNT(*) count FROM jobs WHERE status='queued'").fetchone()["count"],
             "metric_samples": conn.execute("SELECT COUNT(*) count FROM metrics").fetchone()["count"],
             "rollup_samples": conn.execute("SELECT COUNT(*) count FROM metric_rollups").fetchone()["count"],
+            "tunnel_samples": conn.execute("SELECT COUNT(*) count FROM tunnel_samples").fetchone()["count"],
         }
     return {
         "version": VERSION, "instance": HUB_INSTANCE_ID,
@@ -3705,6 +3974,7 @@ def system_status(_: sqlite3.Row = Depends(current_user)):
         "retention": {
             "raw_metrics_days": METRIC_RAW_RETENTION_DAYS,
             "rollups_days": METRIC_ROLLUP_RETENTION_DAYS,
+            "tunnel_samples_days": TUNNEL_SAMPLE_RETENTION_DAYS,
             "monitor_results_days": MONITOR_RESULT_RETENTION_DAYS,
         },
         "counts": counts,

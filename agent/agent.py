@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 import psutil
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
@@ -32,6 +32,7 @@ GOST_RELEASE_API = "https://api.github.com/repos/go-gost/gost/releases/latest"
 PAQET_REPO = "hanselime/paqet"
 PAQET_CORE_TAG = "v1.0.0-alpha.21"
 _CONNECTION_SNAPSHOT: list[Any] = []
+_TUNNEL_TRAFFIC_CACHE: dict[str, tuple[float, int, int]] = {}
 
 
 def refresh_connection_snapshot() -> list[Any]:
@@ -76,6 +77,68 @@ def run(command: list[str], timeout: int = 20) -> tuple[int, str]:
 def systemd_status(service: str) -> str:
     code, _ = run(["systemctl", "is-active", service], timeout=8)
     return "active" if code == 0 else "inactive"
+
+
+def service_uptime_seconds(service: str) -> int:
+    if not service:
+        return 0
+    code, output = run(
+        ["systemctl", "show", service, "--property=ActiveEnterTimestampMonotonic", "--value"],
+        timeout=8,
+    )
+    try:
+        entered_us = int(output.strip()) if code == 0 else 0
+        boot_seconds = time.clock_gettime(time.CLOCK_BOOTTIME)
+        return max(0, int(boot_seconds - entered_us / 1_000_000)) if entered_us else 0
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def socket_byte_snapshot() -> list[tuple[set[int], int, int]]:
+    """Read cumulative TCP byte counters once, then attribute them by endpoint port."""
+    code, output = run(["ss", "-tinH"], timeout=12)
+    if code != 0:
+        return []
+    records: list[tuple[set[int], int, int]] = []
+    ports: set[int] = set()
+    received = sent = 0
+
+    def flush() -> None:
+        nonlocal ports, received, sent
+        if ports:
+            records.append((ports, received, sent))
+        ports, received, sent = set(), 0, 0
+
+    for line in output.splitlines():
+        if line and not line[0].isspace():
+            flush()
+            for match in re.finditer(r"(?:\[[^\]]+\]|[^\s:]+):(\d+)(?:\s|$)", line):
+                port = int(match.group(1))
+                if 0 < port <= 65535:
+                    ports.add(port)
+        received_match = re.search(r"\bbytes_received:(\d+)", line)
+        sent_match = re.search(r"\bbytes_sent:(\d+)", line)
+        if received_match:
+            received = int(received_match.group(1))
+        if sent_match:
+            sent = int(sent_match.group(1))
+    flush()
+    return records
+
+
+def tunnel_traffic_bps(key: str, tunnel_ports: set[int], snapshot: list[tuple[set[int], int, int]]) -> tuple[float, float]:
+    now = time.monotonic()
+    received = sum(rx for ports, rx, _ in snapshot if ports & tunnel_ports)
+    sent = sum(tx for ports, _, tx in snapshot if ports & tunnel_ports)
+    previous = _TUNNEL_TRAFFIC_CACHE.get(key)
+    _TUNNEL_TRAFFIC_CACHE[key] = (now, received, sent)
+    if not previous:
+        return 0.0, 0.0
+    seconds = max(now - previous[0], 0.1)
+    return (
+        round(max(0, received - previous[1]) * 8 / seconds, 2),
+        round(max(0, sent - previous[2]) * 8 / seconds, 2),
+    )
 
 
 async def tcp_probe(host: str, port: int, timeout: float = 4.0) -> tuple[bool, float | None]:
@@ -366,7 +429,10 @@ def execute_monitor(payload: dict[str, Any]) -> dict[str, Any]:
     return {"monitor_id": monitor_id, "status": "up" if ok else "down", "latency_ms": latency, "detail": detail, "checked_at": int(time.time())}
 
 
-async def tunnel_report(tunnel: dict[str, Any]) -> dict[str, Any]:
+async def tunnel_report(
+    tunnel: dict[str, Any],
+    socket_bytes: list[tuple[set[int], int, int]] | None = None,
+) -> dict[str, Any]:
     service = str(tunnel.get("service", ""))
     target_host = str(tunnel.get("target_host", "127.0.0.1"))
     target_port = int(tunnel.get("target_port", 0))
@@ -391,7 +457,9 @@ async def tunnel_report(tunnel: dict[str, Any]) -> dict[str, Any]:
     elif method in {"DARK Backhaul", "DARK Ghost Pro"} and role == "client":
         connected, sessions = socket_state(target_port, target_host)
         peer_ips = [target_host] if target_host not in {"", "127.0.0.1", "localhost", "::1"} else []
-        path_status, latency, packet_loss = ("healthy" if connected else "degraded"), None, (0 if connected else 100)
+        probe_ok, latency = await tcp_probe(target_host, target_port, timeout=2.5) if target_port else (False, None)
+        path_status = "healthy" if connected else "degraded" if probe_ok else "down"
+        packet_loss = 0 if connected or probe_ok else 100
     elif target_port:
         path_status, latency, packet_loss = await tcp_sample(target_host, target_port)
         sessions = port_sessions(int(tunnel.get("listen_port") or target_port or 0))
@@ -401,6 +469,12 @@ async def tunnel_report(tunnel: dict[str, Any]) -> dict[str, Any]:
         sessions = 0
         peer_ips = []
     status = path_status if service_ok else "down"
+    user_ports = [int(port) for port in tunnel.get("user_ports", []) if str(port).isdigit()]
+    traffic_ports = {
+        port for port in [target_port, int(tunnel.get("listen_port") or 0), *user_ports] if port
+    }
+    traffic_key = f"{service}|{tunnel.get('name', '')}|{role}"
+    rx_bps, tx_bps = tunnel_traffic_bps(traffic_key, traffic_ports, socket_bytes or [])
     return {
         "name": str(tunnel.get("name", service or f"tcp-{target_port}")),
         "method": method,
@@ -415,18 +489,20 @@ async def tunnel_report(tunnel: dict[str, Any]) -> dict[str, Any]:
         "role": role,
         "target_host": target_host,
         "target_port": target_port,
-        "user_ports": tunnel.get("user_ports", []),
+        "user_ports": user_ports,
         "transport": tunnel.get("transport"),
         "profile": tunnel.get("profile"),
         "restart_every": tunnel.get("restart_every"),
-        "rx_bps": None,
-        "tx_bps": None,
+        "rx_bps": rx_bps,
+        "tx_bps": tx_bps,
+        "service_uptime": service_uptime_seconds(service),
         "checks": {"process": service_ok, "path": path_status != "down"},
     }
 
 
 async def _collect_tunnel_reports(tunnels: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return list(await asyncio.gather(*(tunnel_report(item) for item in tunnels)))
+    socket_bytes = socket_byte_snapshot()
+    return list(await asyncio.gather(*(tunnel_report(item, socket_bytes) for item in tunnels)))
 
 
 DARK_BACKHAUL_SERVICE_PATTERN = re.compile(r"^backhaul@[A-Za-z0-9_-]{1,64}\.service$")
@@ -436,7 +512,7 @@ _DISCOVERY_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 
 
 def discover_tunnels() -> list[dict[str, Any]]:
-    """Discover only DARK Backhaul plugin instances; ignore every other tunnel family."""
+    """Discover managed DARK Backhaul, Ghost Pro and Packet Pro instances."""
     global _DISCOVERY_CACHE
     if time.time() - _DISCOVERY_CACHE[0] < 60:
         return [dict(item) for item in _DISCOVERY_CACHE[1]]

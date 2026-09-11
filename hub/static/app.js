@@ -4,6 +4,7 @@ const viewTitles = { overview: 'Network Command', servers: 'Server Fleet', tunne
 let state = {
   nodes: [], tunnels: [], incidents: [], plugins: [], deployments: [], certificates: [], traffic: [], monitors: [], fleetOperations: [],
   limits: { ssh_upload_bytes: null, ssh_relay_bytes: null }, sockets: new Map(), terminals: new Map(),
+  hubVersion: null, paneCounter: 2, replayTimer: null,
   selectedNode: null, selectedTunnel: null, selectedIncident: null, selectedPlugin: 'dark-backhaul',
   nodeFilter: 'all', topologyFilter: 'all', topologySearch: '', editingNode: null, editingMonitor: null,
   files: { nodeId: null, path: '/root', parent: '/', entries: [], selected: null, editingPath: null }
@@ -86,6 +87,8 @@ function fileSize(value) {
   while(size>=1024&&index<units.length-1){size/=1024;index+=1;}
   return `${size.toFixed(index?2:0)} ${units[index]}`;
 }
+
+function displayHost(value){return String(value||'').replace(/^::ffff:/,'')||'IP UNAVAILABLE';}
 
 function transferStatus(selector, stateName, message, percent = null) {
   const element=$(selector);if(!element)return;
@@ -340,7 +343,13 @@ function renderMonitors(){
 function renderFleetOperations(){
   const list=$('#fleet-list');if(!list)return;
   if(!state.fleetOperations.length){list.innerHTML='<div class="empty-state"><strong>No fleet operation yet</strong>Run one allowlisted playbook across selected Agents.</div>';return;}
-  list.innerHTML=state.fleetOperations.map(operation=>{const items=operation.items||[],done=items.filter(item=>item.status==='completed').length,failed=items.filter(item=>item.status==='failed').length,total=items.length,progress=total?Math.round((done+failed)/total*100):0;return `<article class="panel fleet-operation"><header><div><span class="panel-kicker">#${String(operation.id).padStart(4,'0')} · ${esc(operation.kind.toUpperCase().replaceAll('_',' '))}</span><h3>${esc(operation.name)}</h3></div><em class="${esc(operation.status)}">${esc(operation.status.toUpperCase())}</em></header><div class="fleet-progress"><i style="width:${progress}%"></i></div><div class="fleet-operation-meta"><span>${done}/${total} COMPLETE</span><span class="${failed?'red':''}">${failed} FAILED</span><span>${operation.scheduled_at>Date.now()/1000?`SCHEDULED ${new Date(operation.scheduled_at*1000).toLocaleString('en-GB')}`:`STARTED ${relativeTime(operation.started_at||operation.created_at)}`}</span></div><div class="fleet-items">${items.map(item=>`<button class="fleet-item ${esc(item.status)}" data-operation-id="${Number(operation.id)}" data-fleet-output="${Number(item.id)}"><span>${esc(item.node_name)}</span><b>${esc(item.status.toUpperCase())}</b></button>`).join('')}</div>${operation.status==='scheduled'?`<footer><button class="danger-outline fleet-cancel" data-operation-id="${Number(operation.id)}">CANCEL SCHEDULE</button></footer>`:''}</article>`;}).join('');
+  list.innerHTML=state.fleetOperations.map(operation=>{const items=operation.items||[],done=items.filter(item=>item.status==='completed').length,failed=items.filter(item=>item.status==='failed').length,total=items.length,progress=total?Math.round((done+failed+items.filter(item=>item.status==='cancelled').length)/total*100):0,cancellable=operation.status==='scheduled'||(operation.kind==='upgrade_agents'&&operation.status==='running');return `<article class="panel fleet-operation"><header><div><span class="panel-kicker">#${String(operation.id).padStart(4,'0')} · ${esc(operation.kind.toUpperCase().replaceAll('_',' '))}</span><h3>${esc(operation.name)}</h3></div><em class="${esc(operation.status)}">${esc(operation.status.toUpperCase())}</em></header><div class="fleet-progress"><i style="width:${progress}%"></i></div><div class="fleet-operation-meta"><span>${done}/${total} COMPLETE</span><span class="${failed?'red':''}">${failed} FAILED</span><span>${operation.scheduled_at>Date.now()/1000?`SCHEDULED ${new Date(operation.scheduled_at*1000).toLocaleString('en-GB')}`:`STARTED ${relativeTime(operation.started_at||operation.created_at)}`}</span></div><div class="fleet-items">${items.map(item=>`<button class="fleet-item ${esc(item.status)}" data-operation-id="${Number(operation.id)}" data-fleet-output="${Number(item.id)}"><span>${esc(item.node_name)}</span><b>${esc(item.status.toUpperCase())}</b></button>`).join('')}</div>${cancellable?`<footer><button class="danger-outline fleet-cancel" data-operation-id="${Number(operation.id)}">${operation.status==='running'?'ABORT ROLLOUT':'CANCEL SCHEDULE'}</button></footer>`:''}</article>`;}).join('');
+}
+
+function renderVersionCompliance(){
+  const target=$('#fleet-version-compliance');if(!target)return;
+  const managed=state.nodes.filter(node=>node.role!=='hub'),current=managed.filter(node=>node.agent_version&&node.agent_version===state.hubVersion),outdated=managed.filter(node=>node.agent_version&&node.agent_version!==state.hubVersion),unknown=managed.filter(node=>!node.agent_version);
+  target.innerHTML=`<b>HUB ${esc(state.hubVersion||'—')}</b><span class="compliant">${current.length} CURRENT</span><span class="outdated">${outdated.length} OUTDATED</span><span>${unknown.length} UNKNOWN</span>`;
 }
 
 function fileSelection(entry=null){
@@ -378,7 +387,39 @@ function openMonitorEditor(monitor=null){
 
 function openFleetEditor(){
   const online=state.nodes.filter(node=>node.status==='online');if(!online.length)return showToast('ONLINE AGENT REQUIRED','Fleet Operations needs at least one online Agent.',true);
-  const form=$('#fleet-form');form.reset();form.elements.name.value='NOC health sweep';form.elements.service.required=false;$('.fleet-autoheal',form).hidden=true;$('#fleet-node-picker').innerHTML=online.map(node=>`<label><input type="checkbox" name="node_ids" value="${Number(node.id)}" checked /><span>${esc(node.name)}</span><small>${esc(node.role.toUpperCase())} · ${esc(node.host)}</small></label>`).join('');openModal('#fleet-modal');
+  const form=$('#fleet-form');form.reset();form.elements.name.value='NOC health sweep';form.elements.service.required=false;$('.fleet-autoheal',form).hidden=true;$('.fleet-upgrade',form).hidden=true;$('#fleet-node-picker').innerHTML=online.map(node=>`<label><input type="checkbox" name="node_ids" value="${Number(node.id)}" checked /><span>${esc(node.name)}</span><small>${esc(node.role.toUpperCase())} · ${esc(node.host)} · AGENT ${esc(node.agent_version||'UNKNOWN')}</small></label>`).join('');const canary=form.elements.canary_node_id;canary.innerHTML='<option value="">AUTO · First selected Node</option>'+online.filter(node=>node.role!=='hub'&&node.ssh_configured).map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.agent_version||'UNKNOWN')}</option>`).join('');openModal('#fleet-modal');
+}
+
+function tunnelHistoryChart(samples){
+  if(!samples.length)return '<text x="450" y="78" text-anchor="middle" fill="#617285" font-size="12">WAITING FOR TUNNEL SAMPLES</text>';
+  const width=900,height=150,maxTraffic=Math.max(...samples.map(item=>Number(item.rx_bps||0)+Number(item.tx_bps||0)),1),step=samples.length===1?0:width/(samples.length-1);
+  const healthValue=item=>item.status==='healthy'?100:item.status==='degraded'?62:item.status==='stale'?35:0;
+  const traffic=samples.map((item,index)=>`${(index*step).toFixed(1)} ${(height-10-(Number(item.rx_bps||0)+Number(item.tx_bps||0))/maxTraffic*105).toFixed(1)}`);
+  const health=samples.map((item,index)=>`${(index*step).toFixed(1)} ${(height-10-healthValue(item)*1.25).toFixed(1)}`);
+  const trafficPath=`M${traffic.join(' L')}`,healthPath=`M${health.join(' L')}`;
+  return `<path class="history-area" d="${trafficPath} L${width} ${height} L0 ${height}Z"/><path class="history-line" d="${trafficPath}"/><path class="history-health" d="${healthPath}"/>`;
+}
+
+async function openTunnelManager(tunnel){
+  if(!tunnel)return;
+  state.selectedTunnel=tunnel;const pluginId=tunnelPluginId(tunnel),plugin=state.plugins.find(item=>item.id===pluginId);
+  $('#tunnel-manage-title').textContent=`${tunnel.name} · ${String(tunnel.status).toUpperCase()}`;
+  $('#tunnel-manage-summary').innerHTML=`<span>${pluginIcon(pluginId)}</span><p><strong>${esc(tunnel.method)} operations cockpit</strong><small>Loading live health, topology path and job history…</small></p>`;
+  $('#tunnel-ops-kpis').innerHTML='<article><span>HEALTH</span><b>…</b></article><article><span>TRAFFIC</span><b>…</b></article><article><span>SESSIONS</span><b>…</b></article><article><span>UPTIME</span><b>…</b></article>';
+  $('#tunnel-path-card').innerHTML='<article><strong>Resolving endpoints…</strong><small>Correlating Agent, SSH and peer telemetry</small></article>';
+  $('#tunnel-history-chart').innerHTML='';$('#tunnel-job-timeline').innerHTML='';openModal('#tunnel-manage-modal');
+  const form=$('#tunnel-edit-form');form.elements.user_ports.value=(tunnel.user_ports||[]).join(', ');form.elements.transport.innerHTML=(plugin?.transports||[tunnel.transport]).map(item=>`<option value="${esc(item)}">${esc(item.toUpperCase())}</option>`).join('');form.elements.transport.value=tunnel.transport;form.elements.profile.value=['stable','balanced','lowping','turbo'].includes(tunnel.profile)?tunnel.profile:'balanced';form.elements.restart_every.value=tunnel.restart_every||'off';
+  try{
+    const operations=await api(`/api/tunnels/${Number(tunnel.id)}/operations?hours=24`);if(Number(state.selectedTunnel?.id)!==Number(tunnel.id))return;
+    const live=operations.tunnel||tunnel,peer=operations.peer,traffic=Number(live.rx_bps||0)+Number(live.tx_bps||0),score=Number(live.health_score||0),tone=score>=85?'ready':score>=55?'amber':'red';
+    state.selectedTunnel={...tunnel,...live};$('#tunnel-manage-title').textContent=`${live.name} · ${String(live.status).toUpperCase()}`;
+    $('#tunnel-manage-summary').innerHTML=`<span>${pluginIcon(pluginId)}</span><p><strong>${esc(live.node_name)} · ${esc(live.tunnel_role||'unknown role')} · ${esc(live.method)}</strong><small>${esc(live.node_host)} · ${esc(live.transport)} · ${esc(live.profile)} · ${live.node_agent_online?'AGENT ONLINE':'AGENT OFFLINE'} · ${operations.deployment?esc(String(operations.deployment.mode).toUpperCase()):'DISCOVERED'}</small></p>`;
+    $('#tunnel-ops-kpis').innerHTML=`<article><span>HEALTH / LOSS</span><b class="${tone}">${score}% · ${live.packet_loss==null?'—':`${Number(live.packet_loss).toFixed(1)}%`}</b></article><article><span>TRAFFIC</span><b>${esc(bytesPerSecond(traffic))}</b></article><article><span>SESSIONS / LATENCY</span><b>${Number(live.sessions||0)} · ${live.latency_ms==null?'—':`${Number(live.latency_ms).toFixed(1)}ms`}</b></article><article><span>SERVICE UPTIME</span><b>${elapsedDuration(live.service_uptime||0)}</b></article>`;
+    const peerName=peer?.node_name||live.peer_name||'REMOTE ENDPOINT',peerHost=peer?.node_host||live.peer_host||'IP UNAVAILABLE';
+    $('#tunnel-path-card').innerHTML=`<article><strong>${esc(live.node_name)}</strong><small>${esc(live.node_host)} · AG ${live.node_agent_online?'ON':'OFF'} · SSH ${live.node_ssh_configured?'READY':'NO'}</small>${live.node_ssh_configured?`<button data-tunnel-ssh-node="${Number(live.node_id)}">›_ OPEN SSH</button>`:''}</article><span>${esc(live.transport||live.method)} →</span><article><strong>${esc(peerName)}</strong><small>${esc(peerHost)} · AG ${live.peer_agent_online?'ON':'OFF'} · SSH ${live.peer_ssh_configured?'READY':'NO'}</small>${live.peer_ssh_configured?`<button data-tunnel-ssh-node="${Number(live.peer_node_id)}">›_ OPEN SSH</button>`:''}</article>`;
+    const samples=operations.samples||[];$('#tunnel-sample-count').textContent=`${samples.length} SAMPLES`;$('#tunnel-history-chart').innerHTML=tunnelHistoryChart(samples);
+    const jobs=operations.recent_jobs||[];$('#tunnel-job-timeline').innerHTML=jobs.length?jobs.slice(0,10).map(job=>`<article class="${esc(job.status)}"><strong>#${Number(job.id)} · ${esc(job.kind.toUpperCase().replaceAll('_',' '))}</strong><small>${esc(job.node_name||'NODE')} · ${esc(job.status.toUpperCase())} · ${relativeTime(job.finished_at||job.created_at)}</small></article>`).join(''):'<article><strong>NO RECENT JOBS</strong><small>Actions from this cockpit will appear here.</small></article>';
+  }catch(error){$('#tunnel-manage-summary').innerHTML=`<span>!</span><p><strong>Operations data unavailable</strong><small>${esc(error.message)}</small></p>`;}
 }
 
 function renderLiveTopology() {
@@ -394,12 +435,12 @@ function renderLiveTopology() {
     const ownIsExit=ownNode?.role==='exit'||tunnel.tunnel_role==='client';
     const leftNode=ownIsExit?peerNode:ownNode, rightNode=ownIsExit?ownNode:peerNode;
     const leftFallback=ownIsExit?(tunnel.peer_name||'IRAN ENDPOINT'):(tunnel.node_name||'IRAN ENDPOINT');
-    const leftHost=leftNode?.host||leftNode?.observed_ip||(ownIsExit?tunnel.peer_host:tunnel.node_host)||'UNKNOWN IP';
+    const leftHost=displayHost(leftNode?.host||leftNode?.observed_ip||(ownIsExit?tunnel.peer_host:tunnel.node_host));
     const rightFallback=ownIsExit?(tunnel.node_name||'REMOTE ENDPOINT'):(tunnel.peer_name||'REMOTE ENDPOINT');
-    const rightHost=rightNode?.host||rightNode?.observed_ip||(ownIsExit?tunnel.node_host:tunnel.peer_host)||'REMOTE IP UNAVAILABLE';
+    const rightHost=displayHost(rightNode?.host||rightNode?.observed_ip||(ownIsExit?tunnel.node_host:tunnel.peer_host));
     const statuses=[tunnel.status,peerRow?.status].filter(Boolean).map(value=>String(value).toLowerCase());
     const status=statuses.includes('down')?'DOWN':statuses.includes('stale')?'STALE':statuses.includes('degraded')?'DEGRADED':'ONLINE';
-    const tone=status==='ONLINE'?'online':status==='DEGRADED'||status==='STALE'?'degraded':'down';
+    const tone=status==='ONLINE'?'online':status==='DEGRADED'?'degraded':status==='STALE'?'stale':'down';
     const haystack=[tunnel.name,leftNode?.name,leftHost,rightNode?.name,rightFallback,rightHost].join(' ').toLowerCase();
     if(state.topologyFilter!=='all'&&state.topologyFilter!==tone)return;
     if(state.topologySearch&&!haystack.includes(state.topologySearch))return;
@@ -418,15 +459,15 @@ function renderLiveTopology() {
   const rootY=Object.fromEntries(roots.map(([key],index)=>[key,yAt(index,roots.length)]));
   const leafY=Object.fromEntries(leaves.map(([key],index)=>[key,yAt(index,leaves.length)]));
   const defs=`<defs><filter id="cyber-glow"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><marker id="route-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>`;
-  const routes=links.map((link,index)=>{const y1=rootY[link.rootKey],y2=leafY[link.leafKey],width=Math.min(4,1.6+Math.log10(Number(link.tunnel.rx_bps||0)+Number(link.tunnel.tx_bps||0)+1)/4);return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="M165 ${y1} C330 ${y1},570 ${y2},735 ${y2}"/><path class="cyber-route" style="--route-width:${width.toFixed(2)}" d="M165 ${y1} C330 ${y1},570 ${y2},735 ${y2}"/></g>`;}).join('');
+  const routes=links.map((link,index)=>{const y1=rootY[link.rootKey],y2=leafY[link.leafKey],rate=Number(link.tunnel.rx_bps||0)+Number(link.tunnel.tx_bps||0),width=Math.min(4,1.6+Math.log10(rate+1)/4),path=`M165 ${y1} C330 ${y1},570 ${y2},735 ${y2}`,duration=Math.max(1.4,7-Math.log10(rate+1));const packets=link.tone==='online'?`<circle class="route-packet" r="3"><animateMotion dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle><circle class="route-packet" r="2" opacity=".65"><animateMotion begin="-${(duration/2).toFixed(1)}s" dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle>`:'';return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="${path}"/><path id="route-${index}" class="cyber-route" style="--route-width:${width.toFixed(2)}" d="${path}"/>${packets}<text class="route-label" x="450" y="${((y1+y2)/2-7).toFixed(1)}" text-anchor="middle">${esc(link.tunnel.name)} · ${esc(String(link.tunnel.transport||link.tunnel.method).toUpperCase())}</text></g>`;}).join('');
   const nodeCard=(entry,y,side)=>{const node=entry.node,agent=node?.status==='online',ssh=Boolean(node?.ssh_configured);return `<button class="cyber-node ${side}" style="top:${(y/420*100).toFixed(2)}%" data-node-id="${node?.id||''}" data-endpoint-name="${esc(entry.name)}"><i>${side==='root'?(node?.role==='hub'?'HB':'IR'):'EX'}</i><span><strong>${esc(entry.name)}</strong><small>${esc(entry.host)}</small><em><b class="${agent?'ready':'missing'}">AG ${agent?'ON':'OFF'}</b><b class="${ssh?'ready':'missing'}">SSH ${ssh?'READY':'NO'}</b></em></span></button>`;};
   const nodes=[...roots.map(([key,entry])=>nodeCard(entry,rootY[key],'root')),...leaves.map(([key,entry])=>nodeCard(entry,leafY[key],'leaf'))].join('');
   topology.innerHTML=`<div class="grid-floor" aria-hidden="true"></div><span class="region-label iran">IRAN / HUB</span><span class="region-label global">GLOBAL EXITS</span><svg class="cyber-links" viewBox="0 0 900 420" preserveAspectRatio="none">${defs}${routes}</svg>${nodes}<div class="topology-tooltip" id="topology-tooltip"></div><div class="cyber-scan"></div>`;
   const tooltip=$('#topology-tooltip');
   $$('.route-group',topology).forEach(route=>{
     const link=links[Number(route.dataset.route)],t=link.tunnel,rate=t.rx_bps==null&&t.tx_bps==null?'NO TRAFFIC DATA':bytesPerSecond(Number(t.rx_bps||0)+Number(t.tx_bps||0)),ports=(t.user_ports||[]).join(', ')||t.listen_port||t.target_port||'—';
-    const show=event=>{tooltip.innerHTML=`<strong>${esc(t.name)} <i class="${link.tone}">${esc(link.status)}</i></strong><span>${esc(link.leftHost)} → ${esc(link.rightHost)}</span><small>SERVICE ${esc(t.service||'—')}</small><small>PORTS ${esc(ports)} · SESSIONS ${Number(t.sessions||0)}</small><small>TRAFFIC ${esc(rate)} · LOSS ${t.packet_loss==null?'—':`${Number(t.packet_loss).toFixed(1)}%`}</small>`;const rect=topology.getBoundingClientRect();tooltip.style.left=`${Math.min(event.clientX-rect.left+14,rect.width-330)}px`;tooltip.style.top=`${Math.max(event.clientY-rect.top-90,8)}px`;tooltip.classList.add('open');};
-    route.addEventListener('mousemove',show);route.addEventListener('mouseenter',show);route.addEventListener('mouseleave',()=>tooltip.classList.remove('open'));route.addEventListener('focus',()=>{const rect=topology.getBoundingClientRect();show({clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});});route.addEventListener('blur',()=>tooltip.classList.remove('open'));
+    const show=event=>{tooltip.innerHTML=`<strong>${esc(t.name)} <i class="${link.tone}">${esc(link.status)}</i></strong><span>${esc(link.leftHost)} → ${esc(link.rightHost)}</span><small>${esc(t.method||'DARK')} · ${esc(String(t.transport||'unknown').toUpperCase())} · ${esc(String(t.profile||'unknown').toUpperCase())}</small><small>SERVICE ${esc(t.service||'—')} · UPTIME ${elapsedDuration(t.service_uptime||0)}</small><small>PORTS ${esc(ports)} · SESSIONS ${Number(t.sessions||0)}</small><small>TRAFFIC ${esc(rate)} · LATENCY ${t.latency_ms==null?'—':`${Number(t.latency_ms).toFixed(1)}ms`} · LOSS ${t.packet_loss==null?'—':`${Number(t.packet_loss).toFixed(1)}%`}</small><small>HEALTH SCORE ${Number(t.health_score||0)}% · CLICK TO OPEN OPERATIONS</small>`;const rect=topology.getBoundingClientRect();tooltip.style.left=`${Math.min(event.clientX-rect.left+14,rect.width-330)}px`;tooltip.style.top=`${Math.max(event.clientY-rect.top-120,8)}px`;tooltip.classList.add('open');};
+    route.addEventListener('mousemove',show);route.addEventListener('mouseenter',show);route.addEventListener('mouseleave',()=>tooltip.classList.remove('open'));route.addEventListener('focus',()=>{const rect=topology.getBoundingClientRect();show({clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});});route.addEventListener('blur',()=>tooltip.classList.remove('open'));route.addEventListener('click',()=>openTunnelManager(t));route.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openTunnelManager(t);}});
   });
 }
 
@@ -471,7 +512,7 @@ function updateOverview(summary) {
   $('#connection-banner').innerHTML = '<span class="live-source">LIVE HUB CONNECTED</span> Telemetry and incident data are updating automatically.';
   $$('.nav-item')[1]?.querySelector('b') && ($$('.nav-item')[1].querySelector('b').textContent = total);
   $$('.nav-item')[2]?.querySelector('b') && ($$('.nav-item')[2].querySelector('b').textContent = state.tunnels.length);
-  const footer=$$('.topology-footer b');if(footer.length>=3){footer[0].textContent=online;footer[1].textContent=state.nodes.filter(node=>node.status==='online'&&state.tunnels.some(t=>t.node_id===node.id&&t.status!=='healthy')).length;footer[2].textContent=state.nodes.filter(node=>node.status==='offline').length;}
+  const footer=$$('.topology-footer b');if(footer.length>=4){footer[0].textContent=state.tunnels.filter(t=>t.status==='healthy').length;footer[1].textContent=state.tunnels.filter(t=>t.status==='degraded').length;footer[2].textContent=state.tunnels.filter(t=>t.status==='stale').length;footer[3].textContent=state.tunnels.filter(t=>['down','offline'].includes(t.status)).length;}
 }
 
 async function refresh() {
@@ -479,8 +520,8 @@ async function refresh() {
   refreshInFlight = true;
   try {
     const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic,monitors,fleetOperations] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60'),api('/api/monitors'),api('/api/fleet/operations?limit=50')]);
-    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, limits:dashboardLimits(summary) };
-    renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors(); renderFleetOperations(); renderIncidents(); renderLiveTopology(); renderLiveIncident(); renderNodeHealth(); renderTrafficChart(); updateOverview(summary);
+    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, hubVersion:summary.version||state.hubVersion, limits:dashboardLimits(summary) };
+    renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors(); renderFleetOperations(); renderVersionCompliance(); renderIncidents(); renderLiveTopology(); renderLiveIncident(); renderNodeHealth(); renderTrafficChart(); updateOverview(summary);
     if(state.selectedIncident)loadIncidentDetail(state.selectedIncident);
     $('#sync-time').textContent = 'NOW';
   } catch (error) {
@@ -518,7 +559,7 @@ async function waitForJob(jobId) {
 }
 
 function activeTerminalSlot() {
-  return $('.terminal-card.active-terminal .terminal-screen')?.id || 'terminal-iran';
+  return $('.terminal-card.active-terminal .terminal-screen')?.id || $('.terminal-screen')?.id || 'terminal-iran';
 }
 
 function activeTerminal() { return state.terminals.get(activeTerminalSlot()); }
@@ -527,6 +568,10 @@ function terminalText(terminal) {
   const buffer=terminal?.buffer?.active;if(!buffer)return '';
   const lines=[];for(let index=0;index<buffer.length;index++)lines.push(buffer.getLine(index)?.translateToString(true)||'');
   return lines.join('\n').replace(/\n{4,}/g,'\n\n\n');
+}
+
+function createTerminalPane(){
+  state.paneCounter+=1;const slot=`terminal-pane-${state.paneCounter}`,card=document.createElement('article');card.className='terminal-card active-terminal';card.innerHTML=`<header><div class="terminal-lights"><i></i><i></i><i></i></div><div class="terminal-server"><span class="flag">${String(state.paneCounter).padStart(2,'0')}</span><div><strong>NO SESSION</strong><small>Select a server and connect</small></div></div><span class="ssh-online">● IDLE</span><button class="terminal-close" title="Close pane">×</button></header><div class="terminal-screen" id="${slot}" tabindex="0"></div>`;$$('.terminal-card').forEach(item=>item.classList.remove('active-terminal'));$('.terminal-layout').appendChild(card);card.addEventListener('pointerdown',()=>selectTerminalCard(card));card.addEventListener('focusin',()=>selectTerminalCard(card));ensureTerminal(slot);return slot;
 }
 
 function ensureTerminal(slot) {
@@ -548,12 +593,14 @@ function ensureTerminal(slot) {
     if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='v'){const socket=connectedSocket(slot);if(!socket){showToast('SSH NOT CONNECTED','Wait for the active terminal to finish connecting.',true);return false;}if(requireClipboard('readText','PASTE'))navigator.clipboard.readText().then(text=>socket.send(JSON.stringify({type:'input',data:text}))).catch(()=>showToast('PASTE BLOCKED','Allow clipboard access in the browser.',true));return false;}
     return true;
   });
-  const entry={terminal,fitAddon,searchAddon};state.terminals.set(slot,entry);
+  const closeButton=container.closest('.terminal-card')?.querySelector('.terminal-close');if(!closeButton){const button=document.createElement('button');button.className='terminal-close';button.title='Close pane';button.textContent='×';container.closest('.terminal-card')?.querySelector('header')?.appendChild(button);}
+  const entry={terminal,fitAddon,searchAddon,sessionName:slot.replace(/[^A-Za-z0-9_-]/g,'-').slice(0,32),recording:[],reconnectAttempts:0,reconnectTimer:null};state.terminals.set(slot,entry);
   const observer=new ResizeObserver(()=>{clearTimeout(entry.fitTimer);entry.fitTimer=setTimeout(()=>{try{fitAddon.fit();}catch{}},60);});observer.observe(container.closest('.terminal-card'));
   return entry;
 }
 
 function closeSocket(slot) {
+  const entry=state.terminals.get(slot);if(entry?.reconnectTimer){clearTimeout(entry.reconnectTimer);entry.reconnectTimer=null;}if(entry)entry.reconnectAttempts=0;
   const socket = state.sockets.get(slot);
   if (socket) { socket.intentionalClose=true;clearInterval(socket.keepaliveTimer);state.sockets.delete(slot);socket.close(); }
 }
@@ -570,7 +617,7 @@ function selectTerminalCard(card) {
   if(socket?.nodeId)$('#ssh-node-select').value=String(socket.nodeId);
 }
 
-function connectSSH(nodeId, slot = null) {
+function connectSSH(nodeId, slot = null, options = {}) {
   const node = state.nodes.find(item => item.id === Number(nodeId));
   if (!node) return;
   if (!node.ssh_configured) {
@@ -579,17 +626,17 @@ function connectSSH(nodeId, slot = null) {
     return;
   }
   if (!slot) {
-    const first=state.sockets.get('terminal-iran'), second=state.sockets.get('terminal-germany');
-    slot=!first||first.readyState>=WebSocket.CLOSING?'terminal-iran':(!second||second.readyState>=WebSocket.CLOSING?'terminal-germany':activeTerminalSlot());
+    const available=$$('.terminal-screen').find(screen=>{const socket=state.sockets.get(screen.id);return !socket||socket.readyState>=WebSocket.CLOSING;});slot=available?.id||createTerminalPane();
   }
   const existing=state.sockets.get(slot);
-  if(existing&&existing.readyState<WebSocket.CLOSING){
+  if(existing&&existing.readyState<WebSocket.CLOSING&&!options.reconnect){
     const existingNode=state.nodes.find(item=>item.id===Number(existing.nodeId));
     if(!confirm(`Replace the active ${existingNode?.name||'SSH'} session in this pane?`))return;
   }
   switchView('terminal');
-  closeSocket(slot);
   const screen = $(`#${slot}`), term=ensureTerminal(slot);
+  if(!screen)return;
+  if(!options.reconnect)closeSocket(slot);else if(term.reconnectTimer){clearTimeout(term.reconnectTimer);term.reconnectTimer=null;}
   const card=screen.closest('.terminal-card'), code=node.role==='edge'?'IR':node.role==='exit'?'EX':'HB';
   $('.terminal-server .flag',card).textContent=code;
   $('.terminal-server strong',card).textContent=node.name;
@@ -597,17 +644,17 @@ function connectSSH(nodeId, slot = null) {
   selectTerminalCard(card);
   $('#ssh-node-select').value=String(node.id);
   $('.ssh-online',card).textContent='● CONNECTING';
-  term.terminal.reset();term.terminal.writeln(`\x1b[38;5;45mConnecting to ${node.name} (${node.host}:${Number(node.ssh_port)})…\x1b[0m\r\n`);
+  if(!options.reconnect){term.terminal.reset();term.recording=[];term.reconnectAttempts=0;}term.terminal.writeln(`\x1b[38;5;45m${options.reconnect?'Reconnecting':'Connecting'} to ${node.name} (${node.host}:${Number(node.ssh_port)})…\x1b[0m\r\n`);
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/ws/ssh/${node.id}`);
+  const socket = new WebSocket(`${protocol}//${location.host}/ws/ssh/${node.id}?session=${encodeURIComponent(term.sessionName)}`);
   socket.nodeId=node.id;socket.sshConnected=false;socket.hadError=false;socket.intentionalClose=false;
   state.sockets.set(slot, socket);
   state.selectedNode = node.id;
   socket.onmessage = event => {
     if(state.sockets.get(slot)!==socket)return;
     let message={};try{message=JSON.parse(event.data);}catch{return;}
-    if (message.type === 'output') term.terminal.write(message.data);
-    if (message.type === 'connected') { socket.sshConnected=true;$('.ssh-online',card).textContent='● CONNECTED';term.terminal.writeln(`\x1b[38;5;48m✓ SECURE SSH CONNECTED · ${message.node}\x1b[0m`);term.terminal.writeln(`\x1b[38;5;244mHost key: ${message.fingerprint||'unavailable'}\x1b[0m\r\n`);term.fitAddon.fit();socket.send(JSON.stringify({type:'resize',cols:term.terminal.cols,rows:term.terminal.rows}));term.terminal.focus(); }
+    if (message.type === 'output') {term.recording.push({at:Date.now(),data:String(message.data||'')});if(term.recording.length>12000)term.recording.splice(0,term.recording.length-12000);term.terminal.write(message.data);}
+    if (message.type === 'connected') { socket.sshConnected=true;term.reconnectAttempts=0;$('.ssh-online',card).textContent=message.persistent?'● PERSISTENT':'● CONNECTED';term.terminal.writeln(`\x1b[38;5;48m✓ SECURE SSH CONNECTED · ${message.node}${message.persistent?' · TMUX PERSISTENT':''}\x1b[0m`);term.terminal.writeln(`\x1b[38;5;244mHost key: ${message.fingerprint||'unavailable'} · Session: ${message.session||term.sessionName}\x1b[0m\r\n`);term.fitAddon.fit();socket.send(JSON.stringify({type:'resize',cols:term.terminal.cols,rows:term.terminal.rows}));term.terminal.focus(); }
     if (message.type === 'error') { socket.hadError=true;socket.sshConnected=false;$('.ssh-online',card).textContent='● ERROR';term.terminal.writeln(`\r\n\x1b[38;5;203m${message.message}\x1b[0m`); }
   };
   socket.onopen = () => {if(state.sockets.get(slot)!==socket)return;term.fitAddon.fit();socket.keepaliveTimer=setInterval(()=>{if(state.sockets.get(slot)===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ping'}));},25000); };
@@ -618,10 +665,16 @@ function connectSSH(nodeId, slot = null) {
     state.sockets.delete(slot);socket.sshConnected=false;
     if(event.code===4401){socket.hadError=true;$('.ssh-online',card).textContent='● AUTH EXPIRED';term.terminal.writeln('\r\n\x1b[38;5;203mAuthentication expired. Sign in again to reconnect.\x1b[0m');terminateAuthenticatedActivity();return;}
     const abnormal=socket.hadError||(!socket.intentionalClose&&![1000,1001].includes(event.code));
-    $('.ssh-online',card).textContent=abnormal?'● ERROR':'● CLOSED';
-    term.terminal.writeln(abnormal?'\r\n\x1b[38;5;203mSession closed unexpectedly.\x1b[0m':'\r\n\x1b[38;5;244mSession closed.\x1b[0m');
+    $('.ssh-online',card).textContent=abnormal?'● RECONNECTING':'● CLOSED';
+    term.terminal.writeln(abnormal?'\r\n\x1b[38;5;203mSession interrupted. Automatic reconnect armed.\x1b[0m':'\r\n\x1b[38;5;244mSession closed.\x1b[0m');
+    if(abnormal&&!socket.intentionalClose&&!authenticatedActivityTerminated&&term.reconnectAttempts<5){term.reconnectAttempts+=1;const delay=Math.min(20000,1000*2**(term.reconnectAttempts-1));$('.ssh-online',card).textContent=`● RETRY ${term.reconnectAttempts}/5`;term.reconnectTimer=setTimeout(()=>connectSSH(node.id,slot,{reconnect:true}),delay);}else if(abnormal){$('.ssh-online',card).textContent='● ERROR';}
   };
 }
+
+function savedSnippets(){try{const value=JSON.parse(localStorage.getItem('darkNocSshSnippets')||'[]');return Array.isArray(value)?value:[];}catch{return [];}}
+function renderSnippets(){const select=$('#terminal-snippet-select'),snippets=savedSnippets();select.innerHTML='<option value="">SAVED SNIPPETS</option>'+snippets.map((item,index)=>`<option value="${index}">${esc(item.name)} · ${esc(item.command)}</option>`).join('');}
+function stopTerminalReplay(){if(state.replayTimer){clearTimeout(state.replayTimer);state.replayTimer=null;}if($('#terminal-replay-status'))$('#terminal-replay-status').textContent='STOPPED';}
+function startTerminalReplay(){const entry=activeTerminal();if(!entry||!entry.recording.length)return showToast('NO RECORDING','Run an SSH session in the active pane first.',true);stopTerminalReplay();const records=entry.recording.slice(),output=$('#terminal-replay-output');output.textContent='';$('#terminal-replay-title').textContent=`${entry.sessionName} · ${records.length} frames`;$('#terminal-replay-status').textContent='PLAYING';openModal('#terminal-replay-modal');let index=0,previous=records[0].at;const next=()=>{if(index>=records.length){state.replayTimer=null;$('#terminal-replay-status').textContent='REPLAY COMPLETE';return;}const record=records[index++],clean=record.data.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,'').replace(/\r/g,'');output.textContent+=clean;output.scrollTop=output.scrollHeight;const delay=Math.min(160,Math.max(12,record.at-previous));previous=record.at;state.replayTimer=setTimeout(next,delay);};next();}
 
 $('#login-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -670,6 +723,7 @@ $$('.certificate-close').forEach(button=>button.addEventListener('click',()=>clo
 $$('.monitor-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#monitor-modal'))));
 $$('.fleet-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#fleet-modal'))));
 $$('.file-editor-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#file-editor-modal'))));
+$$('.terminal-replay-close').forEach(button=>button.addEventListener('click',()=>{stopTerminalReplay();closeModal($('#terminal-replay-modal'));}));
 $('#node-modal .modal-close').addEventListener('click',()=>closeModal($('#node-modal')));
 $$('.modal-backdrop').forEach(backdrop=>backdrop.addEventListener('mousedown',event=>event.target===backdrop&&closeModal(backdrop)));
 
@@ -737,6 +791,8 @@ document.addEventListener('click', event => {
   const syncAgent = event.target.closest('.node-agent-sync');
   const provisionLog = event.target.closest('.node-provision-log');
   const certRenew = event.target.closest('.cert-renew');
+  const tunnelSSH = event.target.closest('[data-tunnel-ssh-node]');
+  const terminalClose = event.target.closest('.terminal-close');
   if (jump) { switchView(jump.dataset.jump); const modal=jump.closest('.modal-backdrop'); if(modal)closeModal(modal); }
   if (takeControl) { const node=state.nodes.find(item=>item.id===Number(takeControl.dataset.nodeId))||state.nodes.find(item=>item.status!=='online')||state.nodes[0]; if(node)connectSSH(node.id); else showToast('NO NODE AVAILABLE','Add a server first.',true); }
   if(createTunnel){const trigger=$('.plugin-deploy');if(trigger)trigger.click();}
@@ -757,7 +813,9 @@ document.addEventListener('click', event => {
     openModal('#plugin-modal');
   }
   if (ssh) connectSSH(ssh.dataset.nodeId);
-  if(manageTunnel){const tunnel=state.tunnels.find(item=>item.id===Number(manageTunnel.dataset.tunnelId));if(tunnel){state.selectedTunnel=tunnel;const pluginId=tunnelPluginId(tunnel),plugin=state.plugins.find(item=>item.id===pluginId);$('#tunnel-manage-title').textContent=`${tunnel.name} · ${String(tunnel.status).toUpperCase()}`;$('#tunnel-manage-summary').innerHTML=`<span>${pluginIcon(pluginId)}</span><p><strong>${esc(tunnel.node_name)} · ${esc(tunnel.tunnel_role||'unknown role')}</strong><small>${esc(tunnel.node_host)} · ${esc(tunnel.transport)} · ${esc(tunnel.profile)} · ${tunnel.node_agent_online?'AGENT ONLINE':'AGENT OFFLINE'}</small></p>`;const form=$('#tunnel-edit-form');form.elements.user_ports.value=(tunnel.user_ports||[]).join(', ');form.elements.transport.innerHTML=(plugin?.transports||[tunnel.transport]).map(item=>`<option value="${esc(item)}">${esc(item.toUpperCase())}</option>`).join('');form.elements.transport.value=tunnel.transport;form.elements.profile.value=['stable','balanced','lowping','turbo'].includes(tunnel.profile)?tunnel.profile:'balanced';form.elements.restart_every.value=tunnel.restart_every||'off';openModal('#tunnel-manage-modal');}}
+  if(manageTunnel){const tunnel=state.tunnels.find(item=>item.id===Number(manageTunnel.dataset.tunnelId));if(tunnel)openTunnelManager(tunnel);}
+  if(tunnelSSH){const nodeId=Number(tunnelSSH.dataset.tunnelSshNode);closeModal($('#tunnel-manage-modal'));connectSSH(nodeId);}
+  if(terminalClose){const card=terminalClose.closest('.terminal-card'),slot=$('.terminal-screen',card)?.id;if(slot){closeSocket(slot);if($$('.terminal-card').length>1){state.terminals.get(slot)?.terminal.dispose();state.terminals.delete(slot);card.remove();selectTerminalCard($('.terminal-card'));activeTerminal()?.fitAddon.fit();}else{state.terminals.get(slot)?.terminal.reset();$('.terminal-server strong',card).textContent='NO SESSION';$('.terminal-server small',card).textContent='Select a server and connect';$('.ssh-online',card).textContent='● IDLE';}}}
   if(tunnelAction&&state.selectedTunnel){const action=tunnelAction.dataset.tunnelAction;if(action==='stop'&&!confirm(`Stop ${state.selectedTunnel.name}?`))return;api(`/api/tunnels/${state.selectedTunnel.id}/action`,{method:'POST',body:JSON.stringify({action})}).then(result=>{showToast('TUNNEL JOB QUEUED',`${action.toUpperCase()} sent to ${state.selectedTunnel.node_name}.`);if(['logs','status','test'].includes(action))waitForJob(result.job_id);setTimeout(refresh,2500);}).catch(error=>showToast('TUNNEL ACTION FAILED',error.message,true));}
   if (diagnostics) createJob(Number(diagnostics.dataset.nodeId),'diagnostics',null,{},true).catch(error=>showToast('COMMAND FAILED',error.message,true));
   if (logs) createJob(Number(logs.dataset.nodeId),'logs',null,{},true).catch(error=>showToast('LOG REQUEST FAILED',error.message,true));
@@ -865,10 +923,10 @@ $('#monitor-form').addEventListener('submit',async event=>{
 $('#run-all-monitors').addEventListener('click',async()=>{const enabled=state.monitors.filter(item=>item.enabled);if(!enabled.length)return showToast('NO ENABLED MONITORS','Add or enable a monitor first.',true);const results=await Promise.allSettled(enabled.map(item=>api(`/api/monitors/${item.id}/run`,{method:'POST'}))),queued=results.filter(item=>item.status==='fulfilled').length,failed=results.length-queued;showToast(failed?'MONITORS PARTIALLY QUEUED':'MONITORS QUEUED',`${queued} queued · ${failed} skipped${failed?' (offline or already running)':''}`,failed>0&&queued===0);setTimeout(refresh,1800);});
 
 $('#add-fleet-operation').addEventListener('click',openFleetEditor);
-$('#fleet-form [name="kind"]').addEventListener('change',event=>{const needsService=['restart_service','service_status'].includes(event.target.value),service=$('#fleet-form [name="service"]');service.required=needsService;service.closest('label').classList.toggle('required-field',needsService);$('.fleet-autoheal',$('#fleet-form')).hidden=event.target.value!=='configure_autoheal';if(event.target.value==='sync_agent')$$('#fleet-node-picker input').forEach(input=>{const node=state.nodes.find(item=>item.id===Number(input.value));if(node?.role==='hub')input.checked=false;});});
+$('#fleet-form [name="kind"]').addEventListener('change',event=>{const kind=event.target.value,needsService=['restart_service','service_status'].includes(kind),service=$('#fleet-form [name="service"]');service.required=needsService;service.closest('label').classList.toggle('required-field',needsService);$('.fleet-autoheal',$('#fleet-form')).hidden=kind!=='configure_autoheal';$('.fleet-upgrade',$('#fleet-form')).hidden=kind!=='upgrade_agents';if(['sync_agent','upgrade_agents'].includes(kind))$$('#fleet-node-picker input').forEach(input=>{const node=state.nodes.find(item=>item.id===Number(input.value));if(node?.role==='hub'||!node?.ssh_configured)input.checked=false;});if(kind==='upgrade_agents'){const form=$('#fleet-form');form.elements.name.value=`Agent ${state.hubVersion||'current'} controlled rollout`;form.elements.scheduled_at.value='';}});
 $('#fleet-form').addEventListener('submit',async event=>{
   event.preventDefault();const form=event.target,nodeIds=$$('#fleet-node-picker input:checked').map(input=>Number(input.value));if(!nodeIds.length)return showToast('SELECT NODES','Choose at least one online Agent.',true);
-  const values=Object.fromEntries(new FormData(form));const payload={};if(values.kind==='configure_autoheal')Object.assign(payload,{enabled:values.autoheal_enabled==='true',cooldown_seconds:Number(values.cooldown_seconds),max_restarts_per_hour:Number(values.max_restarts_per_hour)});
+  const values=Object.fromEntries(new FormData(form));const payload={};if(values.kind==='configure_autoheal')Object.assign(payload,{enabled:values.autoheal_enabled==='true',cooldown_seconds:Number(values.cooldown_seconds),max_restarts_per_hour:Number(values.max_restarts_per_hour)});if(values.kind==='upgrade_agents')Object.assign(payload,{canary_node_id:Number(values.canary_node_id||nodeIds[0]),batch_size:Number(values.batch_size||1),pause_seconds:Number(values.pause_seconds||0),stop_on_failure:form.elements.stop_on_failure.checked});
   const body={name:values.name,kind:values.kind,node_ids:nodeIds,payload};if(values.service)body.service=values.service;if(values.scheduled_at)body.scheduled_at=Math.floor(new Date(values.scheduled_at).getTime()/1000);
   try{const result=await api('/api/fleet/operations',{method:'POST',body:JSON.stringify(body)});closeModal($('#fleet-modal'));showToast('FLEET OPERATION QUEUED',`${result.nodes} Agent${result.nodes===1?'':'s'} assigned.`);await refresh();}
   catch(error){showToast('FLEET OPERATION FAILED',error.message,true);}
@@ -893,7 +951,8 @@ $('#file-delete').addEventListener('click',async()=>{const entry=state.files.sel
 
 $('#clear-terminal').addEventListener('click',()=>{const entry=activeTerminal();if(entry){entry.terminal.clear();entry.terminal.focus();}});
 $('#ssh-connect').addEventListener('click',()=>{const nodeId=$('#ssh-node-select').value;if(!nodeId)return showToast('SELECT A SERVER','Choose a Hub, Iran or Kharej server first.',true);connectSSH(nodeId);});
-$('#terminal-new-tab').addEventListener('click',()=>{const nodeId=$('#ssh-node-select').value;if(!nodeId)return showToast('SELECT A SERVER','Choose the server for the new tab.',true);const alternate=activeTerminalSlot()==='terminal-iran'?'terminal-germany':'terminal-iran';connectSSH(nodeId,alternate);});
+$('#terminal-new-tab').addEventListener('click',()=>{const nodeId=$('#ssh-node-select').value;if(!nodeId)return showToast('SELECT A SERVER','Choose the server for the new pane.',true);connectSSH(nodeId,createTerminalPane());});
+$('#terminal-layout-mode').addEventListener('change',event=>{const layout=$('.terminal-layout');layout.classList.remove('grid','columns','focus');layout.classList.add(event.target.value);setTimeout(()=>state.terminals.forEach(entry=>entry.fitAddon.fit()),100);});
 $('#terminal-copy').addEventListener('click',async()=>{const entry=activeTerminal();if(!entry)return showToast('NO TERMINAL','Select a terminal pane first.',true);if(!requireClipboard('writeText','COPY'))return;const text=entry.terminal.getSelection()||terminalText(entry.terminal);try{await navigator.clipboard.writeText(text);showToast('COPIED',entry.terminal.hasSelection()?'Selection copied.':'Terminal buffer copied.');}catch{showToast('COPY BLOCKED','Allow clipboard access in the browser.',true);}});
 $('#terminal-paste').addEventListener('click',async()=>{const socket=connectedSocket();if(!socket)return showToast('SSH NOT CONNECTED','Wait for the active terminal to finish connecting.',true);if(!requireClipboard('readText','PASTE'))return;try{const text=await navigator.clipboard.readText();socket.send(JSON.stringify({type:'input',data:text}));activeTerminal()?.terminal.focus();}catch{showToast('PASTE BLOCKED','Allow clipboard access in the browser.',true);}});
 $('#terminal-fullscreen').addEventListener('click',async()=>{const card=$('.terminal-card.active-terminal')||$('.terminal-card');try{if(!document.fullscreenElement)await card.requestFullscreen();else await document.exitFullscreen();setTimeout(()=>activeTerminal()?.fitAddon.fit(),100);}catch(error){showToast('FULLSCREEN UNAVAILABLE',error.message||'The browser blocked fullscreen mode.',true);}});
@@ -901,6 +960,10 @@ $('#terminal-search-input').addEventListener('input',event=>activeTerminal()?.se
 $('#terminal-search-next').addEventListener('click',()=>activeTerminal()?.searchAddon.findNext($('#terminal-search-input').value));
 $('#terminal-search-prev').addEventListener('click',()=>activeTerminal()?.searchAddon.findPrevious($('#terminal-search-input').value));
 $('#terminal-download-log').addEventListener('click',()=>{const entry=activeTerminal();if(!entry)return;const blob=new Blob([terminalText(entry.terminal)],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`dark-noc-ssh-${Date.now()}.log`;a.click();URL.revokeObjectURL(a.href);});
+$('#terminal-replay').addEventListener('click',startTerminalReplay);$('#terminal-replay-stop').addEventListener('click',stopTerminalReplay);
+$('#terminal-snippet-select').addEventListener('change',event=>{const item=savedSnippets()[Number(event.target.value)];if(item){$('#terminal-snippet-name').value=item.name;$('#terminal-snippet-command').value=item.command;}});
+$('#terminal-snippet-save').addEventListener('click',()=>{const name=$('#terminal-snippet-name').value.trim(),command=$('#terminal-snippet-command').value.trim();if(!name||!command)return showToast('SNIPPET INCOMPLETE','Enter both a name and a command.',true);if(name.length>48||command.length>2000||/[\0\r\n]/.test(command))return showToast('INVALID SNIPPET','Use a single command up to 2000 characters.',true);const snippets=savedSnippets(),existing=snippets.find(item=>item.name.toLowerCase()===name.toLowerCase());if(existing)existing.command=command;else snippets.push({name,command});localStorage.setItem('darkNocSshSnippets',JSON.stringify(snippets.slice(-100)));renderSnippets();showToast('SNIPPET SAVED',`${name} is available in this browser.`);});
+$('#terminal-snippet-run').addEventListener('click',()=>{const socket=connectedSocket(),command=$('#terminal-snippet-command').value.trim();if(!socket)return showToast('SSH NOT CONNECTED','Connect the active pane first.',true);if(!command)return showToast('EMPTY SNIPPET','Select or enter a command first.',true);socket.send(JSON.stringify({type:'input',data:`${command}\n`}));activeTerminal()?.terminal.focus();});
 $('#disconnect').addEventListener('click',()=>{[...state.sockets.keys()].forEach(closeSocket);$$('.ssh-online').forEach(status=>status.textContent='● CLOSED');showToast('SSH DISCONNECTED','All interactive sessions were closed.');});
 $('#run-all-tests').addEventListener('click',async()=>{const online=state.nodes.filter(node=>node.status==='online');if(!online.length)return showToast('NO ONLINE AGENTS','Tunnel tests were not queued.',true);await Promise.all(online.map(node=>createJob(node.id,'tunnel_test')));showToast('TUNNEL TESTS QUEUED',`${online.length} online Agent${online.length===1?'':'s'} will test every configured tunnel.`);});
 $('#filter-nodes').addEventListener('click',event=>{state.nodeFilter=state.nodeFilter==='all'?'attention':'all';event.target.textContent=`FILTER: ${state.nodeFilter==='all'?'ALL':'ATTENTION'}`;renderNodes();});
@@ -918,5 +981,5 @@ document.addEventListener('keydown',event=>{
 });
 
 function updateClock(){ $('#clock').textContent=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Tehran',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date()); }
-ensureTerminal('terminal-iran');ensureTerminal('terminal-germany');$('.terminal-card').classList.add('active-terminal');
+ensureTerminal('terminal-iran');ensureTerminal('terminal-germany');$('.terminal-card').classList.add('active-terminal');renderSnippets();
 updateClock(); setInterval(updateClock,1000); setInterval(refresh,15000); boot();

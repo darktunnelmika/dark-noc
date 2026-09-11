@@ -1,4 +1,4 @@
-# DARK NOC v2.7.0 — مرکز فرمان NOC
+# DARK NOC v2.8.0 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -39,7 +39,7 @@ Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را ا�
 - Retry، حذف دوطرفه و Rollback خودکار در شکست نصب
 - Incident Center کامل با Timeline، یادداشت اپراتور، Acknowledge، علت اصلی، راه‌حل، Reopen و Recovery خودکار
 - SSH مرورگری با رمزنگاری اطلاعات ورود و Pin شدن Host Key
-- ترمینال کامل xterm.js با ANSI/VT، دو نشست هم‌زمان، تغییر اندازه PTY، جست‌وجو، کلیپ‌بورد، تمام‌صفحه و ذخیره لاگ
+- SSH Workspace کامل xterm.js با Pane نامحدود، چیدمان Grid/Column/Focus، نشست پایدار tmux، اتصال مجدد خودکار، Snippet، ضبط و Replay، تغییر اندازه PTY، جست‌وجو، کلیپ‌بورد، تمام‌صفحه و ذخیره لاگ
 - آپلود مستقیم فایل از مرورگر با SFTP، نمایش پیشرفت، جایگزینی اتمیک POSIX روی OpenSSH و مسیر بازیابی‌پذیر برای SFTPهای قدیمی
 - انتقال فایل بین دو سرور از مسیر امن Hub، بدون نیاز به دسترسی SSH مستقیم بین آن‌ها
 - فایل‌منیجر SFTP با مرور پوشه، ادیتور UTF-8 و ذخیره اتمیک، دانلود، SHA-256، ساخت پوشه، Rename، CHMOD و حذف محافظت‌شده
@@ -48,8 +48,10 @@ Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را ا�
 - ابزار سروری `darknoc` برای نمایش و تغییر یوزرنیم/رمز، پورت عمومی، دامنه، SSL، وضعیت، لاگ، بکاپ و آپدیت
 - اجرای واقعی HTTPS روی پورت عمومی انتخابی با پیش‌فرض `9090` و جداسازی خودکار پورت داخلی Hub
 - نصب جداگانه Hub و Node و حفظ تونل‌های قبلی سرور
-- Fleet Operations برای اجرای هماهنگ Diagnostics، تست تونل، لاگ، کنترل سرویس، Auto-Heal و Sync Agent روی چند نود
+- Fleet Operations برای Diagnostics، تست تونل، لاگ، کنترل سرویس، Auto-Heal، Sync Agent و ارتقای canary-first همراه با تأیید دقیق نسخه روی چند نود
 - Rollup ساعتی متریک‌ها، Retention قابل تنظیم و قفل رهبر برای اجرای امن Controller در چند Process
+- Operations Cockpit هر تونل با Health Score، ترافیک، Session، Uptime، Latency/Loss، تاریخچه ۲۴ ساعته و Timeline عملیات
+- توپولوژی درختی متحرک با مسیرهای سبز/زرد/خاکستری/قرمز، نمایش جریان ترافیک، جزئیات Hover و ورود مستقیم به مدیریت تونل
 
 در نسخه فعلی افزونه‌های **DARK Backhaul**، **DARK Ghost Pro** و **DARK Packet Pro** در بخش تونل ارائه می‌شوند. Packet Pro جهت واقعی متفاوتی دارد: ایران Client و خارج Server است؛ پنل در حالت Pair Code سمت ایران را می‌سازد و کد `DPP-N1` را برای اسکریپت خارج تحویل می‌دهد.
 
@@ -57,10 +59,10 @@ Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را ا�
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v2.7.0.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v2.8.0.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v2.7.0.tar.gz
+tar -xzf DARK-NOC-HUB-v2.8.0.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -84,10 +86,10 @@ sudo darknoc
 
 ## نصب Node
 
-فایل `DARK-NOC-NODE-v2.7.0.tar.gz` را روی Node اجرا کنید:
+فایل `DARK-NOC-NODE-v2.8.0.tar.gz` را روی Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v2.7.0.tar.gz
+tar -xzf DARK-NOC-NODE-v2.8.0.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh

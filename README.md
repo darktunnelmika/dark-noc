@@ -1,4 +1,4 @@
-# DARK NOC Hub v2.7.0 — Nightfall Command
+# DARK NOC Hub v2.8.0 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
@@ -30,13 +30,13 @@ interactive installer.
 - CPU, RAM, swap, disk, load, bandwidth, uptime and connection telemetry
 - Inode, temperature, disk-I/O, interface error/drop, OS update/reboot and Docker-health telemetry
 - Agent-based ICMP, TCP, HTTP, HTTPS, DNS, TLS-expiry and encrypted SNMP monitoring
-- Tunnel process and TCP path checks
+- Tunnel process/path checks with retained per-tunnel traffic, session, uptime, latency, loss and health-score history
 - Incident Center with timeline, notes, acknowledgement, root cause, resolution, reopen and automatic recovery
 - Optional Telegram incident and recovery alerts
 - Allowlisted remote diagnostics and service restarts
 - Auto-Heal with cooldown and hourly restart limits
 - Interactive SSH over authenticated WebSocket
-- Full xterm.js SSH console with ANSI/VT support, two concurrent sessions, PTY resize, search, clipboard, fullscreen and log export
+- Full xterm.js SSH Workspace with unlimited panes, grid/column/focus layouts, persistent tmux sessions, automatic reconnect, snippets, recording/replay, PTY resize, search, clipboard, fullscreen and log export
 - Browser-to-server file upload over pinned SFTP with real progress, size limits, atomic POSIX replacement on OpenSSH and a recoverable fallback on older SFTP servers
 - Cross-server SFTP relay through the Hub, requiring no direct SSH path between the two Nodes
 - Remote SFTP File Manager with browsing, atomic UTF-8 editing, download, SHA-256, mkdir, rename, chmod and guarded deletion
@@ -48,7 +48,7 @@ interactive installer.
 - Configurable public HTTPS panel port (default `9090`) with an automatically isolated private Hub backend
 - Server-only panel domain/IP switching, Let's Encrypt issuance/renewal and transactional Nginx reconfiguration
 - Controlled iperf3 speed tests through a fixed configured endpoint
-- Fleet Operations for safe multi-Node diagnostics, tunnel tests, logs, managed-service actions, Auto-Heal and bounded Agent sync
+- Fleet Operations for safe multi-Node diagnostics, tunnel tests, logs, managed-service actions, Auto-Heal, bounded Agent sync and canary-first version-verified upgrades
 - Extensible Tunnel Plugin Store with coordinated two-node deployment
 - Hybrid DARK Backhaul Pair Code mode for KHAREJ servers without SSH or an Agent
 - Native DARK Packet Pro plugin with managed IRAN-client/KHAREJ-server deployment and DPP-N1 Pair Code mode
@@ -77,7 +77,7 @@ interactive installer.
 - Automatic local Hub enrollment with its monitoring Agent enabled during Hub installation
 - Strict plugin discovery for DARK Backhaul (`backhaul@NAME.service`), DARK Ghost Pro (`ghostpro@NAME.service`) and DARK Packet Pro (`paqetpro@NAME.service`); unrelated tunnel families remain excluded
 - Node IP shown beside every server name in the Live Tunnel Matrix
-- Tree topology pairs Iran/Hub with remote endpoints even when the remote side has no manageable SSH Node
+- Animated tree topology pairs Iran/Hub with remote endpoints even when the remote side has no manageable SSH Node; route color, flow speed, labels and hover intelligence expose live tunnel state
 - Separate read-only Agent and SSH readiness indicators on both sides of every Backhaul path
 - Real remote IP discovery from established Backhaul TCP peers and hover diagnostics on every colored path
 

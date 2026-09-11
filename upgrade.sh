@@ -382,7 +382,7 @@ PY
     trap 'rollback_agent TERM 143' TERM
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y ca-certificates curl tar openssl certbot iproute2 iperf3
+    apt-get install -y ca-certificates curl tar openssl certbot iproute2 iperf3 tmux
     install -d -m 0700 /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
     install -d -m 0755 /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d
     systemctl stop dark-noc-agent.service

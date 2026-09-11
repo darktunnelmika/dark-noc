@@ -1,10 +1,26 @@
-# DARK NOC v2.7.0 — Server Control Center
+# DARK NOC v2.8.0 — Operations Cockpit
 
 Maintainer: **@mikakhadm**
 
-This release adds a root-only server control plane while keeping tunnel automation, monitoring and browser SSH intact.
+This release turns tunnel, topology, Agent upgrade and browser SSH workflows into a deeper day-to-day NOC operations cockpit.
 
-## `darknoc` server command
+## Tunnel Operations and topology
+
+Every managed tunnel now has a dedicated Operations Cockpit with a health score, live traffic, sessions, latency/loss, service uptime, a retained 24-hour graph, endpoint/SSH intelligence and a relevant job timeline. The Agent attributes kernel TCP byte counters to tunnel ports and reports systemd uptime; the Hub retains these samples independently from host metrics.
+
+The topology remains the cyber tree layout, but routes now have explicit healthy, degraded, stale and down states. Animated packets communicate traffic flow, each route is labeled, richer hover details expose its exact transport and telemetry, and clicking the line opens that tunnel's cockpit. IPv4-mapped peer addresses are normalized before matching or display.
+
+## Controlled Agent upgrades
+
+Fleet Operations now includes a version-aware Upgrade Agents playbook. Operators select a canary, batch size, pause and stop-on-failure policy. The canary runs alone, subsequent batches are bounded, and a Node is successful only after it sends a heartbeat with the exact Hub version. The Fleet page shows current, outdated and unknown Agent counts.
+
+## Advanced SSH Workspace
+
+Browser SSH is no longer limited to two temporary panes. Operators can create unlimited panes, switch grid/column/focus layouts, save and run local snippets, record/replay output and automatically reconnect with exponential backoff. When `tmux` is available, closing or losing the browser keeps the remote shell alive and reconnecting reattaches to the same pinned session. Hub and Node installers now include `tmux`.
+
+## Previous v2.7.0 server control center
+
+### `darknoc` server command
 
 Run `sudo darknoc` on the Hub to view the active panel URL and recoverable credentials, change the owner username/password, select the real public HTTPS port, register a domain or IP, issue/renew Let's Encrypt, restart services, follow logs, create a SQLite/config/TLS backup or start a verified update. These sensitive settings are no longer editable from the web panel.
 
