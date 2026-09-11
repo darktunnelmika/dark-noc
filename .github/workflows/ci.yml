@@ -31,6 +31,12 @@ jobs:
         run: |
           python tests/smoke.py
           python tests/agent_logic.py
-      - name: Verify release builder
-        run: scripts/build-release.sh
-
+          python tests/file_ops.py
+          python tests/noc_features.py
+      - name: Verify reproducible release builder
+        run: |
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
