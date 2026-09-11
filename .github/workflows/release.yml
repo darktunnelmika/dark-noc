@@ -2,38 +2,70 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: dark-noc-release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tag matches source version
-        run: |
-          source_version="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' hub/app.py)"
-          test "v$source_version" = "$GITHUB_REF_NAME"
-      - name: Build packages
-        run: scripts/build-release.sh
-      - name: Publish GitHub release
+      - name: Resolve release version
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -Eeuo pipefail
+          source_version="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' hub/app.py)"
+          test -n "$source_version"
+          release_tag="v$source_version"
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "$release_tag" = "$GITHUB_REF_NAME"
+          elif gh release view "$release_tag" >/dev/null 2>&1; then
+            echo "DARK NOC $release_tag is already published; skipping."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+      - name: Build packages
+        if: steps.version.outputs.publish == 'true'
+        run: scripts/build-release.sh
+      - name: Publish GitHub release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
           assets=(
-            dist/DARK-NOC-HUB-"$GITHUB_REF_NAME".tar.gz
-            dist/DARK-NOC-NODE-"$GITHUB_REF_NAME".tar.gz
+            dist/DARK-NOC-HUB-"$RELEASE_TAG".tar.gz
+            dist/DARK-NOC-NODE-"$RELEASE_TAG".tar.gz
             dist/SHA256SUMS
           )
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" \
-              --title "DARK NOC $GITHUB_REF_NAME" \
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "DARK NOC $RELEASE_TAG" \
               --notes-file RELEASE_NOTES.md
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --title "DARK NOC $GITHUB_REF_NAME" \
+            target_args=()
+            if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+              target_args=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              "${target_args[@]}" \
+              --title "DARK NOC $RELEASE_TAG" \
               --notes-file RELEASE_NOTES.md
           fi
