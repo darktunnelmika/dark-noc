@@ -17,7 +17,7 @@ for command in curl tar sha256sum mktemp; do
   command -v "$command" >/dev/null 2>&1 || { echo "Missing required command: $command"; exit 1; }
 done
 
-LATEST_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")"
+LATEST_URL="$(curl --proto '=https' --tlsv1.2 -fsSLI --connect-timeout 15 --max-time 60 --retry 3 -o /dev/null -w '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")"
 VERSION="${LATEST_URL##*/}"
 if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Could not resolve the latest stable DARK NOC release."
@@ -27,11 +27,21 @@ fi
 if [[ "$COMPONENT" == "hub" ]]; then
   ASSET="DARK-NOC-HUB-$VERSION.tar.gz"
   PROJECT_DIR="dark-noc-pro"
-  INSTALLER="install-hub.sh"
+  if [[ -d /opt/dark-noc/hub ]]; then
+    INSTALLER="upgrade.sh"
+    INSTALL_ARGS=(hub)
+    INSTALL_MODE="verified Hub upgrade with rollback"
+  else
+    INSTALLER="install-hub.sh"
+    INSTALL_ARGS=()
+    INSTALL_MODE="fresh Hub installation"
+  fi
 else
   ASSET="DARK-NOC-NODE-$VERSION.tar.gz"
   PROJECT_DIR="dark-noc-node"
   INSTALLER="install-node.sh"
+  INSTALL_ARGS=()
+  INSTALL_MODE="Node prerequisite refresh"
 fi
 
 BASE_URL="https://github.com/$REPOSITORY/releases/download/$VERSION"
@@ -40,8 +50,8 @@ cleanup() { rm -rf "$WORK_DIR"; }
 trap cleanup EXIT
 
 echo "DARK NOC $VERSION · downloading $COMPONENT package"
-curl --proto '=https' --tlsv1.2 -fL --retry 3 -o "$WORK_DIR/$ASSET" "$BASE_URL/$ASSET"
-curl --proto '=https' --tlsv1.2 -fL --retry 3 -o "$WORK_DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS"
+curl --proto '=https' --tlsv1.2 -fL --retry 3 --connect-timeout 15 --max-time 300 -o "$WORK_DIR/$ASSET" "$BASE_URL/$ASSET"
+curl --proto '=https' --tlsv1.2 -fL --retry 3 --connect-timeout 15 --max-time 300 -o "$WORK_DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS"
 
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset {print $1}' "$WORK_DIR/SHA256SUMS")"
 ACTUAL="$(sha256sum "$WORK_DIR/$ASSET" | awk '{print $1}')"
@@ -56,6 +66,5 @@ if [[ ! -f "$WORK_DIR/$PROJECT_DIR/$INSTALLER" ]]; then
   exit 1
 fi
 chmod +x "$WORK_DIR/$PROJECT_DIR"/*.sh
-echo "Package verified. Starting DARK NOC $COMPONENT installer..."
-(cd "$WORK_DIR/$PROJECT_DIR" && bash "$INSTALLER")
-
+echo "Package verified. Starting $INSTALL_MODE..."
+(cd "$WORK_DIR/$PROJECT_DIR" && bash "$INSTALLER" "${INSTALL_ARGS[@]}")
