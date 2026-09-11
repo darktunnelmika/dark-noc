@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Static checks
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+      - name: Tests
+        run: |
+          python tests/smoke.py
+          python tests/agent_logic.py
+      - name: Verify release builder
+        run: scripts/build-release.sh
+

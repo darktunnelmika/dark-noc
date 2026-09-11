@@ -1,0 +1,21 @@
+[Unit]
+Description=DARK NOC Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/dark-noc-agent
+Environment=DARK_NOC_AGENT_CONFIG=/etc/dark-noc-agent/config.json
+ExecStart=/opt/dark-noc-agent/venv/bin/python /opt/dark-noc-agent/agent.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dark-noc-agent /etc/dark-noc-agent /etc/dark-backhaul /etc/systemd/system -/etc/ufw /usr/local/bin
+
+[Install]
+WantedBy=multi-user.target

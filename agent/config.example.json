@@ -1,0 +1,19 @@
+{
+  "hub_url": "https://noc.example.com",
+  "agent_token": "PASTE_ONE_TIME_NODE_TOKEN",
+  "verify_tls": true,
+  "interval_seconds": 15,
+  "services": [],
+  "managed_services": [],
+  "speedtest": {
+    "host": "10.88.88.2",
+    "port": 5201
+  },
+  "auto_discovery": true,
+  "tunnels": [],
+  "autoheal": {
+    "enabled": true,
+    "cooldown_seconds": 300,
+    "max_restarts_per_hour": 3
+  }
+}

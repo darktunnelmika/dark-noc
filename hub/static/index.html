@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#05070b" />
+  <meta name="description" content="DARK NOC — Network Operations Command Center" />
+  <title>DARK NOC — Nightfall Command</title>
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=5.5.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=2.1.0" />
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <section class="login-gate" id="login-gate">
+    <form class="login-panel" id="login-form">
+      <div class="brand-mark login-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <span class="panel-kicker">SECURE NODE AUTHENTICATION</span>
+      <h1>DARK NOC</h1>
+      <p>Nightfall Command Gateway · @mikakhadm</p>
+      <label>OPERATOR ID<input name="username" autocomplete="username" required /></label>
+      <label>ACCESS KEY<input name="password" type="password" autocomplete="current-password" required /></label>
+      <button class="primary-btn" type="submit">AUTHENTICATE</button>
+      <small id="login-error"></small>
+    </form>
+  </section>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <strong>DARK NOC</strong>
+          <small>NIGHTFALL COMMAND · @mikakhadm</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary navigation">
+        <button class="nav-item active" data-view="overview"><i>◈</i><span>Command</span></button>
+        <button class="nav-item" data-view="servers"><i>▦</i><span>Servers</span><b>0</b></button>
+        <button class="nav-item" data-view="tunnels"><i>⇄</i><span>Tunnels</span><b>0</b></button>
+        <button class="nav-item" data-view="certificates"><i>◇</i><span>TLS Vault</span><b id="cert-count">0</b></button>
+        <button class="nav-item" data-view="incidents"><i>⚠</i><span>Incidents</span><b class="danger">0</b></button>
+        <button class="nav-item" data-view="terminal"><i>›_</i><span>SSH Command</span></button>
+      </nav>
+
+      <div class="side-label">SYSTEM</div>
+      <div class="system-mini">
+        <div><span>Hub Core</span><strong class="ok">ONLINE</strong></div>
+        <div><span>Agents</span><strong id="agent-count">0 / 0</strong></div>
+        <div><span>Auto-Heal</span><strong class="purple">PER AGENT</strong></div>
+        <div><span>Last sync</span><strong id="sync-time">WAIT</strong></div>
+      </div>
+
+      <button class="operator" title="Account settings">
+        <span class="avatar">MK</span>
+        <span><strong>Command Owner</strong><small>Full access</small></span>
+        <i>•••</i>
+      </button>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="title-block">
+          <button class="menu-toggle" id="menu-toggle" aria-label="Toggle navigation">☰</button>
+          <div>
+            <div class="eyebrow"><span class="live-dot"></span> LIVE OPERATIONS</div>
+            <h1 id="view-title">Network Command</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="search-trigger" id="open-command"><span>⌕</span> Search or command <kbd>⌘ K</kbd></button>
+          <div class="utc-clock"><small>TEHRAN</small><strong id="clock">--:--:--</strong></div>
+          <button class="icon-btn" id="alert-button" aria-label="Notifications">♢<span></span></button>
+          <button class="primary-btn" id="add-node">＋ ADD NODE</button>
+        </div>
+      </header>
+
+  <div class="demo-banner" id="connection-banner"><span>CONNECTING TO HUB</span> Waiting for authenticated telemetry.</div>
+
+      <section class="view active" id="view-overview">
+        <div class="stat-grid">
+          <article class="stat-card accent-green">
+            <div class="stat-head"><span>NETWORK HEALTH</span><i>◉</i></div>
+            <div class="stat-value"><strong>0.0</strong><small>%</small></div>
+            <div class="micro-row"><span id="health-detail">Waiting for telemetry</span><b id="health-state">CONNECTING</b></div>
+          </article>
+          <article class="stat-card accent-blue">
+            <div class="stat-head"><span>LIVE THROUGHPUT</span><i>⇅</i></div>
+            <div class="stat-value"><strong id="throughput">0</strong><small>b/s</small></div>
+            <div class="micro-row"><span id="throughput-detail">↓ 0 / ↑ 0</span><b>LIVE AGGREGATE</b></div>
+          </article>
+          <article class="stat-card accent-violet">
+            <div class="stat-head"><span>ACTIVE SESSIONS</span><i>⌁</i></div>
+            <div class="stat-value"><strong id="sessions">0</strong></div>
+            <div class="micro-row"><span>Kernel socket count</span><b id="session-nodes">0 NODES</b></div>
+          </article>
+          <article class="stat-card accent-red">
+            <div class="stat-head"><span>OPEN INCIDENTS</span><i>⚠</i></div>
+            <div class="stat-value"><strong>0</strong><small>open</small></div>
+            <div class="micro-row"><span>No active incident</span><b>READY</b></div>
+          </article>
+        </div>
+
+        <div class="command-grid">
+          <article class="panel topology-panel">
+            <div class="panel-head">
+              <div><span class="panel-kicker">GLOBAL TOPOLOGY</span><h2>Live tunnel matrix</h2></div>
+              <div class="topology-tools">
+                <input id="topology-search" placeholder="SEARCH NODE / TUNNEL" aria-label="Search topology" />
+                <select id="topology-filter" aria-label="Filter topology"><option value="all">ALL PATHS</option><option value="online">HEALTHY</option><option value="degraded">DEGRADED</option><option value="down">DOWN</option></select>
+                <button id="topology-fullscreen" title="Fullscreen topology">⛶</button>
+                <div class="segmented" role="group" aria-label="Topology view"><button class="active" id="map-view">MAP</button><button id="list-view">LIST</button></div>
+              </div>
+            </div>
+            <div class="topology" id="topology"><div class="empty-state"><strong>No live topology yet</strong>Add nodes to build the network map.</div></div>
+            <div class="topology-footer">
+              <div><span class="legend green"></span>Healthy <b>0</b></div>
+              <div><span class="legend amber"></span>Degraded <b>0</b></div>
+              <div><span class="legend red"></span>Offline <b>0</b></div>
+              <button data-jump="tunnels">OPEN TUNNEL MATRIX →</button>
+            </div>
+          </article>
+
+          <aside class="panel incident-panel"><div class="panel-head compact"><div><span class="panel-kicker">INCIDENT FEED</span><h2>Connecting</h2></div></div><div class="empty-state compact-empty"><strong>Waiting for live data</strong>No demo incidents are displayed.</div></aside>
+        </div>
+
+        <div class="lower-grid">
+          <article class="panel chart-panel">
+            <div class="panel-head compact"><div><span class="panel-kicker">TRAFFIC FLOW</span><h2>Aggregate throughput</h2></div><div class="chart-value"><strong id="chart-throughput">0 b/s</strong><span>live now</span></div></div>
+            <div class="chart-wrap">
+              <div class="y-axis"><span>1G</span><span>750M</span><span>500M</span><span>250M</span><span>0</span></div>
+              <svg viewBox="0 0 900 210" preserveAspectRatio="none" aria-label="Network throughput over the last hour">
+                <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#25f4a0" stop-opacity=".26"/><stop offset="1" stop-color="#25f4a0" stop-opacity="0"/></linearGradient></defs>
+                <g class="chart-lines"><path d="M0 20H900M0 65H900M0 110H900M0 155H900M0 200H900"/></g>
+                <path class="area" id="traffic-area" d="M0 200 L900 200 L900 210 L0 210Z"/>
+                <path class="line" id="traffic-line" d="M0 200 L900 200"/>
+              </svg>
+              <div class="x-axis"><span>18:00</span><span>18:15</span><span>18:30</span><span>18:45</span><span>NOW</span></div>
+            </div>
+          </article>
+
+          <article class="panel node-health"><div class="panel-head compact"><div><span class="panel-kicker">NODE HEALTH</span><h2>Resource pressure</h2></div></div><div class="empty-state compact-empty"><strong>No telemetry yet</strong>Waiting for enrolled Agents.</div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-certificates">
+        <div class="section-toolbar"><div><span>Certificate command</span><strong>TLS Vault</strong></div><button class="primary-btn" id="add-certificate">＋ GET CERTIFICATE</button></div>
+        <div class="tls-hero panel"><div><span class="panel-kicker">ZERO-TRUST TLS INVENTORY</span><h2>Domains, expiry and tunnel usage in one place.</h2><p>Private keys stay on the selected Agent and are never returned to the browser.</p></div><div class="tls-orbit">TLS</div></div>
+        <div class="certificate-grid" id="certificate-grid"></div>
+      </section>
+
+      <section class="view" id="view-servers">
+        <div class="section-toolbar"><div><span>Registered nodes</span><strong>Live Agent inventory</strong></div><div class="toolbar-actions"><button class="ghost-btn" id="filter-nodes">FILTER: ALL</button><button class="primary-btn" data-add-node>＋ ADD SERVER</button></div></div>
+        <div class="server-grid" id="server-grid"></div>
+      </section>
+
+      <section class="view" id="view-tunnels">
+        <div class="section-toolbar"><div><span>Tunnel command</span><strong>DARK tunnel deployments</strong></div><div class="toolbar-actions"><button class="ghost-btn" id="run-all-tests">RUN TUNNEL TESTS</button><button class="primary-btn" data-create-tunnel>＋ CREATE TUNNEL</button></div></div>
+        <div class="plugin-section-head"><div><span class="panel-kicker">TUNNEL PLUGIN STORE</span><h2>Deploy both sides. One command.</h2></div><span class="verified-badge">● LOCAL ALLOWLIST</span></div>
+        <div class="plugin-grid" id="plugin-grid"></div>
+        <div class="deployment-strip" id="deployment-strip"></div>
+        <article class="panel table-panel">
+          <div class="tunnel-table" role="table" aria-label="Tunnels">
+            <div class="table-row table-head-row" role="row"><span>ROUTE</span><span>METHOD</span><span>LATENCY</span><span>LOSS</span><span>THROUGHPUT</span><span>SESSIONS</span><span>STATUS</span><span></span></div>
+            <div id="tunnel-rows"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="view" id="view-incidents">
+        <div class="section-toolbar"><div><span>Incident command</span><strong>Live recovery timeline</strong></div><button class="ghost-btn" id="export-incidents">EXPORT REPORT</button></div>
+        <div class="incident-workspace">
+          <article class="panel incident-detail">
+            <div class="incident-detail-head"><div><span class="severity-pill">WAITING FOR DATA</span><h2>No incident selected</h2><p>Live Agent incidents will appear here.</p></div><div class="downtime"><small>DOWNTIME</small><strong id="downtime">00:00:00</strong></div></div>
+            <div class="diagnostic-grid">
+              <div class="diag waiting"><span>01</span><strong>LIVE STATE</strong><small>Waiting for Agent heartbeat</small></div>
+            </div>
+            <div class="remediation"><div><span class="live-dot"></span><p><strong>Monitoring standby</strong><small>No active recovery operation</small></p></div></div>
+          </article>
+          <article class="panel timeline-panel">
+            <div class="panel-head compact"><div><span class="panel-kicker">INCIDENT #0097</span><h2>Event timeline</h2></div><span class="recording"><i></i> RECORDING</span></div>
+            <div class="timeline">
+              <div class="active"><time>NOW</time><span></span><p><strong>No active recovery timeline</strong><small>Waiting for live incident data.</small></p></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-terminal">
+        <div class="terminal-toolbar">
+          <div class="connection-info"><span class="secure-dot"></span><div><small>SECURE SESSION</small><strong>Split command terminal</strong></div></div>
+          <div class="toolbar-actions terminal-connectors"><select id="ssh-node-select" aria-label="Select SSH server"><option value="">SELECT SERVER</option></select><button class="primary-btn" id="ssh-connect">CONNECT SSH</button><button class="ghost-btn" id="terminal-new-tab">NEW TAB</button><button class="ghost-btn" id="terminal-copy">COPY</button><button class="ghost-btn" id="terminal-paste">PASTE</button><button class="ghost-btn" id="terminal-fullscreen">FULLSCREEN</button><button class="danger-outline" id="disconnect">DISCONNECT</button></div>
+        </div>
+        <div class="terminal-layout">
+          <article class="terminal-card">
+            <header><div class="terminal-lights"><i></i><i></i><i></i></div><div class="terminal-server"><span class="flag">01</span><div><strong>NO SESSION</strong><small>Select SSH from a server card</small></div></div><span class="ssh-online">● IDLE</span></header>
+            <div class="terminal-screen" id="terminal-iran" tabindex="0"></div>
+          </article>
+          <article class="terminal-card">
+            <header><div class="terminal-lights"><i></i><i></i><i></i></div><div class="terminal-server"><span class="flag">02</span><div><strong>NO SESSION</strong><small>Select a second server if needed</small></div></div><span class="ssh-online">● IDLE</span></header>
+            <div class="terminal-screen" id="terminal-germany" tabindex="0"></div>
+          </article>
+        </div>
+        <article class="quick-actions panel">
+          <div><span class="panel-kicker">TERMINAL TOOLS</span><h2>Search, logs and diagnostic playbooks</h2><div class="terminal-search"><input id="terminal-search-input" placeholder="Find in active terminal…" /><button id="terminal-search-prev">↑</button><button id="terminal-search-next">↓</button><button id="terminal-download-log">SAVE LOG</button><button id="clear-terminal">CLEAR</button><button id="session-log">JOB HISTORY</button></div></div>
+          <div class="action-buttons"><button data-command="systemctl --failed">FAILED SERVICES</button><button data-command="journalctl -u 'backhaul@*' -n 100 --no-pager">TUNNEL LOGS</button><button data-command="ss -s">CONNECTIONS</button><button data-command="ip route">ROUTES</button><button data-command="df -h">DISK HEALTH</button><button data-command="top -bn1 | head -20">SYSTEM LOAD</button></div>
+        </article>
+        <section class="file-ops-grid">
+          <article class="panel file-ops-card">
+            <div class="file-ops-head"><span>⇧</span><div><small>LOCAL → SERVER</small><h2>Secure file upload</h2></div><b>ENCRYPTED SFTP</b></div>
+            <form id="ssh-upload-form">
+              <label>DESTINATION SERVER<select name="node_id" id="upload-node" required><option value="">SELECT SERVER</option></select></label>
+              <label>LOCAL FILE<input name="file" type="file" required /></label>
+              <label class="full-field">REMOTE PATH<input name="remote_path" required value="/root/" placeholder="/root/file.tar.gz" /><small>End with / to keep the original filename.</small></label>
+              <label class="file-overwrite"><input name="overwrite" type="checkbox" /> REPLACE EXISTING FILE</label>
+              <div class="transfer-progress" id="upload-progress"><i></i><span>READY · Select a file</span></div>
+              <button class="primary-btn" type="submit">UPLOAD TO SERVER</button>
+            </form>
+          </article>
+          <article class="panel file-ops-card relay-card">
+            <div class="file-ops-head"><span>⇄</span><div><small>SERVER → HUB RELAY → SERVER</small><h2>Cross-server transfer</h2></div><b>NO DIRECT SSH NEEDED</b></div>
+            <form id="ssh-relay-form">
+              <div class="form-grid"><label>SOURCE SERVER<select name="source_node_id" id="relay-source-node" required><option value="">SELECT SOURCE</option></select></label><label>SOURCE FILE<input name="source_path" required placeholder="/root/dark_core" /></label></div>
+              <div class="relay-arrow">SECURE HUB STREAM <i>→</i></div>
+              <div class="form-grid"><label>DESTINATION SERVER<select name="destination_node_id" id="relay-destination-node" required><option value="">SELECT DESTINATION</option></select></label><label>DESTINATION FILE<input name="destination_path" required placeholder="/root/dark_core" /></label></div>
+              <label class="file-overwrite"><input name="overwrite" type="checkbox" /> REPLACE EXISTING FILE</label>
+              <div class="transfer-progress" id="relay-progress"><i></i><span>READY · Files stream through Hub memory</span></div>
+              <button class="primary-btn" type="submit">START SECURE TRANSFER</button>
+            </form>
+          </article>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="plugin-modal" aria-hidden="true">
+    <div class="modal plugin-modal" role="dialog" aria-modal="true" aria-labelledby="plugin-title">
+      <div class="modal-head"><div><span class="panel-kicker">COORDINATED PLUGIN DEPLOYMENT</span><h2 id="plugin-title">Deploy DARK Backhaul</h2></div><button class="modal-close plugin-close" aria-label="Close">×</button></div>
+      <form id="plugin-form">
+        <label class="full-field">DEPLOYMENT MODE<select name="deployment_mode" id="plugin-mode"><option value="pair_code">PAIR CODE · No SSH/Agent required on KHAREJ</option><option value="managed">FULLY MANAGED · Agents on both servers</option></select></label>
+        <div class="role-map"><div><span>IR</span><p><strong>IRAN NODE</strong><small id="plugin-iran-role">Server · accepts tunnel</small></p></div><i>PAIR LINK</i><div><span>EX</span><p><strong>KHAREJ NODE</strong><small id="plugin-remote-help">Script · paste Pair Code</small></p></div></div>
+        <div class="form-grid"><label>IRAN SERVER<select name="iran_node_id" id="plugin-iran-node" required></select></label><label id="plugin-kharej-managed" hidden>KHAREJ SERVER<select name="kharej_node_id" id="plugin-kharej-node"></select></label><label id="plugin-kharej-pair">KHAREJ LABEL<input name="remote_label" value="KHAREJ" placeholder="ARMENIA" /></label></div>
+        <label class="full-field" id="plugin-kharej-endpoint" hidden>KHAREJ PUBLIC IPv4<input name="kharej_endpoint" placeholder="203.0.113.20" /><small>Required for Packet Pro Pair Code because the Iran client connects outward to KHAREJ.</small></label>
+        <div class="form-grid"><label>TUNNEL NAME<input name="name" required pattern="[A-Za-z0-9_-]{1,24}" value="dark-link" /></label><label>IRAN PUBLIC IP / DOMAIN<input name="iran_endpoint" id="plugin-endpoint" required placeholder="203.0.113.10" /></label></div>
+        <div class="form-grid"><label>TUNNEL PORT<input name="tunnel_port" type="number" min="1" max="65535" value="3080" required /></label><label>USER PORTS<input name="user_ports" required placeholder="443, 8443, 2087" /></label></div>
+        <div class="form-grid"><label>TRANSPORT<select name="transport"><option value="tcpmux">TCPMUX · Recommended</option><option value="tcp">TCP</option><option value="wsmux">WSMUX</option><option value="ws">WebSocket</option><option value="udp">UDP</option><option value="kcp">KCP · Packet Pro</option></select></label><label>PROFILE<select name="profile"><option value="balanced">Balanced</option><option value="stable">Stable · lossy path</option><option value="lowping">Low Ping</option><option value="turbo">Turbo · many users</option></select></label></div>
+        <div class="tls-selector" id="plugin-tls" hidden><div><span class="panel-kicker">TLS VAULT REQUIRED</span><strong>Select a valid certificate on the Iran Node</strong></div><select name="certificate_id" id="plugin-certificate"><option value="">SELECT CERTIFICATE</option></select><button type="button" class="ghost-btn" id="plugin-get-certificate">＋ GET NEW</button></div>
+        <label class="full-field">SCHEDULED RESTART<select name="restart_every"><option value="off">Off</option><option value="1h">Every 1 hour</option><option value="6h">Every 6 hours</option><option value="12h">Every 12 hours</option><option value="24h">Every 24 hours</option></select></label>
+        <div class="security-note"><span>⚡</span><p><strong id="plugin-security-title">Offline-capable secure pairing</strong><small id="plugin-security-copy">The Hub configures IRAN and generates a compatible code. On KHAREJ select the normal Pair Code flow and paste it.</small></p></div>
+        <div class="modal-actions"><button type="button" class="ghost-btn plugin-cancel">CANCEL</button><button type="submit" class="primary-btn" id="plugin-submit">CONFIGURE IRAN & GENERATE CODE</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="certificate-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><div><span class="panel-kicker">TLS VAULT</span><h2>Issue Let's Encrypt certificate</h2></div><button class="modal-close certificate-close">×</button></div>
+      <form id="certificate-form"><label>IRAN NODE<select name="node_id" id="certificate-node" required></select></label><label class="full-field">DOMAIN<input name="domain" required placeholder="tunnel.example.com" /></label><div class="security-note"><span>◇</span><p><strong>Automatic DNS preflight</strong><small>The domain must resolve to the selected Node. Port 80 must be reachable for ACME validation.</small></p></div><div class="modal-actions"><button type="button" class="ghost-btn certificate-close">CANCEL</button><button type="submit" class="primary-btn">CHECK DNS & ISSUE</button></div></form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="output-modal" aria-hidden="true">
+    <div class="output-panel" role="dialog" aria-modal="true" aria-labelledby="output-title">
+      <div class="modal-head"><div><span class="panel-kicker">REMOTE JOB OUTPUT</span><h2 id="output-title">Command result</h2></div><button class="modal-close output-close" aria-label="Close">×</button></div>
+      <pre id="job-output">Waiting for Agent response…</pre>
+      <div class="modal-actions output-actions"><button class="ghost-btn" id="copy-output">COPY OUTPUT</button><button class="primary-btn output-close">DONE</button></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="tunnel-manage-modal" aria-hidden="true">
+    <div class="modal plugin-modal" role="dialog" aria-modal="true">
+      <div class="modal-head"><div><span class="panel-kicker">DARK TUNNEL CONTROL</span><h2 id="tunnel-manage-title">Manage tunnel</h2></div><button class="modal-close tunnel-manage-close">×</button></div>
+      <div class="tunnel-manager-body">
+        <div id="tunnel-manage-summary" class="security-note"></div>
+        <div class="tunnel-control-grid"><button data-tunnel-action="start">▶ START</button><button data-tunnel-action="stop">■ STOP</button><button data-tunnel-action="restart">↻ RESTART</button><button data-tunnel-action="status">STATUS</button><button data-tunnel-action="logs">LOGS</button><button data-tunnel-action="test">TEST PATH</button></div>
+        <form id="tunnel-edit-form"><label>USER PORTS · ADD, REMOVE OR REORDER<input name="user_ports" required /></label><div class="form-grid"><label>TRANSPORT<select name="transport"><option value="tcpmux">TCPMUX</option><option value="tcp">TCP</option><option value="wsmux">WSMUX</option><option value="ws">WebSocket</option><option value="udp">UDP</option></select></label><label>PROFILE<select name="profile"><option value="balanced">Balanced</option><option value="stable">Stable</option><option value="lowping">Low Ping</option><option value="turbo">Turbo</option></select></label></div><label class="full-field">RESTART SCHEDULE<select name="restart_every"><option value="off">Off</option><option value="1h">Every 1 hour</option><option value="6h">Every 6 hours</option><option value="12h">Every 12 hours</option><option value="24h">Every 24 hours</option></select></label><div class="modal-actions"><button type="button" class="danger-outline" id="tunnel-delete">DELETE TUNNEL</button><button type="submit" class="primary-btn">SAVE & REDEPLOY</button></div></form>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="node-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="node-title">
+      <div class="modal-head"><div><span class="panel-kicker">REGISTER INFRASTRUCTURE</span><h2 id="node-title">Add secure node</h2></div><button class="modal-close" aria-label="Close">×</button></div>
+      <form id="node-form">
+        <label>NODE NAME<input name="name" required placeholder="IR-EDGE-03" /></label>
+        <div class="form-grid"><label>HOST / IP<input name="host" required placeholder="203.0.113.10" /></label><label>SSH PORT<input name="ssh_port" required value="22" inputmode="numeric" /></label></div>
+        <div class="form-grid"><label>REGION<select name="region"><option>Iran Edge</option><option>Global Exit</option><option>Hub</option></select></label><label>ROLE<select name="role"><option value="edge">Iran Edge</option><option value="exit">Global Exit</option><option value="hub">Hub</option></select></label></div>
+        <label class="full-field">SSH USER<input name="ssh_user" value="root" required /></label>
+        <label class="full-field">ROOT SSH PASSWORD <small>(required for automatic installation; blank keeps the current value while editing)</small><input name="ssh_password" type="password" autocomplete="new-password" /></label>
+        <label class="full-field">SSH PRIVATE KEY <small>(optional; encrypted at rest)</small><textarea name="ssh_private_key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+        <div class="security-note"><span>⌾</span><p><strong>Zero-touch installation</strong><small>The Hub connects over SSH, installs prerequisites and Agent, configures TLS/token, then enrolls the Node automatically.</small></p></div>
+        <div class="modal-actions"><button type="button" class="ghost-btn modal-cancel">CANCEL</button><button type="submit" class="primary-btn" id="node-submit">INSTALL & ADD NODE</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="command-modal" aria-hidden="true">
+    <div class="command-modal" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div class="command-search"><span>›_</span><input id="command-input" placeholder="Search nodes, tunnels, incidents or commands…" /><kbd>ESC</kbd></div>
+      <div class="command-results">
+        <small>QUICK COMMANDS</small>
+        <button class="command-option" data-jump="terminal"><i>›_</i><span><strong>Open split SSH terminal</strong><small>Secure browser terminal</small></span><kbd>↵</kbd></button>
+        <button class="command-option" data-jump="incidents"><i>⚠</i><span><strong>Open active incidents</strong><small>Live Agent incident feed</small></span><kbd>↵</kbd></button>
+        <button class="command-option" data-jump="tunnels"><i>⇄</i><span><strong>Open tunnel matrix</strong><small>Process → Port → Path → Service</small></span><kbd>↵</kbd></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="account-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
+      <div class="modal-head"><div><span class="panel-kicker">OPERATOR SECURITY</span><h2 id="account-title">Account settings</h2></div><button class="modal-close account-close" aria-label="Close">×</button></div>
+      <form id="account-form">
+        <label>USERNAME<input name="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]{3,64}" required /></label>
+        <label class="full-field">CURRENT PASSWORD<input name="current_password" type="password" autocomplete="current-password" required /></label>
+        <label class="full-field">NEW PASSWORD <small>(leave empty to keep it; minimum 12)</small><input name="new_password" type="password" minlength="12" autocomplete="new-password" /></label>
+        <label class="full-field">CONFIRM NEW PASSWORD<input name="confirm_password" type="password" autocomplete="new-password" /></label>
+        <div class="modal-actions"><button type="button" class="danger-outline" id="logout-button">SIGN OUT</button><button type="button" class="ghost-btn account-close">CANCEL</button><button type="submit" class="primary-btn">SAVE ACCOUNT</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status"><span>✓</span><p><strong>Command accepted</strong><small>Action queued by DARK NOC</small></p></div>
+  <script src="/static/vendor/xterm/xterm.js?v=5.5.0"></script>
+  <script src="/static/vendor/xterm/addon-fit.js?v=0.10.0"></script>
+  <script src="/static/vendor/xterm/addon-search.js?v=0.15.0"></script>
+  <script src="/static/vendor/xterm/addon-web-links.js?v=0.11.0"></script>
+  <script src="/static/app.js?v=2.5.0"></script>
+</body>
+</html>
