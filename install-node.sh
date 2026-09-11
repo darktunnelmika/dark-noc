@@ -8,13 +8,14 @@ fi
 
 echo ""
 echo "  DARK NOC // NODE PREREQUISITES"
-echo "  Zero-touch Node v2.5.0"
+echo "  Zero-touch Node v2.6.0"
 echo ""
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar openssl iproute2 iputils-ping iptables iperf3 openssh-server
+apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar openssl certbot iproute2 iputils-ping iptables iperf3 snmp openssh-server
 systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
 install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
+install -d -m 0755 /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d
 touch /var/lib/dark-noc-agent/prerequisites-ready
 chmod 0600 /var/lib/dark-noc-agent/prerequisites-ready
 echo ""

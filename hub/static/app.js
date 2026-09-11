@@ -1,9 +1,18 @@
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
-const viewTitles = { overview: 'Network Command', servers: 'Server Fleet', tunnels: 'Tunnel Matrix', certificates: 'TLS Vault', incidents: 'Incident Command', terminal: 'SSH Command' };
-let state = { nodes: [], tunnels: [], incidents: [], plugins: [], deployments: [], certificates: [], traffic: [], sockets: new Map(), terminals: new Map(), selectedNode: null, selectedTunnel: null, selectedPlugin: 'dark-backhaul', nodeFilter: 'all', topologyFilter: 'all', topologySearch: '', editingNode: null };
+const viewTitles = { overview: 'Network Command', servers: 'Server Fleet', tunnels: 'Tunnel Matrix', monitors: 'Synthetic Monitoring', fleet: 'Fleet Operations', certificates: 'TLS Vault', incidents: 'Incident Command', terminal: 'SSH Command' };
+let state = {
+  nodes: [], tunnels: [], incidents: [], plugins: [], deployments: [], certificates: [], traffic: [], monitors: [], fleetOperations: [],
+  limits: { ssh_upload_bytes: null, ssh_relay_bytes: null }, sockets: new Map(), terminals: new Map(),
+  selectedNode: null, selectedTunnel: null, selectedIncident: null, selectedPlugin: 'dark-backhaul',
+  nodeFilter: 'all', topologyFilter: 'all', topologySearch: '', editingNode: null, editingMonitor: null,
+  files: { nodeId: null, path: '/root', parent: '/', entries: [], selected: null, editingPath: null }
+};
 let refreshInFlight = false;
 let liveSocket = null;
+let activeUpload = null;
+let activeRelay = null;
+let authenticatedActivityTerminated = false;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
@@ -15,8 +24,8 @@ async function api(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   });
-  if (response.status === 401) {
-    $('#login-gate').classList.remove('hidden');
+  if (response.status === 401 && path !== '/api/auth/login') {
+    terminateAuthenticatedActivity();
     throw new Error('Authentication required');
   }
   const payload = await response.json().catch(() => ({}));
@@ -25,6 +34,43 @@ async function api(path, options = {}) {
     throw new Error(typeof detail==='string'?detail:`Request failed (${response.status})`);
   }
   return payload;
+}
+
+function terminateAuthenticatedActivity({showLoginGate = true, transferMessage = 'AUTHENTICATION EXPIRED · Sign in again', terminalStatus = '● AUTH EXPIRED'} = {}) {
+  if (showLoginGate) $('#login-gate').classList.remove('hidden');
+  clearTimeout(connectLive.reconnectTimer);
+  clearTimeout(connectLive.refreshTimer);
+  if (authenticatedActivityTerminated) return;
+  authenticatedActivityTerminated = true;
+
+  if (liveSocket) {
+    const socket = liveSocket;
+    liveSocket = null;
+    socket.intentionalClose = true;
+    clearInterval(socket.keepaliveTimer);
+    try { socket.close(); } catch {}
+  }
+
+  [...state.sockets.keys()].forEach(closeSocket);
+  $$('.ssh-online').forEach(status => { status.textContent = terminalStatus; });
+
+  if (activeUpload) {
+    const upload = activeUpload;
+    activeUpload = null;
+    try { upload.abort(); } catch {}
+    const form = $('#ssh-upload-form');
+    if (form) setTransferControls(form, false);
+    transferStatus('#upload-progress', 'error', transferMessage, 0);
+  }
+
+  if (activeRelay) {
+    const relay = activeRelay;
+    activeRelay = null;
+    try { relay.abort(); } catch {}
+    const form = $('#ssh-relay-form');
+    if (form) setTransferControls(form, false);
+    transferStatus('#relay-progress', 'error', transferMessage, 0);
+  }
 }
 
 function bytesPerSecond(value) {
@@ -46,6 +92,36 @@ function transferStatus(selector, stateName, message, percent = null) {
   element.className=`transfer-progress ${stateName||''}`.trim();
   const bar=$('i',element),label=$('span',element);if(percent!==null){bar.style.width=`${Math.max(0,Math.min(100,percent))}%`;bar.style.animation='none';}else{bar.style.width='';bar.style.animation='';}
   label.textContent=message;
+  element.setAttribute('aria-valuetext',message);
+  element.setAttribute('aria-busy',stateName==='running'?'true':'false');
+  if(percent===null){element.removeAttribute('aria-valuenow');element.removeAttribute('aria-valuemin');element.removeAttribute('aria-valuemax');}
+  else{element.setAttribute('aria-valuemin','0');element.setAttribute('aria-valuemax','100');element.setAttribute('aria-valuenow',String(Math.max(0,Math.min(100,percent))));}
+}
+
+function setTransferControls(form, running) {
+  const submit=$('button[type="submit"]',form),cancel=$('.transfer-cancel',form);
+  submit.disabled=running;submit.setAttribute('aria-disabled',String(running));
+  cancel.hidden=!running;cancel.disabled=!running;
+}
+
+function dashboardLimits(summary) {
+  const limits=summary.limits||{};
+  return {
+    ssh_upload_bytes:Number(limits.ssh_upload_bytes??summary.ssh_upload_limit??summary.ssh_upload_bytes)||null,
+    ssh_relay_bytes:Number(limits.ssh_relay_bytes??summary.ssh_relay_limit??summary.ssh_relay_bytes)||null
+  };
+}
+
+function renderTransferLimits() {
+  const upload=state.limits.ssh_upload_bytes,relay=state.limits.ssh_relay_bytes;
+  if($('#upload-limit'))$('#upload-limit').textContent=upload?`Maximum upload: ${fileSize(upload)}.`:'Maximum upload size is enforced by the Hub.';
+  if($('#relay-limit'))$('#relay-limit').textContent=relay?`Maximum relay: ${fileSize(relay)}.`:'Maximum relay size is enforced by the Hub.';
+}
+
+function requireClipboard(method, action) {
+  if(navigator.clipboard&&typeof navigator.clipboard[method]==='function')return true;
+  showToast(`${action} UNAVAILABLE`,'Clipboard access is unavailable in this browser or connection.',true);
+  return false;
 }
 
 function relativeTime(timestamp) {
@@ -60,6 +136,11 @@ function relativeTime(timestamp) {
 function duration(timestamp) {
   const total=Math.max(0,Math.floor(Date.now()/1000-Number(timestamp||Date.now()/1000)));
   const hours=Math.floor(total/3600), minutes=Math.floor(total%3600/60), seconds=total%60;
+  return [hours,minutes,seconds].map(value=>String(value).padStart(2,'0')).join(':');
+}
+
+function elapsedDuration(totalSeconds) {
+  const total=Math.max(0,Math.floor(Number(totalSeconds||0))),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),seconds=total%60;
   return [hours,minutes,seconds].map(value=>String(value).padStart(2,'0')).join(':');
 }
 
@@ -109,7 +190,7 @@ function renderNodes() {
     return;
   }
   target.innerHTML = visibleNodes.map(node => {
-    const m = node.metric || {};
+    const m = node.metric || {}, detail=m.detail||{}, inventory=detail.inventory||{};
     const provisioning=node.provision_status==='provisioning', provisionFailed=node.provision_status==='failed';
     const watch = node.status !== 'online' || provisionFailed || Number(m.cpu) > 80 || Number(m.ram) > 85;
     const throughput = Number(m.rx_bps || 0) + Number(m.tx_bps || 0);
@@ -117,11 +198,14 @@ function renderNodes() {
     const healthy = tunnels.filter(t => t.status === 'healthy').length;
     const services = (node.services || []).map(service=>`<button class="service-chip ${service.status==='active'?'':'service-down'}" data-service-node="${node.id}" data-service-name="${esc(service.name)}" title="Restart ${esc(service.name)}"><i></i>${esc(service.name)} · ${esc(service.status)}</button>`).join('');
     const code = node.region.toUpperCase().includes('IRAN') ? 'IR' : node.name.slice(0,2).toUpperCase();
+    const docker=inventory.docker||{};
+    const intel=[inventory.os||inventory.kernel?`${inventory.os||'Linux'} · ${inventory.kernel||'kernel n/a'}`:'INVENTORY PENDING',inventory.updates!=null?`${Number(inventory.updates)} UPDATES`:'UPDATES N/A',inventory.reboot_required?'REBOOT REQUIRED':'NO REBOOT',docker.available?`DOCKER ${Number(docker.running||0)}/${Number(docker.total||0)}${Number(docker.unhealthy||0)?` · ${Number(docker.unhealthy)} UNHEALTHY`:''}`:'DOCKER N/A'].join(' · ');
     return `<article class="panel server-card">
       <div class="server-head"><div class="server-id"><span class="flag">${esc(code)}</span><div><strong>${esc(node.name)}</strong><small>${esc(node.region)} · IP ${esc(node.observed_ip||node.host)}${node.observed_ip&&node.observed_ip!==node.host?` · SSH ${esc(node.host)}`:''} · AGENT ${esc(node.agent_version||'PENDING')} · AUTO-HEAL ${node.autoheal_enabled?'ON':'OFF'}</small></div></div><span class="status-label ${watch ? 'watch' : ''}">● ${provisioning?'INSTALLING':provisionFailed?'INSTALL FAILED':esc(node.status.toUpperCase())}</span></div>
-      <div class="resource-grid">${resource('CPU',m.cpu,Number(m.cpu)>80)}${resource('RAM',m.ram,Number(m.ram)>85)}${resource('DISK',m.disk,Number(m.disk)>85)}${resource('LOAD',Math.min(Number(m.load1||0)*10,100),false,Number(m.load1||0).toFixed(2))}</div>
+      <div class="resource-grid">${resource('CPU',m.cpu,Number(m.cpu)>80)}${resource('RAM',m.ram,Number(m.ram)>85)}${resource('DISK',m.disk,Number(m.disk)>85)}${resource('INODES',detail.inode_percent,Number(detail.inode_percent)>85)}${resource('LOAD',Math.min(Number(m.load1||0)*10,100),false,Number(m.load1||0).toFixed(2))}${resource('TEMP',Math.min(Number(detail.temperature_c||0),100),Number(detail.temperature_c)>80,detail.temperature_c==null?'—':`${Number(detail.temperature_c).toFixed(0)}°C`)}</div>
+      <div class="server-intel"><span>${esc(intel)}</span><span>DISK ${fileSize(Number(detail.disk_read_bps||0))}/s READ · ${fileSize(Number(detail.disk_write_bps||0))}/s WRITE · NET ERR ${Number(detail.network_errors_delta||0)} · DROP ${Number(detail.network_drops_delta||0)}</span></div>
       <div class="service-list">${services || '<span>No managed services reported</span>'}</div>
-      <div class="server-bottom"><div><span>TUNNELS</span><b>${healthy} / ${tunnels.length}</b></div><div><span>LAST SEEN</span><b>${relativeTime(node.last_seen)}</b></div><div class="server-actions">${provisionFailed?`<button class="square-action node-provision-retry needs-setup" data-node-id="${node.id}">↻ RETRY INSTALL</button>`:''}${node.provision_status?`<button class="square-action node-provision-log" data-node-id="${node.id}">≡ INSTALL LOG</button>`:''}<button class="square-action server-ssh ${node.ssh_configured?'':'needs-setup'}" title="${node.ssh_configured?'Open SSH terminal':'Configure SSH credentials first'}" data-node-id="${node.id}">${node.ssh_configured?'›_ SSH':'⚙ SETUP SSH'}</button><button class="square-action node-diagnostics" title="Run diagnostics" data-node-id="${node.id}">✓ CHECKS</button><button class="square-action node-logs" title="View Agent logs" data-node-id="${node.id}">≡ LOGS</button><button class="square-action node-autoheal" title="Toggle Auto-Heal" data-node-id="${node.id}">↻ AUTO-HEAL</button><button class="square-action node-edit" title="Edit server and SSH settings" data-node-id="${node.id}">✎ EDIT</button><button class="square-action node-pin" title="Reset pinned SSH host key" data-node-id="${node.id}">◇ HOST KEY</button><button class="square-action node-delete danger" title="Delete server" data-node-id="${node.id}" data-node-name="${esc(node.name)}">× DELETE</button></div></div>
+      <div class="server-bottom"><div><span>TUNNELS</span><b>${healthy} / ${tunnels.length}</b></div><div><span>LAST SEEN</span><b>${relativeTime(node.last_seen)}</b></div><div class="server-actions">${provisionFailed?`<button class="square-action node-provision-retry needs-setup" data-node-id="${node.id}">↻ RETRY INSTALL</button>`:''}${node.provision_status?`<button class="square-action node-provision-log" data-node-id="${node.id}">≡ INSTALL LOG</button>`:''}${node.role!=='hub'&&node.ssh_configured&&!provisioning&&!provisionFailed?`<button class="square-action node-agent-sync" title="Redeploy the matching DARK NOC Agent while preserving managed configuration and tunnels" data-node-id="${node.id}">↻ SYNC AGENT</button>`:''}<button class="square-action server-ssh ${node.ssh_configured?'':'needs-setup'}" title="${node.ssh_configured?'Open SSH terminal':'Configure SSH credentials first'}" data-node-id="${node.id}">${node.ssh_configured?'›_ SSH':'⚙ SETUP SSH'}</button><button class="square-action node-diagnostics" title="Run diagnostics" data-node-id="${node.id}">✓ CHECKS</button><button class="square-action node-logs" title="View Agent logs" data-node-id="${node.id}">≡ LOGS</button><button class="square-action node-autoheal" title="Toggle Auto-Heal" data-node-id="${node.id}">↻ AUTO-HEAL</button><button class="square-action node-edit" title="Edit server and SSH settings" data-node-id="${node.id}">✎ EDIT</button><button class="square-action node-pin" title="Reset pinned SSH host key" data-node-id="${node.id}">◇ HOST KEY</button><button class="square-action node-delete danger" title="Delete server" data-node-id="${node.id}" data-node-name="${esc(node.name)}">× DELETE</button></div></div>
     </article>`;
   }).join('');
 }
@@ -136,7 +220,9 @@ function populateSSHServers() {
   if (state.nodes.some(node => String(node.id) === previous)) select.value = previous;
   const fileNodes=state.nodes.filter(node=>node.ssh_configured);
   const fill=(selector,placeholder)=>{const element=$(selector);if(!element)return;const selected=element.value;element.innerHTML=`<option value="">${placeholder}</option>`+fileNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.role==='hub'?'HUB':node.role==='edge'?'IRAN':'KHAREJ')} · ${esc(node.name)} · ${esc(node.host)}</option>`).join('');if(fileNodes.some(node=>String(node.id)===selected))element.value=selected;};
-  fill('#upload-node','SELECT SERVER');fill('#relay-source-node','SELECT SOURCE');fill('#relay-destination-node','SELECT DESTINATION');
+  fill('#upload-node','SELECT SERVER');fill('#relay-source-node','SELECT SOURCE');fill('#relay-destination-node','SELECT DESTINATION');fill('#file-manager-node','SELECT SERVER');
+  const monitorSelect=$('#monitor-form [name="node_id"]');
+  if(monitorSelect){const selected=monitorSelect.value;monitorSelect.innerHTML=state.nodes.filter(node=>node.status==='online').map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');if(state.nodes.some(node=>String(node.id)===selected))monitorSelect.value=selected;}
 }
 
 function renderTunnels() {
@@ -200,27 +286,99 @@ function updatePluginMode(){
   $('#plugin-submit').textContent=managed?'DEPLOY ON BOTH SERVERS':'CONFIGURE IRAN & GENERATE CODE';
 }
 
+function renderIncidentDetail(incident) {
+  const detail=$('.incident-detail'),timeline=$('.timeline-panel .timeline'),noteForm=$('#incident-note-form');
+  if(!detail||!timeline)return;
+  if(!incident){
+    $('.severity-pill',detail).textContent='NO INCIDENT SELECTED';$('.severity-pill',detail).style.color='var(--green)';$('h2',detail).textContent='All monitored paths are operational';$('p',detail).textContent='DARK NOC is watching Agents, tunnels and synthetic checks.';$('.downtime strong',detail).textContent='00:00:00';$('.diagnostic-grid',detail).innerHTML='<div class="diag ok"><span>✓</span><strong>LIVE STATE</strong><small>No incident selected</small></div>';$('.remediation',detail).innerHTML='<div><span class="live-dot"></span><p><strong>Monitoring active</strong><small>Waiting for the next signal</small></p></div>';timeline.innerHTML='<div class="active"><time>NOW</time><span></span><p><strong>No recovery timeline</strong><small>Select an archived incident to inspect it.</small></p></div>';if(noteForm)noteForm.hidden=true;return;
+  }
+  let telemetry={};try{telemetry=typeof incident.detail==='string'?JSON.parse(incident.detail||'{}'):(incident.detail||{});}catch{}
+  $('h2',detail).textContent=incident.title;$('p',detail).textContent=`${incident.node_name||'System'} · ${incident.tunnel_name||telemetry.monitor_name||'Node incident'}`;
+  $('.severity-pill',detail).textContent=`${String(incident.severity||'warning').toUpperCase()} · ${String(incident.status).toUpperCase()}`;$('.severity-pill',detail).style.color='';
+  $('.downtime strong',detail).textContent=elapsedDuration(incident.downtime_seconds);
+  const checks=telemetry.checks||{},monitor=telemetry.monitor_id!=null;
+  $('.diagnostic-grid',detail).innerHTML=monitor
+    ?`<div class="diag ${incident.status==='resolved'?'ok':'fail'}"><span>01</span><strong>SYNTHETIC CHECK</strong><small>${esc(telemetry.reason||telemetry.status||'Threshold failed')}</small></div><div class="diag waiting"><span>02</span><strong>MONITOR</strong><small>ID #${Number(telemetry.monitor_id)}</small></div>`
+    :`<div class="diag ${checks.process===false?'fail':'ok'}"><span>01</span><strong>PROCESS</strong><small>${checks.process===false?'Service failed':'State recorded'}</small></div><div class="diag ${checks.path===false?'fail':'ok'}"><span>02</span><strong>PATH</strong><small>${telemetry.latency_ms==null?'Agent signal':`${Number(telemetry.latency_ms).toFixed(1)} ms`}</small></div><div class="diag ${Number(telemetry.packet_loss||0)>0?'fail':'ok'}"><span>03</span><strong>LOSS</strong><small>${telemetry.packet_loss==null?'—':`${Number(telemetry.packet_loss).toFixed(1)}%`}</small></div><div class="diag waiting"><span>04</span><strong>EVENTS</strong><small>${Number(incident.events?.length||incident.event_count||0)} timeline records</small></div>`;
+  const active=['open','acknowledged'].includes(incident.status);
+  $('.remediation',detail).innerHTML=`<div><span class="${active?'spinner':'live-dot'}"></span><p><strong>${active?(incident.status==='acknowledged'?'Operator owns this incident':'Operator attention required'):'Incident resolved'}</strong><small>${incident.root_cause?`Cause: ${esc(incident.root_cause)}`:incident.resolution?`Resolution: ${esc(incident.resolution)}`:`Opened ${relativeTime(incident.opened_at)}`}</small></p></div><span class="incident-command-buttons">${incident.status==='open'?`<button class="ghost-btn incident-ack" data-incident-id="${Number(incident.id)}">ACKNOWLEDGE</button>`:''}${active?`<button class="ghost-btn incident-resolve" data-incident-id="${Number(incident.id)}">RESOLVE</button>`:`<button class="ghost-btn incident-reopen" data-incident-id="${Number(incident.id)}">REOPEN</button>`}${incident.node_id?`<button class="danger-btn" id="take-control" data-node-id="${Number(incident.node_id)}">OPEN SSH</button>`:''}</span>`;
+  if(noteForm){noteForm.hidden=false;noteForm.dataset.incidentId=incident.id;if(!noteForm.contains(document.activeElement)){noteForm.elements.root_cause.value=incident.root_cause||'';noteForm.elements.resolution.value=incident.resolution||'';}}
+  const events=(incident.events||[]).slice().reverse();
+  timeline.innerHTML=events.length?events.map((item,index)=>`<div class="${index===0?'active':''}"><time>${new Date(Number(item.created_at)*1000).toLocaleString('en-GB')}</time><span></span><p><strong>${esc(String(item.event_type||'event').toUpperCase())}</strong><small>${esc(item.message)}${item.actor?` · ${esc(item.actor)}`:''}</small></p></div>`).join(''):`<div class="active"><time>${new Date(incident.opened_at*1000).toLocaleString('en-GB')}</time><span></span><p><strong>DETECTED</strong><small>${esc(incident.title)}</small></p></div>`;
+  const kicker=$('.timeline-panel .panel-kicker');if(kicker)kicker.textContent=`INCIDENT #${String(incident.id).padStart(4,'0')}`;
+}
+
+async function loadIncidentDetail(id) {
+  const requestId=Number(id);state.selectedIncident=requestId;
+  try{const incident=await api(`/api/incidents/${requestId}`);if(state.selectedIncident!==requestId)return;state.incidentDetail=incident;renderIncidentDetail(incident);renderIncidentList();}
+  catch(error){showToast('INCIDENT LOAD FAILED',error.message,true);}
+}
+
+function renderIncidentList(){
+  const list=$('#incident-list');if(!list)return;
+  if(!state.incidents.length){list.innerHTML='<div class="empty-state compact-empty"><strong>No incident history</strong>Detected failures and recoveries will be recorded here.</div>';return;}
+  list.innerHTML=state.incidents.map(item=>`<button class="incident-list-row ${Number(item.id)===Number(state.selectedIncident)?'selected':''}" data-incident-select="${Number(item.id)}"><span class="severity-dot ${esc(item.severity)}"></span><p><strong>#${String(item.id).padStart(4,'0')} · ${esc(item.title)}</strong><small>${esc(item.node_name||'SYSTEM')} · ${Number(item.event_count||0)} EVENTS · ${relativeTime(item.last_changed_at||item.opened_at)}</small></p><em class="${esc(item.status)}">${esc(String(item.status).toUpperCase())}</em><b>${Math.floor(Number(item.downtime_seconds||0)/60)}m</b></button>`).join('');
+}
+
 function renderIncidents() {
-  const open = state.incidents.filter(item => ['open','acknowledged'].includes(item.status));
-  $$('.nav-item b.danger').forEach(item => item.textContent = open.length);
-  const active = open[0];
-  const detail = $('.incident-detail');
-  if (!active) {
-    if(detail){$('.severity-pill',detail).textContent='NO ACTIVE INCIDENT';$('.severity-pill',detail).style.color='var(--green)';$('h2',detail).textContent='All monitored paths are operational';$('p',detail).textContent='DARK NOC is watching every enrolled tunnel.';$('.downtime strong',detail).textContent='00:00:00';$('.diagnostic-grid',detail).innerHTML='<div class="diag ok"><span>✓</span><strong>LIVE STATE</strong><small>No failed checks</small></div>';$('.remediation',detail).innerHTML='<div><span class="live-dot"></span><p><strong>Monitoring active</strong><small>Waiting for the next Agent heartbeat</small></p></div>';}
-    const timeline=$('.timeline-panel .timeline');if(timeline)timeline.innerHTML='<div class="active"><time>NOW</time><span></span><p><strong>No active recovery timeline</strong><small>Resolved incidents remain available in exported history.</small></p></div>';
-    return;
-  }
-  if (detail) {
-    let telemetry={};try{telemetry=JSON.parse(active.detail||'{}')}catch{}
-    $('h2', detail).textContent = active.title;
-    $('p', detail).textContent = `${active.node_name || 'Unknown node'} · ${active.tunnel_name || 'Node incident'}`;
-    $('.severity-pill',detail).textContent=`${String(active.severity||'warning').toUpperCase()} · ACTIVE`;$('.severity-pill',detail).style.color='';
-    $('.downtime strong',detail).textContent=duration(active.opened_at);
-    const checks=telemetry.checks||{};
-    $('.diagnostic-grid',detail).innerHTML=`<div class="diag ${checks.process?'ok':'fail'}"><span>01</span><strong>PROCESS</strong><small>${checks.process?'Service active':'Service failed'}</small></div><div class="diag ${checks.path?'ok':'fail'}"><span>02</span><strong>TUNNEL PATH</strong><small>${telemetry.latency_ms==null?'No response':`${Number(telemetry.latency_ms).toFixed(1)} ms`}</small></div><div class="diag ${Number(telemetry.packet_loss||0)>0?'fail':'ok'}"><span>03</span><strong>PACKET LOSS</strong><small>${Number(telemetry.packet_loss||0).toFixed(1)}%</small></div><div class="diag waiting"><span>04</span><strong>AGENT</strong><small>Last report ${relativeTime(telemetry.last_check||active.opened_at)}</small></div>`;
-    $('.remediation',detail).innerHTML=`<div><span class="spinner"></span><p><strong>${active.status==='acknowledged'?'Incident acknowledged':'Operator attention required'}</strong><small>Incident opened ${relativeTime(active.opened_at)}</small></p></div><span class="incident-command-buttons">${active.status==='open'?`<button class="ghost-btn incident-ack" data-incident-id="${Number(active.id)}">ACKNOWLEDGE</button>`:''}<button class="ghost-btn incident-resolve" data-incident-id="${Number(active.id)}">RESOLVE</button><button class="danger-btn" id="take-control" data-node-id="${Number(active.node_id)}">OPEN SSH</button></span>`;
-  }
-  const timeline=$('.timeline-panel .timeline');if(timeline)timeline.innerHTML=`<div class="active"><time>${new Date(active.opened_at*1000).toLocaleTimeString('en-GB')}</time><span></span><p><strong>${esc(active.title)}</strong><small>Detected by ${esc(active.node_name||'Agent')}</small></p></div>`;
+  const open=state.incidents.filter(item=>['open','acknowledged'].includes(item.status));$$('.nav-item b.danger').forEach(item=>item.textContent=open.length);
+  const preferred=state.incidents.find(item=>Number(item.id)===Number(state.selectedIncident))||open[0]||state.incidents[0]||null;
+  state.selectedIncident=preferred?.id||null;renderIncidentList();
+  if(!preferred){state.incidentDetail=null;renderIncidentDetail(null);return;}
+  if(Number(state.incidentDetail?.id)===Number(preferred.id))renderIncidentDetail({...preferred,...state.incidentDetail});else renderIncidentDetail(preferred);
+}
+
+function renderMonitors(){
+  const grid=$('#monitor-grid'),summary=$('#monitor-summary');if(!grid||!summary)return;
+  const counts={up:0,down:0,pending:0,disabled:0};state.monitors.forEach(item=>{counts[item.enabled?(item.status||'pending'):'disabled']=(counts[item.enabled?(item.status||'pending'):'disabled']||0)+1;});
+  summary.innerHTML=`<article><span>UP</span><strong>${counts.up}</strong></article><article><span>DOWN</span><strong class="red">${counts.down}</strong></article><article><span>PENDING</span><strong class="amber">${counts.pending+(counts.degraded||0)}</strong></article><article><span>DISABLED</span><strong>${counts.disabled}</strong></article>`;
+  $('#monitor-count').textContent=state.monitors.length;
+  if(!state.monitors.length){grid.innerHTML='<div class="empty-state"><strong>No synthetic monitor configured</strong>Add ICMP, TCP, HTTP, HTTPS, DNS, TLS or SNMP checks and choose the Agent that should run them.</div>';return;}
+  grid.innerHTML=state.monitors.map(item=>{const detail=item.detail||{},tone=!item.enabled?'disabled':item.status==='up'?'up':item.status==='down'?'down':'pending';return `<article class="panel monitor-card ${tone}"><header><span>${esc(item.kind.toUpperCase())}</span><em>● ${item.enabled?esc(String(item.status).toUpperCase()):'DISABLED'}</em></header><h3>${esc(item.name)}</h3><p>${esc(item.target)}${item.port?`:${Number(item.port)}`:''}</p><div class="monitor-route"><span>RUNNER · ${esc(String(item.runner_status||'unknown').toUpperCase())}</span><b>${esc(item.node_name)} · ${esc(item.node_host)}</b></div><div class="monitor-metrics"><span>LATENCY <b>${item.latency_ms==null?'—':`${Number(item.latency_ms).toFixed(1)} ms`}</b></span><span>FAIL STREAK <b>${Number(item.failure_streak||0)}</b></span><span>LAST RUN <b>${relativeTime(item.last_run_at)}</b></span></div>${detail.days_left!=null?`<small>TLS expires in ${Number(detail.days_left)} days</small>`:''}<footer><button class="monitor-run" data-monitor-id="${Number(item.id)}">▶ RUN</button><button class="monitor-history" data-monitor-id="${Number(item.id)}">≋ HISTORY</button><button class="monitor-edit" data-monitor-id="${Number(item.id)}">✎ EDIT</button><button class="monitor-delete danger" data-monitor-id="${Number(item.id)}" data-monitor-name="${esc(item.name)}">× DELETE</button></footer></article>`;}).join('');
+}
+
+function renderFleetOperations(){
+  const list=$('#fleet-list');if(!list)return;
+  if(!state.fleetOperations.length){list.innerHTML='<div class="empty-state"><strong>No fleet operation yet</strong>Run one allowlisted playbook across selected Agents.</div>';return;}
+  list.innerHTML=state.fleetOperations.map(operation=>{const items=operation.items||[],done=items.filter(item=>item.status==='completed').length,failed=items.filter(item=>item.status==='failed').length,total=items.length,progress=total?Math.round((done+failed)/total*100):0;return `<article class="panel fleet-operation"><header><div><span class="panel-kicker">#${String(operation.id).padStart(4,'0')} · ${esc(operation.kind.toUpperCase().replaceAll('_',' '))}</span><h3>${esc(operation.name)}</h3></div><em class="${esc(operation.status)}">${esc(operation.status.toUpperCase())}</em></header><div class="fleet-progress"><i style="width:${progress}%"></i></div><div class="fleet-operation-meta"><span>${done}/${total} COMPLETE</span><span class="${failed?'red':''}">${failed} FAILED</span><span>${operation.scheduled_at>Date.now()/1000?`SCHEDULED ${new Date(operation.scheduled_at*1000).toLocaleString('en-GB')}`:`STARTED ${relativeTime(operation.started_at||operation.created_at)}`}</span></div><div class="fleet-items">${items.map(item=>`<button class="fleet-item ${esc(item.status)}" data-operation-id="${Number(operation.id)}" data-fleet-output="${Number(item.id)}"><span>${esc(item.node_name)}</span><b>${esc(item.status.toUpperCase())}</b></button>`).join('')}</div>${operation.status==='scheduled'?`<footer><button class="danger-outline fleet-cancel" data-operation-id="${Number(operation.id)}">CANCEL SCHEDULE</button></footer>`:''}</article>`;}).join('');
+}
+
+function fileSelection(entry=null){
+  state.files.selected=entry;const buttons=['#file-download','#file-edit','#file-checksum','#file-rename','#file-chmod','#file-delete'];buttons.forEach(selector=>{$(selector).disabled=!entry;});
+  if(entry?.type==='directory'){$('#file-download').disabled=true;$('#file-edit').disabled=true;$('#file-checksum').disabled=true;}
+  $('#file-selection').textContent=entry?`${entry.type.toUpperCase()} · ${entry.path}`:'NO FILE SELECTED';
+  $$('.file-row.selected','#file-manager-rows').forEach(row=>row.classList.remove('selected'));
+}
+
+function renderFileManager(){
+  const rows=$('#file-manager-rows');if(!rows)return;
+  if(!state.files.nodeId){rows.innerHTML='<div class="empty-state compact-empty"><strong>Select a server</strong>Browse remote files through pinned SFTP.</div>';return;}
+  if(!state.files.entries.length){rows.innerHTML='<div class="empty-state compact-empty"><strong>Directory is empty</strong>Create a directory or upload a file here.</div>';return;}
+  rows.innerHTML=state.files.entries.map((entry,index)=>`<button class="file-row" data-file-index="${index}"><span><i>${entry.type==='directory'?'▣':entry.type==='symlink'?'↗':'▤'}</i>${esc(entry.name)}</span><span>${esc(entry.type.toUpperCase())}</span><span>${entry.type==='directory'?'—':fileSize(entry.size)}</span><span>${esc(entry.mode)}</span><span>${entry.modified_at?new Date(entry.modified_at*1000).toLocaleString('en-GB'):'—'}</span></button>`).join('');
+}
+
+async function loadFileDirectory(path=state.files.path){
+  const nodeId=Number($('#file-manager-node').value||state.files.nodeId);if(!nodeId)return;
+  $('#file-manager-rows').innerHTML='<div class="empty-state compact-empty"><strong>Opening secure SFTP</strong>Loading remote directory…</div>';
+  try{const result=await api(`/api/ssh/files/${nodeId}?path=${encodeURIComponent(path)}`);state.files={...state.files,nodeId,path:result.path,parent:result.parent,entries:result.entries||[],selected:null};$('#file-manager-path').value=result.path;fileSelection();renderFileManager();}
+  catch(error){state.files.entries=[];$('#file-manager-rows').innerHTML=`<div class="empty-state compact-empty error"><strong>Directory unavailable</strong>${esc(error.message)}</div>`;showToast('FILE MANAGER FAILED',error.message,true);}
+}
+
+async function fileAction(action,extra={}){
+  const selected=state.files.selected,nodeId=state.files.nodeId,path=extra.path||selected?.path;if(!nodeId||!path)return;
+  const result=await api(`/api/ssh/files/${nodeId}/action`,{method:'POST',body:JSON.stringify({action,path,...extra})});await loadFileDirectory(state.files.path);return result;
+}
+
+function openMonitorEditor(monitor=null){
+  if(!state.nodes.some(node=>node.status==='online'))return showToast('ONLINE AGENT REQUIRED','Add or reconnect an Agent before creating a monitor.',true);
+  state.editingMonitor=monitor?.id||null;const form=$('#monitor-form');form.reset();form.elements.monitor_id.value=monitor?.id||'';form.elements.interval_seconds.value=monitor?.interval_seconds||60;form.elements.timeout_seconds.value=monitor?.timeout_seconds||5;form.elements.enabled.checked=monitor?Boolean(monitor.enabled):true;
+  if(monitor){for(const key of ['name','node_id','kind','target','port','expected_status','snmp_oid'])if(form.elements[key])form.elements[key].value=monitor[key]??'';$('#monitor-title').textContent=`Edit ${monitor.name}`;}else{$('#monitor-title').textContent='Add network monitor';form.elements.node_id.value=state.nodes.find(node=>node.status==='online')?.id||'';form.elements.snmp_oid.value='.1.3.6.1.2.1.1.3.0';}
+  $('.snmp-fields',form).hidden=form.elements.kind.value!=='snmp';openModal('#monitor-modal');
+}
+
+function openFleetEditor(){
+  const online=state.nodes.filter(node=>node.status==='online');if(!online.length)return showToast('ONLINE AGENT REQUIRED','Fleet Operations needs at least one online Agent.',true);
+  const form=$('#fleet-form');form.reset();form.elements.name.value='NOC health sweep';form.elements.service.required=false;$('.fleet-autoheal',form).hidden=true;$('#fleet-node-picker').innerHTML=online.map(node=>`<label><input type="checkbox" name="node_ids" value="${Number(node.id)}" checked /><span>${esc(node.name)}</span><small>${esc(node.role.toUpperCase())} · ${esc(node.host)}</small></label>`).join('');openModal('#fleet-modal');
 }
 
 function renderLiveTopology() {
@@ -320,9 +478,10 @@ async function refresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60')]);
-    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic };
-    renderNodes(); populateSSHServers(); renderTunnels(); renderPlugins(); renderCertificates(); renderIncidents(); renderLiveTopology(); renderLiveIncident(); renderNodeHealth(); renderTrafficChart(); updateOverview(summary);
+    const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic,monitors,fleetOperations] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60'),api('/api/monitors'),api('/api/fleet/operations?limit=50')]);
+    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, limits:dashboardLimits(summary) };
+    renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors(); renderFleetOperations(); renderIncidents(); renderLiveTopology(); renderLiveIncident(); renderNodeHealth(); renderTrafficChart(); updateOverview(summary);
+    if(state.selectedIncident)loadIncidentDetail(state.selectedIncident);
     $('#sync-time').textContent = 'NOW';
   } catch (error) {
     if (error.message !== 'Authentication required') {
@@ -382,11 +541,11 @@ function ensureTerminal(slot) {
   terminal.loadAddon(fitAddon);terminal.loadAddon(searchAddon);terminal.loadAddon(new WebLinksAddon.WebLinksAddon());
   terminal.open(container);fitAddon.fit();
   terminal.writeln('\x1b[38;5;48mDARK SSH GATEWAY\x1b[0m  // Select a server and connect');
-  terminal.onData(data=>{const socket=state.sockets.get(slot);if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}));});
-  terminal.onResize(size=>{const socket=state.sockets.get(slot);if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resize',cols:size.cols,rows:size.rows}));});
+  terminal.onData(data=>{const socket=connectedSocket(slot);if(socket)socket.send(JSON.stringify({type:'input',data}));});
+  terminal.onResize(size=>{const socket=connectedSocket(slot);if(socket)socket.send(JSON.stringify({type:'resize',cols:size.cols,rows:size.rows}));});
   terminal.attachCustomKeyEventHandler(event=>{
-    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='c'&&terminal.hasSelection()){navigator.clipboard.writeText(terminal.getSelection()).catch(()=>{});return false;}
-    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='v'){navigator.clipboard.readText().then(text=>{const socket=state.sockets.get(slot);if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data:text}));}).catch(()=>{});return false;}
+    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='c'&&terminal.hasSelection()){if(requireClipboard('writeText','COPY'))navigator.clipboard.writeText(terminal.getSelection()).catch(()=>showToast('COPY BLOCKED','Allow clipboard access in the browser.',true));return false;}
+    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='v'){const socket=connectedSocket(slot);if(!socket){showToast('SSH NOT CONNECTED','Wait for the active terminal to finish connecting.',true);return false;}if(requireClipboard('readText','PASTE'))navigator.clipboard.readText().then(text=>socket.send(JSON.stringify({type:'input',data:text}))).catch(()=>showToast('PASTE BLOCKED','Allow clipboard access in the browser.',true));return false;}
     return true;
   });
   const entry={terminal,fitAddon,searchAddon};state.terminals.set(slot,entry);
@@ -396,8 +555,19 @@ function ensureTerminal(slot) {
 
 function closeSocket(slot) {
   const socket = state.sockets.get(slot);
-  if (socket) { clearInterval(socket.keepaliveTimer); socket.close(); }
-  state.sockets.delete(slot);
+  if (socket) { socket.intentionalClose=true;clearInterval(socket.keepaliveTimer);state.sockets.delete(slot);socket.close(); }
+}
+
+function connectedSocket(slot=activeTerminalSlot()) {
+  const socket=state.sockets.get(slot);
+  return socket?.readyState===WebSocket.OPEN&&socket.sshConnected?socket:null;
+}
+
+function selectTerminalCard(card) {
+  if(!card)return;
+  $$('.terminal-card').forEach(item=>item.classList.toggle('active-terminal',item===card));
+  const slot=$('.terminal-screen',card)?.id,socket=slot&&state.sockets.get(slot);
+  if(socket?.nodeId)$('#ssh-node-select').value=String(socket.nodeId);
 }
 
 function connectSSH(nodeId, slot = null) {
@@ -410,7 +580,12 @@ function connectSSH(nodeId, slot = null) {
   }
   if (!slot) {
     const first=state.sockets.get('terminal-iran'), second=state.sockets.get('terminal-germany');
-    slot=!first||first.readyState>=WebSocket.CLOSING?'terminal-iran':(!second||second.readyState>=WebSocket.CLOSING?'terminal-germany':'terminal-iran');
+    slot=!first||first.readyState>=WebSocket.CLOSING?'terminal-iran':(!second||second.readyState>=WebSocket.CLOSING?'terminal-germany':activeTerminalSlot());
+  }
+  const existing=state.sockets.get(slot);
+  if(existing&&existing.readyState<WebSocket.CLOSING){
+    const existingNode=state.nodes.find(item=>item.id===Number(existing.nodeId));
+    if(!confirm(`Replace the active ${existingNode?.name||'SSH'} session in this pane?`))return;
   }
   switchView('terminal');
   closeSocket(slot);
@@ -419,23 +594,33 @@ function connectSSH(nodeId, slot = null) {
   $('.terminal-server .flag',card).textContent=code;
   $('.terminal-server strong',card).textContent=node.name;
   $('.terminal-server small',card).textContent=`${node.ssh_user}@${node.host}:${node.ssh_port}`;
-  $$('.terminal-card').forEach(item=>item.classList.remove('active-terminal'));
-  card.classList.add('active-terminal');
+  selectTerminalCard(card);
+  $('#ssh-node-select').value=String(node.id);
   $('.ssh-online',card).textContent='● CONNECTING';
   term.terminal.reset();term.terminal.writeln(`\x1b[38;5;45mConnecting to ${node.name} (${node.host}:${Number(node.ssh_port)})…\x1b[0m\r\n`);
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/ws/ssh/${node.id}`);
+  socket.nodeId=node.id;socket.sshConnected=false;socket.hadError=false;socket.intentionalClose=false;
   state.sockets.set(slot, socket);
   state.selectedNode = node.id;
   socket.onmessage = event => {
-    const message = JSON.parse(event.data);
+    if(state.sockets.get(slot)!==socket)return;
+    let message={};try{message=JSON.parse(event.data);}catch{return;}
     if (message.type === 'output') term.terminal.write(message.data);
-    if (message.type === 'connected') { $('.ssh-online',card).textContent='● CONNECTED';term.terminal.writeln(`\x1b[38;5;48m✓ SECURE SSH CONNECTED · ${message.node}\x1b[0m`);term.terminal.writeln(`\x1b[38;5;244mHost key: ${message.fingerprint||'unavailable'}\x1b[0m\r\n`);term.fitAddon.fit();term.terminal.focus(); }
-    if (message.type === 'error') { $('.ssh-online',card).textContent='● ERROR';term.terminal.writeln(`\r\n\x1b[38;5;203m${message.message}\x1b[0m`); }
+    if (message.type === 'connected') { socket.sshConnected=true;$('.ssh-online',card).textContent='● CONNECTED';term.terminal.writeln(`\x1b[38;5;48m✓ SECURE SSH CONNECTED · ${message.node}\x1b[0m`);term.terminal.writeln(`\x1b[38;5;244mHost key: ${message.fingerprint||'unavailable'}\x1b[0m\r\n`);term.fitAddon.fit();socket.send(JSON.stringify({type:'resize',cols:term.terminal.cols,rows:term.terminal.rows}));term.terminal.focus(); }
+    if (message.type === 'error') { socket.hadError=true;socket.sshConnected=false;$('.ssh-online',card).textContent='● ERROR';term.terminal.writeln(`\r\n\x1b[38;5;203m${message.message}\x1b[0m`); }
   };
-  socket.onopen = () => {term.fitAddon.fit();socket.send(JSON.stringify({type:'resize',cols:term.terminal.cols,rows:term.terminal.rows}));socket.keepaliveTimer=setInterval(()=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ping'}));},25000); };
-  socket.onerror = () => { $('.ssh-online',card).textContent='● ERROR';term.terminal.writeln('\r\n\x1b[38;5;203mSSH WebSocket connection failed.\x1b[0m'); };
-  socket.onclose = () => { clearInterval(socket.keepaliveTimer); $('.ssh-online',card).textContent='● CLOSED';term.terminal.writeln('\r\n\x1b[38;5;244mSession closed.\x1b[0m'); };
+  socket.onopen = () => {if(state.sockets.get(slot)!==socket)return;term.fitAddon.fit();socket.keepaliveTimer=setInterval(()=>{if(state.sockets.get(slot)===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ping'}));},25000); };
+  socket.onerror = () => {if(state.sockets.get(slot)!==socket)return;socket.hadError=true;socket.sshConnected=false;$('.ssh-online',card).textContent='● ERROR';term.terminal.writeln('\r\n\x1b[38;5;203mSSH WebSocket connection failed.\x1b[0m'); };
+  socket.onclose = event => {
+    clearInterval(socket.keepaliveTimer);
+    if(state.sockets.get(slot)!==socket)return;
+    state.sockets.delete(slot);socket.sshConnected=false;
+    if(event.code===4401){socket.hadError=true;$('.ssh-online',card).textContent='● AUTH EXPIRED';term.terminal.writeln('\r\n\x1b[38;5;203mAuthentication expired. Sign in again to reconnect.\x1b[0m');terminateAuthenticatedActivity();return;}
+    const abnormal=socket.hadError||(!socket.intentionalClose&&![1000,1001].includes(event.code));
+    $('.ssh-online',card).textContent=abnormal?'● ERROR':'● CLOSED';
+    term.terminal.writeln(abnormal?'\r\n\x1b[38;5;203mSession closed unexpectedly.\x1b[0m':'\r\n\x1b[38;5;244mSession closed.\x1b[0m');
+  };
 }
 
 $('#login-form').addEventListener('submit', async event => {
@@ -444,6 +629,7 @@ $('#login-form').addEventListener('submit', async event => {
   $('#login-error').textContent = '';
   try {
     const session=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:form.get('username'),password:form.get('password')})});
+    authenticatedActivityTerminated=false;
     $('#login-gate').classList.add('hidden');
     $('.operator strong').textContent=session.username;
     connectLive();
@@ -453,17 +639,20 @@ $('#login-form').addEventListener('submit', async event => {
 });
 
 async function boot() {
-  try { const me=await api('/api/auth/me'); $('.operator strong').textContent=me.username; $('#login-gate').classList.add('hidden'); await refresh(); connectLive(); }
+  try { const me=await api('/api/auth/me'); authenticatedActivityTerminated=false;$('.operator strong').textContent=me.username; $('#login-gate').classList.add('hidden'); await refresh(); connectLive(); }
   catch { $('#login-gate').classList.remove('hidden'); }
 }
 
 function connectLive(){
+  if(!$('#login-gate').classList.contains('hidden'))return;
   if(liveSocket&&liveSocket.readyState<WebSocket.CLOSING)return;
+  clearTimeout(connectLive.reconnectTimer);
   const protocol=location.protocol==='https:'?'wss:':'ws:';
-  liveSocket=new WebSocket(`${protocol}//${location.host}/ws/live`);
-  liveSocket.onopen=()=>{liveSocket.keepaliveTimer=setInterval(()=>{if(liveSocket?.readyState===WebSocket.OPEN)liveSocket.send('ping');},25000);};
-  liveSocket.onmessage=event=>{let message={};try{message=JSON.parse(event.data)}catch{}if(message.type==='telemetry'){clearTimeout(connectLive.refreshTimer);connectLive.refreshTimer=setTimeout(refresh,250);}};
-  liveSocket.onclose=()=>{clearInterval(liveSocket?.keepaliveTimer);liveSocket=null;if($('#login-gate').classList.contains('hidden'))setTimeout(connectLive,3000);};
+  const socket=new WebSocket(`${protocol}//${location.host}/ws/live`);
+  socket.intentionalClose=false;liveSocket=socket;
+  socket.onopen=()=>{if(liveSocket!==socket)return;socket.keepaliveTimer=setInterval(()=>{if(liveSocket===socket&&socket.readyState===WebSocket.OPEN)socket.send('ping');},25000);};
+  socket.onmessage=event=>{if(liveSocket!==socket)return;let message={};try{message=JSON.parse(event.data)}catch{}if(message.type==='telemetry'){clearTimeout(connectLive.refreshTimer);connectLive.refreshTimer=setTimeout(refresh,250);}};
+  socket.onclose=event=>{clearInterval(socket.keepaliveTimer);if(liveSocket===socket)liveSocket=null;if(event.code===4401){terminateAuthenticatedActivity();return;}if(!socket.intentionalClose&&$('#login-gate').classList.contains('hidden'))connectLive.reconnectTimer=setTimeout(connectLive,3000);};
 }
 
 $$('.nav-item').forEach(button => button.addEventListener('click',()=>switchView(button.dataset.view)));
@@ -478,6 +667,9 @@ $$('.tunnel-manage-close').forEach(button=>button.addEventListener('click',()=>c
 $$('.output-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#output-modal'))));
 $$('.account-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#account-modal'))));
 $$('.certificate-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#certificate-modal'))));
+$$('.monitor-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#monitor-modal'))));
+$$('.fleet-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#fleet-modal'))));
+$$('.file-editor-close').forEach(button=>button.addEventListener('click',()=>closeModal($('#file-editor-modal'))));
 $('#node-modal .modal-close').addEventListener('click',()=>closeModal($('#node-modal')));
 $$('.modal-backdrop').forEach(backdrop=>backdrop.addEventListener('mousedown',event=>event.target===backdrop&&closeModal(backdrop)));
 
@@ -504,7 +696,7 @@ $('#list-view').addEventListener('click',()=>switchView('tunnels'));
 $('#map-view').addEventListener('click',()=>switchView('overview'));
 $('#topology-filter').addEventListener('change',event=>{state.topologyFilter=event.target.value;renderLiveTopology();});
 $('#topology-search').addEventListener('input',event=>{state.topologySearch=event.target.value.trim().toLowerCase();renderLiveTopology();});
-$('#topology-fullscreen').addEventListener('click',async()=>{const panel=$('.topology-panel');if(!document.fullscreenElement)await panel.requestFullscreen();else await document.exitFullscreen();});
+$('#topology-fullscreen').addEventListener('click',async()=>{const panel=$('.topology-panel');try{if(!document.fullscreenElement)await panel.requestFullscreen();else await document.exitFullscreen();}catch(error){showToast('FULLSCREEN UNAVAILABLE',error.message||'The browser blocked fullscreen mode.',true);}});
 
 document.addEventListener('click', event => {
   const jump = event.target.closest('[data-jump]');
@@ -531,8 +723,18 @@ document.addEventListener('click', event => {
   const serviceRestart = event.target.closest('.service-chip');
   const incidentAck = event.target.closest('.incident-ack');
   const incidentResolve = event.target.closest('.incident-resolve');
+  const incidentReopen = event.target.closest('.incident-reopen');
+  const incidentSelect = event.target.closest('[data-incident-select]');
+  const monitorRun = event.target.closest('.monitor-run');
+  const monitorHistory = event.target.closest('.monitor-history');
+  const monitorEdit = event.target.closest('.monitor-edit');
+  const monitorDelete = event.target.closest('.monitor-delete');
+  const fleetOutput = event.target.closest('[data-fleet-output]');
+  const fleetCancel = event.target.closest('.fleet-cancel');
+  const fileRow = event.target.closest('[data-file-index]');
   const autohealNode = event.target.closest('.node-autoheal');
   const provisionRetry = event.target.closest('.node-provision-retry');
+  const syncAgent = event.target.closest('.node-agent-sync');
   const provisionLog = event.target.closest('.node-provision-log');
   const certRenew = event.target.closest('.cert-renew');
   if (jump) { switchView(jump.dataset.jump); const modal=jump.closest('.modal-backdrop'); if(modal)closeModal(modal); }
@@ -571,10 +773,20 @@ document.addEventListener('click', event => {
   if(editNode){const node=state.nodes.find(item=>item.id===Number(editNode.dataset.nodeId));if(node)openNodeEditor(node);}
   if(resetPin&&confirm('Forget the pinned SSH fingerprint? Only do this after verifying the server key changed.'))api(`/api/nodes/${Number(resetPin.dataset.nodeId)}/ssh-fingerprint`,{method:'DELETE'}).then(()=>showToast('SSH PIN RESET','The next SSH connection will pin the presented host key.')).catch(error=>showToast('PIN RESET FAILED',error.message,true));
   if(serviceRestart&&confirm(`Restart ${serviceRestart.dataset.serviceName}?`))createJob(Number(serviceRestart.dataset.serviceNode),'restart_service',serviceRestart.dataset.serviceName,{},true).then(()=>setTimeout(refresh,2500)).catch(error=>showToast('SERVICE RESTART FAILED',error.message,true));
-  if(incidentAck)api(`/api/incidents/${Number(incidentAck.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'acknowledge'})}).then(refresh).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));
-  if(incidentResolve&&confirm('Resolve this incident manually?'))api(`/api/incidents/${Number(incidentResolve.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'resolve'})}).then(refresh).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));
+  if(incidentSelect)loadIncidentDetail(Number(incidentSelect.dataset.incidentSelect));
+  if(incidentAck){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentAck.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'acknowledge',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));}
+  if(incidentResolve&&confirm('Resolve this incident and record the operator findings?')){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentResolve.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'resolve',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null,resolution:form?.elements.resolution.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));}
+  if(incidentReopen&&confirm('Reopen this incident?'))api(`/api/incidents/${Number(incidentReopen.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'reopen'})}).then(refresh).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));
+  if(monitorRun)api(`/api/monitors/${Number(monitorRun.dataset.monitorId)}/run`,{method:'POST'}).then(result=>{showToast('MONITOR QUEUED',`Job #${result.job_id} is running from its assigned Agent.`);setTimeout(refresh,1800);}).catch(error=>showToast('MONITOR FAILED',error.message,true));
+  if(monitorHistory){const monitor=state.monitors.find(item=>item.id===Number(monitorHistory.dataset.monitorId));api(`/api/monitors/${Number(monitorHistory.dataset.monitorId)}/results?limit=200`).then(results=>{$('#output-title').textContent=`${monitor?.name||'MONITOR'} · LAST ${results.length} CHECKS`;$('#job-output').textContent=results.map(result=>`${new Date(result.ts*1000).toLocaleString('en-GB')}  ${String(result.status).toUpperCase().padEnd(4)}  ${result.latency_ms==null?'—':`${Number(result.latency_ms).toFixed(1)} ms`}\n${JSON.stringify(result.detail||{})}`).join('\n\n')||'No results yet.';openModal('#output-modal');}).catch(error=>showToast('HISTORY FAILED',error.message,true));}
+  if(monitorEdit){const monitor=state.monitors.find(item=>item.id===Number(monitorEdit.dataset.monitorId));if(monitor)openMonitorEditor(monitor);}
+  if(monitorDelete&&confirm(`Delete monitor “${monitorDelete.dataset.monitorName}” and its result history?`))api(`/api/monitors/${Number(monitorDelete.dataset.monitorId)}`,{method:'DELETE'}).then(()=>{showToast('MONITOR DELETED',monitorDelete.dataset.monitorName);refresh();}).catch(error=>showToast('DELETE FAILED',error.message,true));
+  if(fleetOutput){const operation=state.fleetOperations.find(item=>item.id===Number(fleetOutput.dataset.operationId)),item=operation?.items?.find(entry=>entry.id===Number(fleetOutput.dataset.fleetOutput));$('#output-title').textContent=`FLEET OUTPUT · ${item?.node_name||'NODE'}`;$('#job-output').textContent=item?.output||'No output yet.';openModal('#output-modal');}
+  if(fleetCancel&&confirm('Cancel this scheduled fleet operation?'))api(`/api/fleet/operations/${Number(fleetCancel.dataset.operationId)}`,{method:'DELETE'}).then(refresh).catch(error=>showToast('CANCEL FAILED',error.message,true));
+  if(fileRow){const entry=state.files.entries[Number(fileRow.dataset.fileIndex)];if(entry){fileSelection(entry);fileRow.classList.add('selected');}}
   if(autohealNode){const node=state.nodes.find(item=>item.id===Number(autohealNode.dataset.nodeId));if(node){const enabled=!Boolean(node.autoheal_enabled);if(confirm(`${enabled?'Enable':'Disable'} Auto-Heal on ${node.name}?`))createJob(node.id,'configure_autoheal',null,{enabled,cooldown_seconds:Number(node.autoheal_cooldown||300),max_restarts_per_hour:Number(node.autoheal_max_restarts||3)},true).then(()=>setTimeout(refresh,3000)).catch(error=>showToast('AUTO-HEAL UPDATE FAILED',error.message,true));}}
   if(provisionRetry)api(`/api/nodes/${Number(provisionRetry.dataset.nodeId)}/provision`,{method:'POST'}).then(()=>{showToast('INSTALLATION RETRIED','The Hub is reconnecting and installing the Agent.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
+  if(syncAgent){const node=state.nodes.find(item=>item.id===Number(syncAgent.dataset.nodeId));if(node&&confirm(`Redeploy and synchronize the DARK NOC Agent on “${node.name}”?\n\nManaged configuration and tunnels will be preserved.`))api(`/api/nodes/${node.id}/provision`,{method:'POST'}).then(()=>{showToast('AGENT SYNC STARTED',`${node.name} is receiving the matching Agent build; managed configuration and tunnels are preserved.`);refresh();}).catch(error=>showToast('AGENT SYNC FAILED',error.message,true));}
   if(provisionLog){const node=state.nodes.find(item=>item.id===Number(provisionLog.dataset.nodeId));if(node){$('#output-title').textContent=`${node.name} · installation ${String(node.provision_status||'unknown').toUpperCase()}`;$('#job-output').textContent=node.provision_output||'Installation is running; refresh in a few seconds.';openModal('#output-modal');}}
   if(certRenew)api(`/api/certificates/${Number(certRenew.dataset.certId)}/renew`,{method:'POST'}).then(result=>{showToast('RENEWAL QUEUED',`Certificate job #${result.job_id} queued.`);refresh();}).catch(error=>showToast('RENEWAL FAILED',error.message,true));
 });
@@ -606,45 +818,100 @@ $('#plugin-form').addEventListener('submit',async event=>{
 });
 
 $('#ssh-upload-form').addEventListener('submit',event=>{
-  event.preventDefault();const form=event.target,file=form.elements.file.files[0],nodeId=Number(form.elements.node_id.value),button=$('button[type="submit"]',form);
+  event.preventDefault();const form=event.target,file=form.elements.file.files[0],nodeId=Number(form.elements.node_id.value);
   if(!file||!nodeId)return showToast('UPLOAD NOT READY','Select a destination server and local file.',true);
+  const limit=state.limits.ssh_upload_bytes;
+  if(limit&&file.size>limit){const message=`${file.name} is ${fileSize(file.size)}; the Hub limit is ${fileSize(limit)}.`;transferStatus('#upload-progress','error',`LIMIT EXCEEDED · ${message}`,0);return showToast('FILE TOO LARGE',message,true);}
   const payload=new FormData();payload.append('file',file,file.name);payload.append('remote_path',form.elements.remote_path.value);payload.append('overwrite',form.elements.overwrite.checked?'true':'false');
-  const xhr=new XMLHttpRequest();xhr.open('POST',`/api/ssh/upload/${nodeId}`);xhr.withCredentials=true;button.disabled=true;
-  transferStatus('#upload-progress','running',`UPLOADING · ${file.name} · 0%`,0);
-  xhr.upload.onprogress=progress=>{if(progress.lengthComputable){const percent=Math.round(progress.loaded/progress.total*100);transferStatus('#upload-progress','running',`UPLOADING · ${fileSize(progress.loaded)} / ${fileSize(progress.total)} · ${percent}%`,percent);}};
-  xhr.onload=()=>{button.disabled=false;let result={};try{result=JSON.parse(xhr.responseText||'{}');}catch{}if(xhr.status>=200&&xhr.status<300){transferStatus('#upload-progress','done',`COMPLETE · ${result.path} · ${fileSize(result.bytes)}`,100);showToast('FILE UPLOADED',`${file.name} → ${result.node}:${result.path}`);form.elements.file.value='';}else{const detail=Array.isArray(result.detail)?result.detail.map(item=>item.msg).join(' · '):result.detail;transferStatus('#upload-progress','error',typeof detail==='string'?detail:`Upload failed (${xhr.status})`,0);showToast('UPLOAD FAILED',typeof detail==='string'?detail:`Request failed (${xhr.status})`,true);}};
-  xhr.onerror=()=>{button.disabled=false;transferStatus('#upload-progress','error','NETWORK ERROR · Upload interrupted',0);showToast('UPLOAD FAILED','Network connection was interrupted.',true);};xhr.send(payload);
+  const xhr=new XMLHttpRequest();xhr.open('POST',`/api/ssh/upload/${nodeId}`);xhr.withCredentials=true;xhr.timeout=24*60*60*1000;activeUpload=xhr;setTransferControls(form,true);
+  const finish=()=>{if(activeUpload!==xhr)return false;activeUpload=null;setTransferControls(form,false);return true;};
+  transferStatus('#upload-progress','running',`BROWSER → HUB · ${file.name} · 0%`,0);
+  xhr.upload.onprogress=progress=>{if(activeUpload===xhr&&progress.lengthComputable){const percent=Math.round(progress.loaded/progress.total*100);transferStatus('#upload-progress','running',`BROWSER → HUB · ${fileSize(progress.loaded)} / ${fileSize(progress.total)} · ${percent}%`,percent);}};
+  xhr.upload.onload=()=>{if(activeUpload===xhr)transferStatus('#upload-progress','running','HUB RECEIVED · Opening secure SFTP session');};
+  xhr.onload=()=>{if(!finish())return;let result={};try{result=JSON.parse(xhr.responseText||'{}');}catch{}if(xhr.status>=200&&xhr.status<300){transferStatus('#upload-progress','done',`COMPLETE · ${result.path} · ${fileSize(result.bytes)}`,100);showToast('FILE UPLOADED',`${file.name} → ${result.node}:${result.path}`);form.elements.file.value='';}else{const detail=Array.isArray(result.detail)?result.detail.map(item=>item.msg).join(' · '):result.detail,message=typeof detail==='string'?detail:`Upload failed (${xhr.status})`;if(xhr.status===401){terminateAuthenticatedActivity();transferStatus('#upload-progress','error','AUTHENTICATION EXPIRED · Sign in again',0);return;}transferStatus('#upload-progress','error',message,0);showToast('UPLOAD FAILED',message,true);}};
+  xhr.onerror=()=>{if(!finish())return;transferStatus('#upload-progress','error','NETWORK ERROR · Upload interrupted',0);showToast('UPLOAD FAILED','Network connection was interrupted.',true);};
+  xhr.ontimeout=()=>{if(!finish())return;transferStatus('#upload-progress','error','TIMEOUT · Server did not finish within 24 hours',0);showToast('UPLOAD TIMED OUT','The transfer was cancelled after 24 hours.',true);};
+  xhr.onabort=()=>{if(!finish())return;transferStatus('#upload-progress','cancelled','CANCEL REQUESTED · Verify the destination before retrying',0);showToast('UPLOAD CANCEL REQUESTED','The request was closed; verify the remote destination before retrying.');};
+  xhr.send(payload);
 });
 
+$('#upload-cancel').addEventListener('click',()=>{if(activeUpload)activeUpload.abort();});
+$('#ssh-upload-form [name="file"]').addEventListener('change',event=>{const file=event.target.files[0],limit=state.limits.ssh_upload_bytes;if(!file)return transferStatus('#upload-progress','','READY · Select a file');if(limit&&file.size>limit)transferStatus('#upload-progress','error',`LIMIT EXCEEDED · ${fileSize(file.size)} selected; maximum ${fileSize(limit)}`,0);else transferStatus('#upload-progress','',`READY · ${file.name} · ${fileSize(file.size)}`,0);});
+
 $('#ssh-relay-form').addEventListener('submit',async event=>{
-  event.preventDefault();const form=event.target,values=Object.fromEntries(new FormData(form)),button=$('button[type="submit"]',form);values.source_node_id=Number(values.source_node_id);values.destination_node_id=Number(values.destination_node_id);values.overwrite=form.elements.overwrite.checked;
+  event.preventDefault();const form=event.target,values=Object.fromEntries(new FormData(form));values.source_node_id=Number(values.source_node_id);values.destination_node_id=Number(values.destination_node_id);values.overwrite=form.elements.overwrite.checked;
   if(values.source_node_id===values.destination_node_id&&values.source_path===values.destination_path)return showToast('INVALID TRANSFER','Source and destination are the same file.',true);
-  button.disabled=true;transferStatus('#relay-progress','running','SECURE RELAY ACTIVE · Streaming chunks through Hub');
-  try{const result=await api('/api/ssh/relay',{method:'POST',body:JSON.stringify(values)});transferStatus('#relay-progress','done',`COMPLETE · ${fileSize(result.bytes)} · ${result.source_node} → ${result.destination_node}`,100);showToast('TRANSFER COMPLETE',`${result.source_node}:${result.source_path} → ${result.destination_node}:${result.destination_path}`);}
-  catch(error){transferStatus('#relay-progress','error',error.message,0);showToast('TRANSFER FAILED',error.message,true);}finally{button.disabled=false;}
+  const controller=new AbortController();activeRelay=controller;setTransferControls(form,true);transferStatus('#relay-progress','running','CONNECTING · Validating source and destination');
+  const phaseTimer=setTimeout(()=>{if(activeRelay===controller)transferStatus('#relay-progress','running',`RELAY ACTIVE · Hub streaming (limit ${state.limits.ssh_relay_bytes?fileSize(state.limits.ssh_relay_bytes):'server enforced'})`);},300);
+  try{const result=await api('/api/ssh/relay',{method:'POST',body:JSON.stringify(values),signal:controller.signal});if(activeRelay!==controller)return;transferStatus('#relay-progress','done',`COMPLETE · ${fileSize(result.bytes)} · ${result.source_node} → ${result.destination_node}`,100);showToast('TRANSFER COMPLETE',`${result.source_node}:${result.source_path} → ${result.destination_node}:${result.destination_path}`);}
+  catch(error){if(activeRelay!==controller)return;if(error.name==='AbortError'){transferStatus('#relay-progress','cancelled','CANCEL REQUESTED · Verify the destination before retrying',0);showToast('TRANSFER CANCEL REQUESTED','The request was closed; verify the remote destination before retrying.');}else{transferStatus('#relay-progress','error',error.message,0);showToast('TRANSFER FAILED',error.message,true);}}
+  finally{clearTimeout(phaseTimer);if(activeRelay===controller){activeRelay=null;setTransferControls(form,false);}}
 });
+
+$('#relay-cancel').addEventListener('click',()=>{if(activeRelay)activeRelay.abort();});
+
+$('#add-monitor').addEventListener('click',()=>openMonitorEditor());
+$('#monitor-form [name="kind"]').addEventListener('change',event=>{$('.snmp-fields',$('#monitor-form')).hidden=event.target.value!=='snmp';});
+$('#monitor-form').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.target,values=Object.fromEntries(new FormData(form));const monitorId=Number(values.monitor_id||0);delete values.monitor_id;
+  values.node_id=Number(values.node_id);values.interval_seconds=Number(values.interval_seconds);values.timeout_seconds=Number(values.timeout_seconds);values.enabled=form.elements.enabled.checked;
+  for(const key of ['port','expected_status']){if(values[key])values[key]=Number(values[key]);else delete values[key];}
+  for(const key of ['snmp_community','snmp_oid'])if(!values[key])delete values[key];
+  if(!['http','https'].includes(values.kind))delete values.expected_status;
+  if(values.kind!=='snmp'){delete values.snmp_community;delete values.snmp_oid;}
+  try{await api(monitorId?`/api/monitors/${monitorId}`:'/api/monitors',{method:monitorId?'PUT':'POST',body:JSON.stringify(values)});closeModal($('#monitor-modal'));state.editingMonitor=null;showToast(monitorId?'MONITOR UPDATED':'MONITOR CREATED',`${values.name} will run from the selected Agent.`);await refresh();}
+  catch(error){showToast('MONITOR SAVE FAILED',error.message,true);}
+});
+$('#run-all-monitors').addEventListener('click',async()=>{const enabled=state.monitors.filter(item=>item.enabled);if(!enabled.length)return showToast('NO ENABLED MONITORS','Add or enable a monitor first.',true);const results=await Promise.allSettled(enabled.map(item=>api(`/api/monitors/${item.id}/run`,{method:'POST'}))),queued=results.filter(item=>item.status==='fulfilled').length,failed=results.length-queued;showToast(failed?'MONITORS PARTIALLY QUEUED':'MONITORS QUEUED',`${queued} queued · ${failed} skipped${failed?' (offline or already running)':''}`,failed>0&&queued===0);setTimeout(refresh,1800);});
+
+$('#add-fleet-operation').addEventListener('click',openFleetEditor);
+$('#fleet-form [name="kind"]').addEventListener('change',event=>{const needsService=['restart_service','service_status'].includes(event.target.value),service=$('#fleet-form [name="service"]');service.required=needsService;service.closest('label').classList.toggle('required-field',needsService);$('.fleet-autoheal',$('#fleet-form')).hidden=event.target.value!=='configure_autoheal';if(event.target.value==='sync_agent')$$('#fleet-node-picker input').forEach(input=>{const node=state.nodes.find(item=>item.id===Number(input.value));if(node?.role==='hub')input.checked=false;});});
+$('#fleet-form').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.target,nodeIds=$$('#fleet-node-picker input:checked').map(input=>Number(input.value));if(!nodeIds.length)return showToast('SELECT NODES','Choose at least one online Agent.',true);
+  const values=Object.fromEntries(new FormData(form));const payload={};if(values.kind==='configure_autoheal')Object.assign(payload,{enabled:values.autoheal_enabled==='true',cooldown_seconds:Number(values.cooldown_seconds),max_restarts_per_hour:Number(values.max_restarts_per_hour)});
+  const body={name:values.name,kind:values.kind,node_ids:nodeIds,payload};if(values.service)body.service=values.service;if(values.scheduled_at)body.scheduled_at=Math.floor(new Date(values.scheduled_at).getTime()/1000);
+  try{const result=await api('/api/fleet/operations',{method:'POST',body:JSON.stringify(body)});closeModal($('#fleet-modal'));showToast('FLEET OPERATION QUEUED',`${result.nodes} Agent${result.nodes===1?'':'s'} assigned.`);await refresh();}
+  catch(error){showToast('FLEET OPERATION FAILED',error.message,true);}
+});
+
+$('#incident-note-form').addEventListener('submit',async event=>{event.preventDefault();const incidentId=Number(event.target.dataset.incidentId);if(!incidentId)return;const message=event.target.elements.message.value.trim();try{await api(`/api/incidents/${incidentId}/notes`,{method:'POST',body:JSON.stringify({message,event_type:'note'})});event.target.elements.message.value='';showToast('TIMELINE UPDATED','Operator note was recorded.');await loadIncidentDetail(incidentId);await refresh();}catch(error){showToast('NOTE FAILED',error.message,true);}});
+
+$('#file-manager-node').addEventListener('change',event=>{state.files.nodeId=Number(event.target.value)||null;state.files.path='/root';loadFileDirectory('/root');});
+$('#file-manager-go').addEventListener('click',()=>loadFileDirectory($('#file-manager-path').value));
+$('#file-manager-refresh').addEventListener('click',()=>loadFileDirectory(state.files.path));
+$('#file-manager-up').addEventListener('click',()=>{if(state.files.parent)loadFileDirectory(state.files.parent);});
+$('#file-manager-path').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();loadFileDirectory(event.target.value);}});
+$('#file-manager-rows').addEventListener('dblclick',event=>{const row=event.target.closest('[data-file-index]');if(!row)return;const entry=state.files.entries[Number(row.dataset.fileIndex)];if(entry?.type==='directory')loadFileDirectory(entry.path);else if(entry?.type==='file')$('#file-edit').click();});
+$('#file-new-directory').addEventListener('click',async()=>{if(!state.files.nodeId)return showToast('SELECT A SERVER','Choose an SSH-enabled server first.',true);const name=prompt('New directory name');if(!name)return;const path=`${state.files.path==='/'?'':state.files.path}/${name}`;try{await fileAction('mkdir',{path});showToast('DIRECTORY CREATED',path);}catch(error){showToast('CREATE FAILED',error.message,true);}});
+$('#file-download').addEventListener('click',()=>{const entry=state.files.selected;if(!entry||entry.type!=='file')return;const link=document.createElement('a');link.href=`/api/ssh/files/${state.files.nodeId}/download?path=${encodeURIComponent(entry.path)}`;link.download=entry.name;document.body.appendChild(link);link.click();link.remove();});
+$('#file-edit').addEventListener('click',async()=>{const entry=state.files.selected;if(!entry||entry.type!=='file')return;try{const result=await api(`/api/ssh/files/${state.files.nodeId}/read?path=${encodeURIComponent(entry.path)}`);state.files.editingPath=result.path;$('#file-editor-title').textContent=`Edit ${entry.name}`;$('#file-editor-content').value=result.content;$('#file-editor-meta').textContent=`${result.path} · ${fileSize(result.bytes)} · UTF-8`;openModal('#file-editor-modal');}catch(error){showToast('EDITOR FAILED',error.message,true);}});
+$('#file-editor-save').addEventListener('click',async()=>{if(!state.files.editingPath)return;try{const result=await api(`/api/ssh/files/${state.files.nodeId}/write`,{method:'PUT',body:JSON.stringify({path:state.files.editingPath,content:$('#file-editor-content').value,overwrite:true})});closeModal($('#file-editor-modal'));showToast('FILE SAVED',`${result.path} · ${fileSize(result.bytes)}`);await loadFileDirectory(state.files.path);}catch(error){showToast('SAVE FAILED',error.message,true);}});
+$('#file-checksum').addEventListener('click',async()=>{const entry=state.files.selected;if(!entry||entry.type!=='file')return;try{const result=await api(`/api/ssh/files/${state.files.nodeId}/checksum?path=${encodeURIComponent(entry.path)}`);$('#output-title').textContent=`SHA-256 · ${entry.name}`;$('#job-output').textContent=`${result.sha256}  ${result.path}\n\n${fileSize(result.bytes)} verified through SFTP.`;openModal('#output-modal');}catch(error){showToast('CHECKSUM FAILED',error.message,true);}});
+$('#file-rename').addEventListener('click',async()=>{const entry=state.files.selected;if(!entry)return;const name=prompt('New name',entry.name);if(!name||name===entry.name)return;const destination=`${state.files.path==='/'?'':state.files.path}/${name}`;try{await fileAction('rename',{destination});showToast('RENAMED',`${entry.name} → ${name}`);}catch(error){showToast('RENAME FAILED',error.message,true);}});
+$('#file-chmod').addEventListener('click',async()=>{const entry=state.files.selected;if(!entry)return;const mode=prompt('Octal permissions (example: 0644)',entry.mode||'0644');if(!mode)return;try{await fileAction('chmod',{mode});showToast('PERMISSIONS UPDATED',`${entry.path} · ${mode}`);}catch(error){showToast('CHMOD FAILED',error.message,true);}});
+$('#file-delete').addEventListener('click',async()=>{const entry=state.files.selected;if(!entry||!confirm(`Delete ${entry.type} “${entry.path}”?\n\nDirectories must be empty. This action cannot be undone.`))return;try{await fileAction('delete');showToast('REMOTE ITEM DELETED',entry.path);}catch(error){showToast('DELETE FAILED',error.message,true);}});
 
 $('#clear-terminal').addEventListener('click',()=>{const entry=activeTerminal();if(entry){entry.terminal.clear();entry.terminal.focus();}});
 $('#ssh-connect').addEventListener('click',()=>{const nodeId=$('#ssh-node-select').value;if(!nodeId)return showToast('SELECT A SERVER','Choose a Hub, Iran or Kharej server first.',true);connectSSH(nodeId);});
 $('#terminal-new-tab').addEventListener('click',()=>{const nodeId=$('#ssh-node-select').value;if(!nodeId)return showToast('SELECT A SERVER','Choose the server for the new tab.',true);const alternate=activeTerminalSlot()==='terminal-iran'?'terminal-germany':'terminal-iran';connectSSH(nodeId,alternate);});
-$('#terminal-copy').addEventListener('click',async()=>{const entry=activeTerminal();if(!entry)return;const text=entry.terminal.getSelection()||terminalText(entry.terminal);try{await navigator.clipboard.writeText(text);showToast('COPIED',entry.terminal.hasSelection()?'Selection copied.':'Terminal buffer copied.');}catch{showToast('COPY BLOCKED','Allow clipboard access in the browser.',true);}});
-$('#terminal-paste').addEventListener('click',async()=>{const slot=activeTerminalSlot(),socket=state.sockets.get(slot);if(!socket||socket.readyState!==WebSocket.OPEN)return showToast('SSH NOT CONNECTED','Connect the active terminal first.',true);try{const text=await navigator.clipboard.readText();socket.send(JSON.stringify({type:'input',data:text}));activeTerminal()?.terminal.focus();}catch{showToast('PASTE BLOCKED','Allow clipboard access in the browser.',true);}});
-$('#terminal-fullscreen').addEventListener('click',async()=>{const card=$('.terminal-card.active-terminal')||$('.terminal-card');if(!document.fullscreenElement)await card.requestFullscreen();else await document.exitFullscreen();setTimeout(()=>activeTerminal()?.fitAddon.fit(),100);});
+$('#terminal-copy').addEventListener('click',async()=>{const entry=activeTerminal();if(!entry)return showToast('NO TERMINAL','Select a terminal pane first.',true);if(!requireClipboard('writeText','COPY'))return;const text=entry.terminal.getSelection()||terminalText(entry.terminal);try{await navigator.clipboard.writeText(text);showToast('COPIED',entry.terminal.hasSelection()?'Selection copied.':'Terminal buffer copied.');}catch{showToast('COPY BLOCKED','Allow clipboard access in the browser.',true);}});
+$('#terminal-paste').addEventListener('click',async()=>{const socket=connectedSocket();if(!socket)return showToast('SSH NOT CONNECTED','Wait for the active terminal to finish connecting.',true);if(!requireClipboard('readText','PASTE'))return;try{const text=await navigator.clipboard.readText();socket.send(JSON.stringify({type:'input',data:text}));activeTerminal()?.terminal.focus();}catch{showToast('PASTE BLOCKED','Allow clipboard access in the browser.',true);}});
+$('#terminal-fullscreen').addEventListener('click',async()=>{const card=$('.terminal-card.active-terminal')||$('.terminal-card');try{if(!document.fullscreenElement)await card.requestFullscreen();else await document.exitFullscreen();setTimeout(()=>activeTerminal()?.fitAddon.fit(),100);}catch(error){showToast('FULLSCREEN UNAVAILABLE',error.message||'The browser blocked fullscreen mode.',true);}});
 $('#terminal-search-input').addEventListener('input',event=>activeTerminal()?.searchAddon.findNext(event.target.value,{incremental:true,decorations:{matchBackground:'#5d401d',activeMatchBackground:'#b36cff'}}));
 $('#terminal-search-next').addEventListener('click',()=>activeTerminal()?.searchAddon.findNext($('#terminal-search-input').value));
 $('#terminal-search-prev').addEventListener('click',()=>activeTerminal()?.searchAddon.findPrevious($('#terminal-search-input').value));
 $('#terminal-download-log').addEventListener('click',()=>{const entry=activeTerminal();if(!entry)return;const blob=new Blob([terminalText(entry.terminal)],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`dark-noc-ssh-${Date.now()}.log`;a.click();URL.revokeObjectURL(a.href);});
-$('#disconnect').addEventListener('click',()=>{[...state.sockets.keys()].forEach(closeSocket);showToast('SSH DISCONNECTED','All interactive sessions were closed.');});
+$('#disconnect').addEventListener('click',()=>{[...state.sockets.keys()].forEach(closeSocket);$$('.ssh-online').forEach(status=>status.textContent='● CLOSED');showToast('SSH DISCONNECTED','All interactive sessions were closed.');});
 $('#run-all-tests').addEventListener('click',async()=>{const online=state.nodes.filter(node=>node.status==='online');if(!online.length)return showToast('NO ONLINE AGENTS','Tunnel tests were not queued.',true);await Promise.all(online.map(node=>createJob(node.id,'tunnel_test')));showToast('TUNNEL TESTS QUEUED',`${online.length} online Agent${online.length===1?'':'s'} will test every configured tunnel.`);});
 $('#filter-nodes').addEventListener('click',event=>{state.nodeFilter=state.nodeFilter==='all'?'attention':'all';event.target.textContent=`FILTER: ${state.nodeFilter==='all'?'ALL':'ATTENTION'}`;renderNodes();});
 $('#export-incidents').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(state.incidents,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`dark-noc-incidents-${Date.now()}.json`;a.click();URL.revokeObjectURL(a.href);});
 $('#session-log').addEventListener('click',async()=>{try{const jobs=await api('/api/jobs?limit=100');$('#output-title').textContent='Remote job history';$('#job-output').textContent=jobs.map(job=>`#${job.id} [${job.status}] ${job.node_name} · ${job.kind}\n${job.output||''}`).join('\n\n');openModal('#output-modal');}catch(error){showToast('HISTORY FAILED',error.message,true);}});
-$('#copy-output').addEventListener('click',async()=>{await navigator.clipboard.writeText($('#job-output').textContent);showToast('OUTPUT COPIED','Command output copied to clipboard.');});
-$$('.terminal-card').forEach(card=>card.addEventListener('mousedown',()=>{$$('.terminal-card').forEach(item=>item.classList.remove('active-terminal'));card.classList.add('active-terminal');}));
-$$('[data-command]').forEach(button=>button.addEventListener('click',()=>{const socket=state.sockets.get(activeTerminalSlot());if(!socket||socket.readyState!==WebSocket.OPEN)return showToast('SSH NOT CONNECTED','Connect the active terminal first.',true);socket.send(JSON.stringify({type:'input',data:`${button.dataset.command}\n`}));activeTerminal()?.terminal.focus();}));
+$('#copy-output').addEventListener('click',async()=>{if(!requireClipboard('writeText','COPY'))return;try{await navigator.clipboard.writeText($('#job-output').textContent);showToast('OUTPUT COPIED','Command output copied to clipboard.');}catch{showToast('COPY BLOCKED','Allow clipboard access in the browser.',true);}});
+$$('.terminal-card').forEach(card=>{card.addEventListener('pointerdown',()=>selectTerminalCard(card));card.addEventListener('focusin',()=>selectTerminalCard(card));});
+$$('[data-command]').forEach(button=>button.addEventListener('click',()=>{const socket=connectedSocket();if(!socket)return showToast('SSH NOT CONNECTED','Wait for the active terminal to finish connecting.',true);socket.send(JSON.stringify({type:'input',data:`${button.dataset.command}\n`}));activeTerminal()?.terminal.focus();}));
 $('.operator').addEventListener('click',async()=>{try{const me=await api('/api/auth/me');$('#account-form [name="username"]').value=me.username;$('#account-form').reset();$('#account-form [name="username"]').value=me.username;openModal('#account-modal');}catch(error){showToast('ACCOUNT ERROR',error.message,true);}});
-$('#account-form').addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(event.target));if(values.new_password!==values.confirm_password)return showToast('PASSWORD MISMATCH','New password confirmation does not match.',true);delete values.confirm_password;if(!values.new_password)delete values.new_password;try{const result=await api('/api/auth/account',{method:'PUT',body:JSON.stringify(values)});closeModal($('#account-modal'));event.target.reset();showToast('ACCOUNT UPDATED',result.reauthenticate?'Sign in again with the new credentials.':'Username saved.');if(result.reauthenticate){$('#login-gate').classList.remove('hidden');if(liveSocket)liveSocket.close();}else $('.operator strong').textContent=result.username;}catch(error){showToast('ACCOUNT UPDATE FAILED',error.message,true);}});
-$('#logout-button').addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'});$('#login-gate').classList.remove('hidden');if(liveSocket)liveSocket.close();closeModal($('#account-modal'));});
+$('#account-form').addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(event.target));if(values.new_password!==values.confirm_password)return showToast('PASSWORD MISMATCH','New password confirmation does not match.',true);delete values.confirm_password;if(!values.new_password)delete values.new_password;try{const result=await api('/api/auth/account',{method:'PUT',body:JSON.stringify(values)});closeModal($('#account-modal'));event.target.reset();showToast('ACCOUNT UPDATED',result.reauthenticate?'Sign in again with the new credentials.':'Username saved.');if(result.reauthenticate)terminateAuthenticatedActivity();else $('.operator strong').textContent=result.username;}catch(error){if(error.message!=='Authentication required')showToast('ACCOUNT UPDATE FAILED',error.message,true);}});
+$('#logout-button').addEventListener('click',async()=>{try{await api('/api/auth/logout',{method:'POST'});}catch(error){if(error.message!=='Authentication required')showToast('LOGOUT FAILED',error.message,true);}finally{terminateAuthenticatedActivity({transferMessage:'SIGNED OUT · Transfer stopped',terminalStatus:'● SIGNED OUT'});closeModal($('#account-modal'));}});
 
 document.addEventListener('keydown',event=>{
   if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();openModal('#command-modal');}

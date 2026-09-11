@@ -3,6 +3,44 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] - 2026-09-11
+
+### Added
+
+- Synthetic ICMP, TCP, HTTP, HTTPS, DNS, TLS and SNMP monitoring assigned to any online Agent, with encrypted SNMP communities, scheduled execution, manual runs, result history and automatic recovery incidents.
+- Full Incident Center with a durable event timeline, operator notes, acknowledgement, root cause, resolution, reopen and active/resolved archive views.
+- Expanded host telemetry for inode pressure, temperature, disk I/O, per-interface counters, packet errors/drops, operating-system inventory, pending updates, reboot state and Docker health.
+- Fleet Operations for allowlisted diagnostics, tunnel tests, log collection, service checks/restarts, Auto-Heal configuration and bounded Agent synchronization across selected Nodes.
+- Remote SFTP File Manager with directory browsing, UTF-8 editor, atomic saves, download, SHA-256, mkdir, rename, chmod and guarded deletion in addition to existing upload and cross-server relay.
+- Hourly metric rollups, configurable raw/result retention, `/readyz`, authenticated runtime status and a renewable maintenance-controller lease for safe multi-process coordination.
+
+### Changed
+
+- Limited simultaneous remote Agent provisioning and preserved all new NOC/retention tuning values across Hub upgrades.
+- Made release publication resumable and commit-owned: annotated markers, draft recovery, immutable asset verification and asset-ID downloads protect against partial or racing GitHub Actions runs.
+
+### Security
+
+- Protected critical operating-system paths and DARK NOC runtime/credential paths from File Manager mutation, upload and relay replacement.
+- Kept synthetic secrets out of browser/API responses and redacted sensitive Fleet job payload fields.
+
+## [2.5.1] - 2026-09-11
+
+### Fixed
+
+- Added a dedicated authenticated upload gateway so the advertised 1 GiB browser-to-server limit is no longer blocked by Nginx's general 1 MiB API ceiling.
+- Reworked SFTP replacement as a fail-safe staged swap which restores the previous destination if finalization fails.
+- Added bounded transfer concurrency, SSH keepalives, transfer/idle timeouts, cancellation cleanup and browser-side cancel/error states.
+- Prevented stale WebSocket callbacks from corrupting replacement SSH panes and kept SSH connect controls usable on mobile.
+- Added the Agent sandbox paths and Certbot prerequisites required by DARK Ghost Pro, DARK Packet Pro and TLS Vault.
+- Made the Hub's public self-signed certificate readable to its unprivileged service without exposing the private key.
+- Extended Hub upgrade rollback to cover TLS and the local Agent, and included the Agent upgrade entrypoint in Node packages.
+- Made the public Hub command automatically select the verified rollback upgrade path on existing installations.
+- Added fail-safe `SYNC AGENT` rollout for SSH-enabled Nodes while preserving their existing managed services, tunnels and Auto-Heal settings.
+- Revoked live and SSH WebSocket activity immediately after logout, password rotation or session expiry.
+- Made release archives reproducible and publication immutable, with tests required before a version is released.
+- Refreshed first-party static asset cache keys so upgraded panels cannot retain stale SSH UI files.
+
 ## [2.5.0] - 2026-09-11
 
 ### Added

@@ -20,6 +20,11 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
 
     async def fake_provision_node(node_id, enrollment):
         enrollment_tokens[node_id] = enrollment
+        with app.db() as conn:
+            conn.execute(
+                "UPDATE nodes SET provision_status='completed',updated_at=? WHERE id=?",
+                (app.utc_ts(), node_id),
+            )
 
     app.provision_node = fake_provision_node
 
@@ -33,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
 
     with TestClient(app.app, base_url="https://testserver") as client:
         health = client.get("/healthz")
-        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.5.0"}
+        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.6.0"}
         assert health.headers["x-content-type-options"] == "nosniff"
         backhaul = next(item for item in app.PLUGIN_CATALOG if item["id"] == "dark-backhaul")
         assert {"wss", "wssmux"}.issubset(backhaul["transports"])

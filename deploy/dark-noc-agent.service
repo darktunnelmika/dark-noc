@@ -11,11 +11,12 @@ Environment=DARK_NOC_AGENT_CONFIG=/etc/dark-noc-agent/config.json
 ExecStart=/opt/dark-noc-agent/venv/bin/python /opt/dark-noc-agent/agent.py
 Restart=always
 RestartSec=5
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/dark-noc-agent /etc/dark-noc-agent /etc/dark-backhaul /etc/systemd/system -/etc/ufw /usr/local/bin
+ReadWritePaths=/var/lib/dark-noc-agent /etc/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /var/lib/dark-noc-acme /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /etc/systemd/system -/etc/ufw /usr/local/bin
 
 [Install]
 WantedBy=multi-user.target

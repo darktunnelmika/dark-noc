@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import tarfile
 import tempfile
@@ -21,10 +22,10 @@ from typing import Any
 import httpx
 import psutil
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
-ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue"}
+ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
 
 DARKBH_RELEASE_API = "https://api.github.com/repos/Musixal/Backhaul/releases/latest"
 GOST_RELEASE_API = "https://api.github.com/repos/go-gost/gost/releases/latest"
@@ -192,12 +193,41 @@ def connection_count() -> int:
 
 def base_metrics(previous: dict[str, Any]) -> dict[str, Any]:
     net = psutil.net_io_counters()
+    disk_io = psutil.disk_io_counters()
     now = time.time()
     prior_ts = float(previous.get("ts", now))
     seconds = max(now - prior_ts, 1)
     rx_bps = max(0, (net.bytes_recv - int(previous.get("bytes_recv", net.bytes_recv))) * 8 / seconds)
     tx_bps = max(0, (net.bytes_sent - int(previous.get("bytes_sent", net.bytes_sent))) * 8 / seconds)
     disk = psutil.disk_usage("/")
+    try:
+        inode = os.statvfs("/")
+        inode_percent = round((1 - inode.f_favail / max(inode.f_files, 1)) * 100, 2)
+    except OSError:
+        inode_percent = None
+    read_bytes = int(getattr(disk_io, "read_bytes", 0) or 0)
+    write_bytes = int(getattr(disk_io, "write_bytes", 0) or 0)
+    disk_read_bps = max(0, (read_bytes - int(previous.get("disk_read_bytes", read_bytes))) / seconds)
+    disk_write_bps = max(0, (write_bytes - int(previous.get("disk_write_bytes", write_bytes))) / seconds)
+    network_errors = int(net.errin + net.errout)
+    network_drops = int(net.dropin + net.dropout)
+    network_errors_delta = max(0, network_errors - int(previous.get("network_errors", network_errors)))
+    network_drops_delta = max(0, network_drops - int(previous.get("network_drops", network_drops)))
+    interface_stats: dict[str, Any] = {}
+    for name, counters in psutil.net_io_counters(pernic=True).items():
+        if name == "lo":
+            continue
+        interface_stats[name] = {
+            "rx_bytes": int(counters.bytes_recv), "tx_bytes": int(counters.bytes_sent),
+            "rx_packets": int(counters.packets_recv), "tx_packets": int(counters.packets_sent),
+            "rx_errors": int(counters.errin), "tx_errors": int(counters.errout),
+            "rx_drops": int(counters.dropin), "tx_drops": int(counters.dropout),
+        }
+    temperatures: list[float] = []
+    try:
+        temperatures = [float(item.current) for group in psutil.sensors_temperatures().values() for item in group if item.current is not None]
+    except (AttributeError, OSError):
+        pass
     boot = psutil.boot_time()
     return {
         "hostname": socket.gethostname(),
@@ -210,10 +240,130 @@ def base_metrics(previous: dict[str, Any]) -> dict[str, Any]:
         "tx_bps": round(tx_bps, 2),
         "uptime": int(now - boot),
         "connections": connection_count(),
+        "inode_percent": inode_percent,
+        "disk_read_bps": round(disk_read_bps, 2),
+        "disk_write_bps": round(disk_write_bps, 2),
+        "disk_read_bytes": read_bytes,
+        "disk_write_bytes": write_bytes,
+        "temperature_c": round(max(temperatures), 1) if temperatures else None,
+        "network_errors": network_errors,
+        "network_drops": network_drops,
+        "network_errors_delta": network_errors_delta,
+        "network_drops_delta": network_drops_delta,
+        "interfaces": interface_stats,
         "bytes_recv": net.bytes_recv,
         "bytes_sent": net.bytes_sent,
         "ts": now,
     }
+
+
+def system_inventory(state: dict[str, Any]) -> dict[str, Any]:
+    now = time.time()
+    cached = state.get("inventory")
+    if isinstance(cached, dict) and now - float(state.get("inventory_checked_at", 0)) < 1800:
+        return cached
+    os_name = "Linux"
+    try:
+        values = {}
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip('"')
+        os_name = values.get("PRETTY_NAME", os_name)
+    except OSError:
+        pass
+    update_count = None
+    if shutil.which("apt"):
+        code, output = run(["apt", "list", "--upgradable"], timeout=60)
+        if code == 0:
+            update_count = len([line for line in output.splitlines() if "/" in line and not line.startswith("Listing")])
+    docker = {"available": False, "running": 0, "total": 0, "unhealthy": 0}
+    if shutil.which("docker"):
+        code, output = run(["docker", "ps", "-a", "--format", "{{.State}}|{{.Status}}"], timeout=20)
+        if code == 0:
+            rows = [line for line in output.splitlines() if line.strip()]
+            docker = {
+                "available": True,
+                "running": sum(line.startswith("running|") for line in rows),
+                "total": len(rows),
+                "unhealthy": sum("unhealthy" in line.lower() for line in rows),
+            }
+    inventory = {
+        "os": os_name,
+        "kernel": os.uname().release,
+        "updates": update_count,
+        "reboot_required": Path("/var/run/reboot-required").exists(),
+        "docker": docker,
+    }
+    state["inventory"] = inventory
+    state["inventory_checked_at"] = now
+    return inventory
+
+
+def execute_monitor(payload: dict[str, Any]) -> dict[str, Any]:
+    monitor_id = int(payload.get("monitor_id", 0))
+    kind = str(payload.get("kind", ""))
+    target = str(payload.get("target", "")).strip()
+    timeout = min(max(int(payload.get("timeout_seconds", 5)), 1), 60)
+    port = int(payload.get("port") or (443 if kind in {"https", "tls"} else 80 if kind == "http" else 161 if kind == "snmp" else 0))
+    if not monitor_id or kind not in {"icmp", "tcp", "http", "https", "dns", "tls", "snmp"} or not target:
+        raise ValueError("Invalid monitor request")
+    started = time.perf_counter()
+    detail: dict[str, Any] = {}
+    ok = False
+    if kind == "icmp":
+        if not shutil.which("ping"):
+            raise RuntimeError("ping is not installed on this Agent")
+        code, output = run(["ping", "-n", "-c", "1", "-W", str(timeout), target], timeout=timeout + 2)
+        ok = code == 0
+        match = re.search(r"time[=<]([0-9.]+)\s*ms", output)
+        detail = {"reply": output.strip()[-1000:]}
+        latency = float(match.group(1)) if match else None
+    elif kind == "tcp":
+        if not port:
+            raise ValueError("TCP monitor requires a port")
+        with socket.create_connection((target, port), timeout=timeout):
+            ok = True
+        latency = round((time.perf_counter() - started) * 1000, 2)
+        detail = {"port": port}
+    elif kind in {"http", "https"}:
+        url = target if re.match(r"^https?://", target, re.I) else f"{kind}://{target}{f':{port}' if port not in {80,443} else ''}/"
+        if not url.lower().startswith(f"{kind}://"):
+            raise ValueError(f"{kind.upper()} monitor URL must use {kind}://")
+        response = httpx.get(url, timeout=timeout, follow_redirects=True)
+        expected = int(payload.get("expected_status") or 0)
+        ok = response.status_code == expected if expected else response.status_code < 500
+        latency = round((time.perf_counter() - started) * 1000, 2)
+        detail = {"url": str(response.url), "status_code": response.status_code, "expected_status": expected or None}
+    elif kind == "dns":
+        records = sorted({item[4][0] for item in socket.getaddrinfo(target, port or None, type=socket.SOCK_STREAM)})
+        ok = bool(records)
+        latency = round((time.perf_counter() - started) * 1000, 2)
+        detail = {"records": records[:16]}
+    elif kind == "tls":
+        context = ssl.create_default_context()
+        with socket.create_connection((target, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=target) as secured:
+                cert = secured.getpeercert()
+                expires_at = int(ssl.cert_time_to_seconds(cert["notAfter"]))
+                ok = expires_at > int(time.time())
+                detail = {"port": port, "expires_at": expires_at, "days_left": (expires_at - int(time.time())) // 86400}
+        latency = round((time.perf_counter() - started) * 1000, 2)
+    else:
+        community = str(payload.get("snmp_community") or "")
+        oid = str(payload.get("snmp_oid") or ".1.3.6.1.2.1.1.3.0")
+        if not community or not re.fullmatch(r"\.?[0-9]+(?:\.[0-9]+)+", oid):
+            raise ValueError("SNMP monitor requires a community and numeric OID")
+        if not shutil.which("snmpget"):
+            raise RuntimeError("snmpget is not installed on this Agent")
+        snmp_target = target if port == 161 else f"{target}:{port}"
+        code, output = run(["snmpget", "-v2c", "-c", community, "-t", str(timeout), "-r", "0", snmp_target, oid], timeout=timeout + 2)
+        ok = code == 0
+        latency = round((time.perf_counter() - started) * 1000, 2) if ok else None
+        detail = {"oid": oid, "value": output.strip()[-1000:] if ok else "SNMP request failed"}
+    if kind == "icmp" and 'latency' not in locals():
+        latency = round((time.perf_counter() - started) * 1000, 2) if ok else None
+    return {"monitor_id": monitor_id, "status": "up" if ok else "down", "latency_ms": latency, "detail": detail, "checked_at": int(time.time())}
 
 
 async def tunnel_report(tunnel: dict[str, Any]) -> dict[str, Any]:
@@ -634,10 +784,7 @@ def _issue_certificate(payload: dict[str, Any]) -> str:
         raise ValueError("Invalid certificate domain")
     nginx_active = run(["systemctl", "is-active", "nginx"], timeout=10)[0] == 0
     if not shutil.which("certbot"):
-        code, output = run(["apt-get", "update", "-qq"], timeout=180)
-        if code != 0: raise RuntimeError(f"apt update failed: {output[-700:]}")
-        code, output = run(["apt-get", "install", "-y", "certbot"], timeout=240)
-        if code != 0: raise RuntimeError(f"certbot installation failed: {output[-700:]}")
+        raise RuntimeError("certbot is not installed; rerun the DARK NOC Node installer or Agent upgrade")
     command = ["certbot", "certonly", "--non-interactive", "--agree-tos", "--register-unsafely-without-email", "--keep-until-expiring", "-d", domain]
     if nginx_active:
         webroot = Path("/var/lib/dark-noc-acme"); (webroot / ".well-known/acme-challenge").mkdir(parents=True, exist_ok=True)
@@ -1007,6 +1154,15 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
     if kind == "certificate_issue":
         try: return "completed", _issue_certificate(payload)
         except Exception as exc: return "failed", str(exc)
+    if kind == "monitor_run":
+        try:
+            return "completed", json.dumps(execute_monitor(payload), separators=(",", ":"))
+        except Exception as exc:
+            return "failed", json.dumps({
+                "monitor_id": int(payload.get("monitor_id", 0) or 0),
+                "status": "down", "latency_ms": None,
+                "detail": {"error": str(exc)[:1000]}, "checked_at": int(time.time()),
+            }, separators=(",", ":"))
     if kind == "logs":
         service = str(payload.get("service") or "dark-noc-agent.service")
         if service != "dark-noc-agent.service" and not restart_allowed(service, config):
@@ -1139,7 +1295,8 @@ async def main() -> None:
             try:
                 refresh_connection_snapshot()
                 metrics = base_metrics(state.get("net", {}))
-                state["net"] = {key: metrics[key] for key in ("bytes_recv", "bytes_sent", "ts")}
+                state["net"] = {key: metrics[key] for key in ("bytes_recv", "bytes_sent", "disk_read_bytes", "disk_write_bytes", "network_errors", "network_drops", "ts")}
+                metrics["inventory"] = system_inventory(state)
                 reports = await _collect_tunnel_reports(monitored_tunnels(config))
                 await maybe_autoheal(config, reports, state)
                 payload = {"metrics": metrics, "services": service_reports(config), "tunnels": reports, "plugins": plugin_inventory(), "agent_version": VERSION, "autoheal": config.get("autoheal", {})}

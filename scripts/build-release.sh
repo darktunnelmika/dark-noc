@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export LC_ALL=C
+export TZ=UTC
+umask 022
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' "$ROOT_DIR/hub/app.py")"
 AGENT_VERSION="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' "$ROOT_DIR/agent/agent.py")"
-if [[ -z "$VERSION" || "$VERSION" != "$AGENT_VERSION" ]]; then
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$VERSION" != "$AGENT_VERSION" ]]; then
   echo "Hub and Agent versions are missing or different."
+  exit 1
+fi
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "SOURCE_DATE_EPOCH must be a non-negative integer."
   exit 1
 fi
 
@@ -22,11 +30,17 @@ cp "$ROOT_DIR/install-hub.sh" "$ROOT_DIR/upgrade.sh" "$ROOT_DIR/uninstall.sh" \
 mkdir -p "$STAGE_DIR/dark-noc-node/agent" "$STAGE_DIR/dark-noc-node/deploy"
 cp -a "$ROOT_DIR/agent/." "$STAGE_DIR/dark-noc-node/agent/"
 cp "$ROOT_DIR/deploy/dark-noc-agent.service" "$STAGE_DIR/dark-noc-node/deploy/"
-cp "$ROOT_DIR/install-node.sh" "$ROOT_DIR/install-agent.sh" "$ROOT_DIR/NODE-README.md" \
+cp "$ROOT_DIR/install-node.sh" "$ROOT_DIR/install-agent.sh" "$ROOT_DIR/upgrade.sh" "$ROOT_DIR/NODE-README.md" \
   "$ROOT_DIR/LICENSE" "$STAGE_DIR/dark-noc-node/"
 
-tar --exclude='__pycache__' --exclude='*.pyc' -czf "$DIST_DIR/DARK-NOC-HUB-v$VERSION.tar.gz" -C "$STAGE_DIR" dark-noc-pro
-tar --exclude='__pycache__' --exclude='*.pyc' -czf "$DIST_DIR/DARK-NOC-NODE-v$VERSION.tar.gz" -C "$STAGE_DIR" dark-noc-node
+build_archive() {
+  local source_name="$1" destination="$2"
+  tar --sort=name --format=gnu --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+    --exclude='__pycache__' --exclude='*.pyc' -cf - -C "$STAGE_DIR" "$source_name" | gzip -n > "$destination"
+}
+
+build_archive dark-noc-pro "$DIST_DIR/DARK-NOC-HUB-v$VERSION.tar.gz"
+build_archive dark-noc-node "$DIST_DIR/DARK-NOC-NODE-v$VERSION.tar.gz"
 (
   cd "$DIST_DIR"
   sha256sum "DARK-NOC-HUB-v$VERSION.tar.gz" "DARK-NOC-NODE-v$VERSION.tar.gz" > SHA256SUMS

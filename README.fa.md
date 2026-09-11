@@ -1,4 +1,4 @@
-# DARK NOC v2.5.0 — مرکز فرمان NOC
+# DARK NOC v2.6.0 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -24,24 +24,30 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 ```
 
 نصاب سریع آخرین Release پایدار را دریافت می‌کند، SHA-256 فایل را بررسی می‌کند
-و سپس نصب تعاملی را آغاز می‌کند.
+و سپس کار را آغاز می‌کند. اگر Hub از قبل نصب باشد، خودکار وارد مسیر ارتقای دارای
+Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را اجرا می‌کند.
 
 ## امکانات اصلی
 
 - داشبورد زنده CPU، RAM، دیسک، Load، پهنای باند، Uptime و Connectionها
+- مانیتورینگ Inode، دما، سرعت I/O دیسک، خطا و Drop شبکه، آپدیت و Reboot سیستم‌عامل و سلامت Docker
+- مانیتورهای ICMP، TCP، HTTP، HTTPS، DNS، انقضای TLS و SNMP رمزنگاری‌شده از روی Agent انتخابی
 - نمایش IP کنار نام سرورها در Live Tunnel Matrix
 - تشخیص خودکار نمونه‌های DARK Backhaul مدیریت‌شده توسط پنل
 - ساخت هماهنگ تونل روی سرور ایران و خارج
 - پروفایل‌های Stable، Balanced، Low Ping و Turbo
 - Retry، حذف دوطرفه و Rollback خودکار در شکست نصب
-- Incident، Auto-Heal و هشدار اختیاری تلگرام
+- Incident Center کامل با Timeline، یادداشت اپراتور، Acknowledge، علت اصلی، راه‌حل، Reopen و Recovery خودکار
 - SSH مرورگری با رمزنگاری اطلاعات ورود و Pin شدن Host Key
 - ترمینال کامل xterm.js با ANSI/VT، دو نشست هم‌زمان، تغییر اندازه PTY، جست‌وجو، کلیپ‌بورد، تمام‌صفحه و ذخیره لاگ
-- آپلود مستقیم فایل از مرورگر به سرور با SFTP، نمایش پیشرفت و نوشتن اتمیک
+- آپلود مستقیم فایل از مرورگر با SFTP، نمایش پیشرفت، جایگزینی اتمیک POSIX روی OpenSSH و مسیر بازیابی‌پذیر برای SFTPهای قدیمی
 - انتقال فایل بین دو سرور از مسیر امن Hub، بدون نیاز به دسترسی SSH مستقیم بین آن‌ها
+- فایل‌منیجر SFTP با مرور پوشه، ادیتور UTF-8 و ذخیره اتمیک، دانلود، SHA-256، ساخت پوشه، Rename، CHMOD و حذف محافظت‌شده
 - نصب HTTPS خودکار با دامنه یا گواهی رمزنگاری‌شده برای IP
 - ساخت خودکار نام کاربری و رمز اولیه قوی
 - نصب جداگانه Hub و Node و حفظ تونل‌های قبلی سرور
+- Fleet Operations برای اجرای هماهنگ Diagnostics، تست تونل، لاگ، کنترل سرویس، Auto-Heal و Sync Agent روی چند نود
+- Rollup ساعتی متریک‌ها، Retention قابل تنظیم و قفل رهبر برای اجرای امن Controller در چند Process
 
 در نسخه فعلی افزونه‌های **DARK Backhaul**، **DARK Ghost Pro** و **DARK Packet Pro** در بخش تونل ارائه می‌شوند. Packet Pro جهت واقعی متفاوتی دارد: ایران Client و خارج Server است؛ پنل در حالت Pair Code سمت ایران را می‌سازد و کد `DPP-N1` را برای اسکریپت خارج تحویل می‌دهد.
 
@@ -49,10 +55,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v2.5.0.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v2.6.0.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v2.5.0.tar.gz
+tar -xzf DARK-NOC-HUB-v2.6.0.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -63,10 +69,10 @@ sudo bash install-hub.sh
 
 ## نصب Node
 
-فایل `DARK-NOC-NODE-v2.5.0.tar.gz` را روی Node اجرا کنید:
+فایل `DARK-NOC-NODE-v2.6.0.tar.gz` را روی Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v2.5.0.tar.gz
+tar -xzf DARK-NOC-NODE-v2.6.0.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh
@@ -82,15 +88,14 @@ Token خصوصی و TLS را روی Node تنظیم می‌کند و تا دری
 ## ارتقا
 
 ```bash
-# روی Hub
-sudo bash upgrade.sh hub
-
-# روی Node فقط برای تازه‌سازی پیش‌نیازها
-sudo bash install-node.sh
+# روی Hub؛ تشخیص نسخه نصب‌شده، دانلود، بررسی Checksum و ارتقای امن
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) hub
 ```
 
 قبل از ارتقای Hub از دیتابیس SQLite نسخه پشتیبان سازگار گرفته می‌شود و در صورت
-خطا Rollback انجام خواهد شد.
+خطا Rollback انجام خواهد شد. بعد از ارتقای Hub، روی کارت هر Node راه‌دور که SSH
+آن تنظیم شده گزینه **SYNC AGENT** را بزنید تا Agent و سرویس امن همان نسخه، بدون
+تغییر تنظیمات تونل‌ها و Auto-Heal، دوباره همگام شوند.
 
 ## امنیت
 

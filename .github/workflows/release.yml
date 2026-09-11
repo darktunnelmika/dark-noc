@@ -18,54 +18,196 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve release version
+        with:
+          fetch-depth: 0
+
+      - name: Resolve or recover release transaction
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           source_version="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' hub/app.py)"
-          test -n "$source_version"
+          [[ "$source_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           release_tag="v$source_version"
+          target_sha="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          marker="<!-- dark-noc-release:$release_tag:$target_sha -->"
 
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            test "$release_tag" = "$GITHUB_REF_NAME"
-          elif gh release view "$release_tag" >/dev/null 2>&1; then
-            echo "DARK NOC $release_tag is already published; skipping."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$release_tag" ]]; then
+            echo "Source version $release_tag does not match pushed tag $GITHUB_REF_NAME." >&2
+            exit 1
           fi
 
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-      - name: Build packages
+          all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+          release_count="$(jq --arg tag "$release_tag" '[.[] | select(.tag_name == $tag)] | length' <<< "$all_releases")"
+          [[ "$release_count" -le 1 ]] || { echo "More than one release uses $release_tag." >&2; exit 1; }
+          if [[ "$release_count" == 1 ]]; then
+            release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
+            release_id="$(jq -r .id <<< "$release")"
+            is_draft="$(jq -r .draft <<< "$release")"
+            release_target="$(jq -r .target_commitish <<< "$release")"
+            release_body="$(jq -r '.body // ""' <<< "$release")"
+            if [[ "$is_draft" == false ]]; then
+              echo "Published release $release_tag already exists; nothing to change."
+              printf 'publish=false\ntag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$release_target" != "$target_sha" || "$release_body" != *"$marker"* ]]; then
+              echo "Draft $release_tag is not owned by this source commit; refusing to modify it." >&2
+              exit 1
+            fi
+            echo "Recovering owned draft release #$release_id."
+          else
+            release_id=""
+          fi
+
+          if git show-ref --verify --quiet "refs/tags/$release_tag"; then
+            tag_target="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+            tag_type="$(git cat-file -t "refs/tags/$release_tag")"
+            tag_message="$(git for-each-ref --format='%(contents)' "refs/tags/$release_tag")"
+            if [[ "$tag_target" != "$target_sha" || "$tag_type" != tag || "$tag_message" != *"$marker"* ]]; then
+              echo "Existing tag $release_tag is not the annotated release tag owned by this commit." >&2
+              exit 1
+            fi
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$release_tag" "$target_sha" -m "DARK NOC $release_tag" -m "$marker"
+            if ! git push origin "refs/tags/$release_tag:refs/tags/$release_tag"; then
+              git tag -d "$release_tag" >/dev/null 2>&1 || true
+              git fetch --force origin "refs/tags/$release_tag:refs/tags/$release_tag"
+              tag_target="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+              tag_type="$(git cat-file -t "refs/tags/$release_tag")"
+              tag_message="$(git for-each-ref --format='%(contents)' "refs/tags/$release_tag")"
+              if [[ "$tag_target" != "$target_sha" || "$tag_type" != tag || "$tag_message" != *"$marker"* ]]; then
+                echo "Tag creation raced with an unrelated tag; refusing to continue." >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          if [[ -z "$release_id" ]]; then
+            notes_file="$(mktemp)"
+            { cat RELEASE_NOTES.md; printf '\n\n%s\n' "$marker"; } > "$notes_file"
+            if ! gh release create "$release_tag" --draft --verify-tag --target "$target_sha" \
+              --title "DARK NOC $release_tag" --notes-file "$notes_file"; then
+              all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+              release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
+              [[ -n "$release" ]] || { echo "Draft creation failed and no recoverable draft exists." >&2; exit 1; }
+              release_id="$(jq -r .id <<< "$release")"
+              is_draft="$(jq -r .draft <<< "$release")"
+              release_target="$(jq -r .target_commitish <<< "$release")"
+              release_body="$(jq -r '.body // ""' <<< "$release")"
+              if [[ "$is_draft" != true || "$release_target" != "$target_sha" || "$release_body" != *"$marker"* ]]; then
+                echo "Draft creation raced with an unrelated release; refusing to continue." >&2
+                exit 1
+              fi
+            else
+              all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+              release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
+              release_id="$(jq -r .id <<< "$release")"
+              [[ "$release_id" =~ ^[0-9]+$ ]] || { echo "Could not prove ownership of the new draft." >&2; exit 1; }
+            fi
+          fi
+
+          printf 'publish=true\ntag=%s\nrelease_id=%s\ntarget_sha=%s\nmarker=%s\n' \
+            "$release_tag" "$release_id" "$target_sha" "$marker" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
         if: steps.version.outputs.publish == 'true'
-        run: scripts/build-release.sh
-      - name: Publish GitHub release
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          node-version: "22"
+
+      - name: Install test dependencies
+        if: steps.version.outputs.publish == 'true'
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+
+      - name: Test release source
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+
+      - name: Build reproducible packages
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
+
+      - name: Publish verified draft
         if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_ID: ${{ steps.version.outputs.release_id }}
+          TARGET_SHA: ${{ steps.version.outputs.target_sha }}
+          RELEASE_MARKER: ${{ steps.version.outputs.marker }}
         run: |
           set -Eeuo pipefail
           assets=(
-            dist/DARK-NOC-HUB-"$RELEASE_TAG".tar.gz
-            dist/DARK-NOC-NODE-"$RELEASE_TAG".tar.gz
-            dist/SHA256SUMS
+            "dist/DARK-NOC-HUB-$RELEASE_TAG.tar.gz"
+            "dist/DARK-NOC-NODE-$RELEASE_TAG.tar.gz"
+            "dist/SHA256SUMS"
           )
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-            gh release edit "$RELEASE_TAG" \
-              --title "DARK NOC $RELEASE_TAG" \
-              --notes-file RELEASE_NOTES.md
-          else
-            target_args=()
-            if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
-              target_args=(--target "$GITHUB_SHA")
+          expected_names=("DARK-NOC-HUB-$RELEASE_TAG.tar.gz" "DARK-NOC-NODE-$RELEASE_TAG.tar.gz" "SHA256SUMS")
+          expected_archives=("DARK-NOC-HUB-$RELEASE_TAG.tar.gz" "DARK-NOC-NODE-$RELEASE_TAG.tar.gz")
+
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          [[ "$(jq -r .tag_name <<< "$release")" == "$RELEASE_TAG" ]]
+          [[ "$(jq -r .draft <<< "$release")" == true ]]
+          [[ "$(jq -r .target_commitish <<< "$release")" == "$TARGET_SHA" ]]
+          [[ "$(jq -r '.body // ""' <<< "$release")" == *"$RELEASE_MARKER"* ]]
+
+          for asset in "${assets[@]}"; do test -f "$asset"; done
+          expected_checksum_names="$(printf '%s\n' "${expected_archives[@]}" | LC_ALL=C sort)"
+          actual_checksum_names="$(awk 'NF {print $2}' dist/SHA256SUMS | LC_ALL=C sort)"
+          [[ "$actual_checksum_names" == "$expected_checksum_names" ]]
+          (cd dist && sha256sum -c SHA256SUMS)
+
+          existing_names="$(jq -r '.assets[].name' <<< "$release")"
+          while IFS= read -r existing_name; do
+            [[ -z "$existing_name" ]] && continue
+            printf '%s\n' "${expected_names[@]}" | grep -Fxq "$existing_name" || {
+              echo "Owned draft contains unexpected asset $existing_name; refusing to delete it." >&2
+              exit 1
+            }
+          done <<< "$existing_names"
+
+          for expected_name in "${expected_names[@]}"; do
+            asset_id="$(jq -r --arg name "$expected_name" '.assets[] | select(.name == $name) | .id' <<< "$release")"
+            if [[ -n "$asset_id" ]]; then
+              [[ "$asset_id" != *$'\n'* ]] || { echo "Duplicate draft asset $expected_name." >&2; exit 1; }
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
             fi
-            gh release create "$RELEASE_TAG" "${assets[@]}" \
-              "${target_args[@]}" \
-              --title "DARK NOC $RELEASE_TAG" \
-              --notes-file RELEASE_NOTES.md
-          fi
+          done
+
+          gh release upload "$RELEASE_TAG" "${assets[@]}"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          actual_names="$(jq -r '.assets[].name' <<< "$release" | LC_ALL=C sort)"
+          expected_sorted="$(printf '%s\n' "${expected_names[@]}" | LC_ALL=C sort)"
+          [[ "$actual_names" == "$expected_sorted" ]] || { echo "Draft must contain exactly three expected assets." >&2; exit 1; }
+
+          verify_dir="$(mktemp -d)"
+          while IFS=$'\t' read -r asset_id asset_name; do
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$verify_dir/$asset_name"
+          done < <(jq -r '.assets[] | [.id,.name] | @tsv' <<< "$release")
+          cmp -- dist/SHA256SUMS "$verify_dir/SHA256SUMS"
+          (cd "$verify_dir" && sha256sum -c SHA256SUMS)
+
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -f make_latest=true >/dev/null
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)" == false ]]

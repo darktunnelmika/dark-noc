@@ -7,7 +7,7 @@
   <meta name="description" content="DARK NOC — Network Operations Command Center" />
   <title>DARK NOC — Nightfall Command</title>
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=5.5.0" />
-  <link rel="stylesheet" href="/static/styles.css?v=2.1.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=2.6.0" />
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -37,6 +37,8 @@
         <button class="nav-item active" data-view="overview"><i>◈</i><span>Command</span></button>
         <button class="nav-item" data-view="servers"><i>▦</i><span>Servers</span><b>0</b></button>
         <button class="nav-item" data-view="tunnels"><i>⇄</i><span>Tunnels</span><b>0</b></button>
+        <button class="nav-item" data-view="monitors"><i>⌁</i><span>Monitors</span><b id="monitor-count">0</b></button>
+        <button class="nav-item" data-view="fleet"><i>◫</i><span>Fleet Ops</span></button>
         <button class="nav-item" data-view="certificates"><i>◇</i><span>TLS Vault</span><b id="cert-count">0</b></button>
         <button class="nav-item" data-view="incidents"><i>⚠</i><span>Incidents</span><b class="danger">0</b></button>
         <button class="nav-item" data-view="terminal"><i>›_</i><span>SSH Command</span></button>
@@ -153,6 +155,18 @@
         <div class="server-grid" id="server-grid"></div>
       </section>
 
+      <section class="view" id="view-monitors">
+        <div class="section-toolbar"><div><span>Synthetic monitoring</span><strong>Network monitors</strong></div><div class="toolbar-actions"><button class="ghost-btn" id="run-all-monitors">RUN ALL</button><button class="primary-btn" id="add-monitor">＋ ADD MONITOR</button></div></div>
+        <div class="monitor-summary" id="monitor-summary"></div>
+        <div class="monitor-grid" id="monitor-grid"></div>
+      </section>
+
+      <section class="view" id="view-fleet">
+        <div class="section-toolbar"><div><span>Coordinated execution</span><strong>Fleet operations</strong></div><button class="primary-btn" id="add-fleet-operation">＋ NEW OPERATION</button></div>
+        <article class="panel fleet-hero"><div><span class="panel-kicker">CONTROLLED MULTI-NODE PLAYBOOKS</span><h2>One safe operation. Every selected Agent.</h2><p>Diagnostics, tunnel tests, managed service actions and Agent synchronization run through the existing allowlist.</p></div><span>FLEET</span></article>
+        <div class="fleet-list" id="fleet-list"></div>
+      </section>
+
       <section class="view" id="view-tunnels">
         <div class="section-toolbar"><div><span>Tunnel command</span><strong>DARK tunnel deployments</strong></div><div class="toolbar-actions"><button class="ghost-btn" id="run-all-tests">RUN TUNNEL TESTS</button><button class="primary-btn" data-create-tunnel>＋ CREATE TUNNEL</button></div></div>
         <div class="plugin-section-head"><div><span class="panel-kicker">TUNNEL PLUGIN STORE</span><h2>Deploy both sides. One command.</h2></div><span class="verified-badge">● LOCAL ALLOWLIST</span></div>
@@ -175,6 +189,11 @@
               <div class="diag waiting"><span>01</span><strong>LIVE STATE</strong><small>Waiting for Agent heartbeat</small></div>
             </div>
             <div class="remediation"><div><span class="live-dot"></span><p><strong>Monitoring standby</strong><small>No active recovery operation</small></p></div></div>
+            <form class="incident-note-form" id="incident-note-form">
+              <label>OPERATOR NOTE<textarea name="message" rows="2" placeholder="What was checked or changed?" required></textarea></label>
+              <div class="form-grid"><label>ROOT CAUSE<textarea name="root_cause" rows="2" placeholder="Optional root cause"></textarea></label><label>RESOLUTION<textarea name="resolution" rows="2" placeholder="Optional resolution"></textarea></label></div>
+              <button class="ghost-btn" type="submit">ADD TO TIMELINE</button>
+            </form>
           </article>
           <article class="panel timeline-panel">
             <div class="panel-head compact"><div><span class="panel-kicker">INCIDENT #0097</span><h2>Event timeline</h2></div><span class="recording"><i></i> RECORDING</span></div>
@@ -183,12 +202,13 @@
             </div>
           </article>
         </div>
+        <article class="panel incident-list-panel"><div class="panel-head compact"><div><span class="panel-kicker">INCIDENT ARCHIVE</span><h2>Active and resolved incidents</h2></div></div><div class="incident-list" id="incident-list"></div></article>
       </section>
 
       <section class="view" id="view-terminal">
         <div class="terminal-toolbar">
           <div class="connection-info"><span class="secure-dot"></span><div><small>SECURE SESSION</small><strong>Split command terminal</strong></div></div>
-          <div class="toolbar-actions terminal-connectors"><select id="ssh-node-select" aria-label="Select SSH server"><option value="">SELECT SERVER</option></select><button class="primary-btn" id="ssh-connect">CONNECT SSH</button><button class="ghost-btn" id="terminal-new-tab">NEW TAB</button><button class="ghost-btn" id="terminal-copy">COPY</button><button class="ghost-btn" id="terminal-paste">PASTE</button><button class="ghost-btn" id="terminal-fullscreen">FULLSCREEN</button><button class="danger-outline" id="disconnect">DISCONNECT</button></div>
+          <div class="toolbar-actions terminal-connectors"><select id="ssh-node-select" aria-label="Select SSH server"><option value="">SELECT SERVER</option></select><button class="primary-btn" id="ssh-connect" type="button">CONNECT SSH</button><button class="ghost-btn" id="terminal-new-tab" type="button">NEW TAB</button><button class="ghost-btn" id="terminal-copy" type="button">COPY</button><button class="ghost-btn" id="terminal-paste" type="button">PASTE</button><button class="ghost-btn" id="terminal-fullscreen" type="button">FULLSCREEN</button><button class="danger-outline" id="disconnect" type="button">DISCONNECT</button></div>
         </div>
         <div class="terminal-layout">
           <article class="terminal-card">
@@ -209,25 +229,31 @@
             <div class="file-ops-head"><span>⇧</span><div><small>LOCAL → SERVER</small><h2>Secure file upload</h2></div><b>ENCRYPTED SFTP</b></div>
             <form id="ssh-upload-form">
               <label>DESTINATION SERVER<select name="node_id" id="upload-node" required><option value="">SELECT SERVER</option></select></label>
-              <label>LOCAL FILE<input name="file" type="file" required /></label>
+              <label>LOCAL FILE<input name="file" type="file" required aria-describedby="upload-limit" /><small id="upload-limit">Maximum size is loading…</small></label>
               <label class="full-field">REMOTE PATH<input name="remote_path" required value="/root/" placeholder="/root/file.tar.gz" /><small>End with / to keep the original filename.</small></label>
               <label class="file-overwrite"><input name="overwrite" type="checkbox" /> REPLACE EXISTING FILE</label>
-              <div class="transfer-progress" id="upload-progress"><i></i><span>READY · Select a file</span></div>
-              <button class="primary-btn" type="submit">UPLOAD TO SERVER</button>
+              <div class="transfer-progress" id="upload-progress" role="progressbar" aria-live="polite" aria-atomic="true" aria-busy="false" aria-label="Upload status"><i></i><span>READY · Select a file</span></div>
+              <div class="transfer-actions"><button class="primary-btn" type="submit">UPLOAD TO SERVER</button><button class="danger-outline transfer-cancel" id="upload-cancel" type="button" hidden aria-label="Cancel file upload">CANCEL</button></div>
             </form>
           </article>
           <article class="panel file-ops-card relay-card">
-            <div class="file-ops-head"><span>⇄</span><div><small>SERVER → HUB RELAY → SERVER</small><h2>Cross-server transfer</h2></div><b>NO DIRECT SSH NEEDED</b></div>
+            <div class="file-ops-head"><span>⇄</span><div><small>SERVER → HUB RELAY → SERVER</small><h2>Cross-server transfer</h2></div><b>NO SERVER-TO-SERVER SSH</b></div>
             <form id="ssh-relay-form">
               <div class="form-grid"><label>SOURCE SERVER<select name="source_node_id" id="relay-source-node" required><option value="">SELECT SOURCE</option></select></label><label>SOURCE FILE<input name="source_path" required placeholder="/root/dark_core" /></label></div>
               <div class="relay-arrow">SECURE HUB STREAM <i>→</i></div>
               <div class="form-grid"><label>DESTINATION SERVER<select name="destination_node_id" id="relay-destination-node" required><option value="">SELECT DESTINATION</option></select></label><label>DESTINATION FILE<input name="destination_path" required placeholder="/root/dark_core" /></label></div>
               <label class="file-overwrite"><input name="overwrite" type="checkbox" /> REPLACE EXISTING FILE</label>
-              <div class="transfer-progress" id="relay-progress"><i></i><span>READY · Files stream through Hub memory</span></div>
-              <button class="primary-btn" type="submit">START SECURE TRANSFER</button>
+              <small class="transfer-limit" id="relay-limit">Maximum relay size is loading…</small>
+              <div class="transfer-progress" id="relay-progress" role="progressbar" aria-live="polite" aria-atomic="true" aria-busy="false" aria-label="Relay transfer status"><i></i><span>READY · Files stream through Hub memory</span></div>
+              <div class="transfer-actions"><button class="primary-btn" type="submit">START SECURE TRANSFER</button><button class="danger-outline transfer-cancel" id="relay-cancel" type="button" hidden aria-label="Cancel server relay transfer">CANCEL</button></div>
             </form>
           </article>
         </section>
+        <article class="panel file-manager">
+          <div class="file-manager-head"><div><span class="panel-kicker">REMOTE SFTP WORKSPACE</span><h2>Server File Manager</h2></div><div class="file-manager-nav"><select id="file-manager-node"><option value="">SELECT SERVER</option></select><button class="ghost-btn" id="file-manager-up">↑ UP</button><input id="file-manager-path" value="/root" aria-label="Remote directory" /><button class="primary-btn" id="file-manager-go">OPEN</button><button class="ghost-btn" id="file-manager-refresh">↻</button></div></div>
+          <div class="file-manager-actions"><button id="file-new-directory">＋ DIRECTORY</button><button id="file-download" disabled>DOWNLOAD</button><button id="file-edit" disabled>EDIT</button><button id="file-checksum" disabled>SHA-256</button><button id="file-rename" disabled>RENAME</button><button id="file-chmod" disabled>CHMOD</button><button class="danger" id="file-delete" disabled>DELETE</button><span id="file-selection">NO FILE SELECTED</span></div>
+          <div class="file-table"><div class="file-row file-head"><span>NAME</span><span>TYPE</span><span>SIZE</span><span>MODE</span><span>MODIFIED</span></div><div id="file-manager-rows"><div class="empty-state compact-empty"><strong>Select a server</strong>Browse remote files through pinned SFTP.</div></div></div>
+        </article>
       </section>
     </main>
   </div>
@@ -255,6 +281,22 @@
     <div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><div><span class="panel-kicker">TLS VAULT</span><h2>Issue Let's Encrypt certificate</h2></div><button class="modal-close certificate-close">×</button></div>
       <form id="certificate-form"><label>IRAN NODE<select name="node_id" id="certificate-node" required></select></label><label class="full-field">DOMAIN<input name="domain" required placeholder="tunnel.example.com" /></label><div class="security-note"><span>◇</span><p><strong>Automatic DNS preflight</strong><small>The domain must resolve to the selected Node. Port 80 must be reachable for ACME validation.</small></p></div><div class="modal-actions"><button type="button" class="ghost-btn certificate-close">CANCEL</button><button type="submit" class="primary-btn">CHECK DNS & ISSUE</button></div></form>
     </div>
+  </div>
+
+  <div class="modal-backdrop" id="monitor-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="monitor-title"><div class="modal-head"><div><span class="panel-kicker">SYNTHETIC CHECK</span><h2 id="monitor-title">Add network monitor</h2></div><button class="modal-close monitor-close">×</button></div>
+      <form id="monitor-form"><input type="hidden" name="monitor_id" /><div class="form-grid"><label>NAME<input name="name" required placeholder="API health" /></label><label>RUN FROM NODE<select name="node_id" required></select></label></div><div class="form-grid"><label>TYPE<select name="kind"><option value="icmp">ICMP / Ping</option><option value="tcp">TCP Port</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="dns">DNS</option><option value="tls">TLS Certificate</option><option value="snmp">SNMP v2c</option></select></label><label>TARGET<input name="target" required placeholder="example.com" /></label></div><div class="form-grid"><label>PORT<input name="port" type="number" min="1" max="65535" placeholder="Auto" /></label><label>EXPECTED HTTP STATUS<input name="expected_status" type="number" min="100" max="599" placeholder="Any below 500" /></label></div><div class="form-grid"><label>INTERVAL (SECONDS)<input name="interval_seconds" type="number" min="15" max="86400" value="60" required /></label><label>TIMEOUT (SECONDS)<input name="timeout_seconds" type="number" min="1" max="60" value="5" required /></label></div><div class="form-grid snmp-fields" hidden><label>SNMP COMMUNITY<input name="snmp_community" type="password" placeholder="Stored encrypted" /></label><label>SNMP OID<input name="snmp_oid" value=".1.3.6.1.2.1.1.3.0" /></label></div><label class="file-overwrite"><input name="enabled" type="checkbox" checked /> ENABLE AUTOMATIC CHECKS</label><div class="modal-actions"><button type="button" class="ghost-btn monitor-close">CANCEL</button><button type="submit" class="primary-btn">SAVE MONITOR</button></div></form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="fleet-modal" aria-hidden="true">
+    <div class="modal plugin-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-title"><div class="modal-head"><div><span class="panel-kicker">FLEET PLAYBOOK</span><h2 id="fleet-title">New fleet operation</h2></div><button class="modal-close fleet-close">×</button></div>
+      <form id="fleet-form"><label>OPERATION NAME<input name="name" value="NOC health sweep" required /></label><div class="form-grid"><label>PLAYBOOK<select name="kind"><option value="diagnostics">Diagnostics</option><option value="tunnel_test">Test every tunnel</option><option value="logs">Collect Agent logs</option><option value="service_status">Managed service status</option><option value="restart_service">Restart managed service</option><option value="configure_autoheal">Configure Auto-Heal</option><option value="sync_agent">Synchronize Agent</option></select></label><label>MANAGED SERVICE<input name="service" placeholder="backhaul@name.service" /></label></div><div class="form-grid fleet-autoheal" hidden><label>AUTO-HEAL<select name="autoheal_enabled"><option value="true">Enable</option><option value="false">Disable</option></select></label><label>COOLDOWN (SECONDS)<input name="cooldown_seconds" type="number" min="60" max="86400" value="300" /></label><label>MAX RESTARTS / HOUR<input name="max_restarts_per_hour" type="number" min="1" max="12" value="3" /></label></div><label>RUN AT <small>(leave empty to run now)</small><input name="scheduled_at" type="datetime-local" /></label><div class="fleet-node-picker" id="fleet-node-picker"></div><div class="security-note"><span>✓</span><p><strong>Allowlisted execution only</strong><small>No arbitrary shell command is accepted by Fleet Operations.</small></p></div><div class="modal-actions"><button type="button" class="ghost-btn fleet-close">CANCEL</button><button type="submit" class="primary-btn">QUEUE OPERATION</button></div></form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="file-editor-modal" aria-hidden="true">
+    <div class="output-panel file-editor-panel" role="dialog" aria-modal="true" aria-labelledby="file-editor-title"><div class="modal-head"><div><span class="panel-kicker">ATOMIC REMOTE EDITOR</span><h2 id="file-editor-title">Edit file</h2></div><button class="modal-close file-editor-close">×</button></div><textarea id="file-editor-content" spellcheck="false"></textarea><div class="modal-actions output-actions"><span id="file-editor-meta"></span><button class="ghost-btn file-editor-close">CANCEL</button><button class="primary-btn" id="file-editor-save">SAVE ATOMICALLY</button></div></div>
   </div>
 
   <div class="modal-backdrop" id="output-modal" aria-hidden="true">
@@ -322,6 +364,6 @@
   <script src="/static/vendor/xterm/addon-fit.js?v=0.10.0"></script>
   <script src="/static/vendor/xterm/addon-search.js?v=0.15.0"></script>
   <script src="/static/vendor/xterm/addon-web-links.js?v=0.11.0"></script>
-  <script src="/static/app.js?v=2.5.0"></script>
+  <script src="/static/app.js?v=2.6.0"></script>
 </body>
 </html>
