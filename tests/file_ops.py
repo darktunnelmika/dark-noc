@@ -703,8 +703,10 @@ def test_installer_and_release_guards() -> None:
     assert "git tag -a" in workflow
     assert "Moved unpublished owned tag" in workflow
     assert "Retargeted owned draft release" in workflow
+    assert "Removed outdated owned draft release" in workflow
     resolve = workflow[:publish_step]
-    assert "gh release create" in resolve and "--draft" in resolve and "--verify-tag" in resolve
+    assert 'gh api -X POST "repos/$GITHUB_REPOSITORY/releases" --input -' in resolve
+    assert "tag_name: $tag" in resolve and "draft: true" in resolve
     publish = workflow[publish_step:]
     upload_step = publish.find("gh release upload")
     asset_download_step = publish.find("-H 'Accept: application/octet-stream'")
@@ -715,6 +717,7 @@ def test_installer_and_release_guards() -> None:
     assert '(cd "$verify_dir" && sha256sum -c SHA256SUMS)' in publish
     assert 'releases/assets/$asset_id' in publish
     assert "Owned draft contains unexpected asset" in publish
+    assert "Removed owned orphan draft release" in publish
     assert "refusing to modify it" in workflow
 
     builder = (ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
