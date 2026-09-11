@@ -17,7 +17,7 @@ LOCAL_ENROLL_SECRET=""
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v1.7.0"
+echo "  Nightfall Command v2.5.0"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
@@ -68,7 +68,7 @@ then
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3 python3-venv python3-pip ca-certificates curl nginx openssl
+apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl iproute2 iputils-ping iptables
 for public_port in 80 443; do
   holder="$(ss -H -ltnp "sport = :$public_port" 2>/dev/null || true)"
   if [[ -n "$holder" && "$holder" != *nginx* ]]; then
@@ -202,7 +202,7 @@ done
 # Enroll and run a local Agent so the Hub server appears as a monitored node.
 LOCAL_AGENT_TOKEN="$(curl -fsS -X POST -H "X-Dark-Noc-Bootstrap: $LOCAL_ENROLL_SECRET" "http://127.0.0.1:$HUB_PORT/api/agent/local-enroll" | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_token"])')"
 install -d -m 0755 /opt/dark-noc-agent
-install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul
+install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
 install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc-agent/agent.py
 install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc-agent/requirements.txt
 python3 -m venv /opt/dark-noc-agent/venv

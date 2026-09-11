@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/darktunnelmika/dark-noc/security/advisories/new
+    about: Never disclose vulnerabilities or credentials in a public issue.
+  - name: Project maintainer
+    url: https://t.me/mikakhadm
+    about: Official project contact — @mikakhadm
+

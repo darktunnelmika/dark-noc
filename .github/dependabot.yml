@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /hub
+    schedule:
+      interval: monthly
+    reviewers: [darktunnelmika]
+  - package-ecosystem: pip
+    directory: /agent
+    schedule:
+      interval: monthly
+    reviewers: [darktunnelmika]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    reviewers: [darktunnelmika]

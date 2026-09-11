@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a focused NOC capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operational problem
+      description: What NOC workflow should become safer or faster?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Security and rollback considerations
+

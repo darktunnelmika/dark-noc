@@ -1,6 +1,10 @@
-# DARK NOC v1.7.0 — مرکز فرمان NOC
+# DARK NOC v2.5.0 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
+
+حالت Hybrid Pair Code سمت ایران را از پنل نصب می‌کند و برای سرور خارجی بدون SSH/Agent یک کد سازگار با مسیر عادی KHAREJ اسکریپت DARK Backhaul می‌سازد.
+
+بخش Tunnel Manager نصب بودن Core را خودکار تشخیص می‌دهد و ایجاد، شروع، توقف، ری‌استارت، لاگ، تست، ویرایش پورت/Profile/Transport و حذف هر تونل را مدیریت می‌کند.
 
 DARK NOC یک پنل NOC مستقل برای مانیتورینگ سرورهای لینوکسی، مدیریت رخدادها،
 کنترل سرویس‌ها، استقرار هماهنگ DARK Backhaul و اتصال SSH از داخل مرورگر است.
@@ -33,18 +37,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 - Incident، Auto-Heal و هشدار اختیاری تلگرام
 - SSH مرورگری با رمزنگاری اطلاعات ورود و Pin شدن Host Key
 - ترمینال کامل xterm.js با ANSI/VT، دو نشست هم‌زمان، تغییر اندازه PTY، جست‌وجو، کلیپ‌بورد، تمام‌صفحه و ذخیره لاگ
+- آپلود مستقیم فایل از مرورگر به سرور با SFTP، نمایش پیشرفت و نوشتن اتمیک
+- انتقال فایل بین دو سرور از مسیر امن Hub، بدون نیاز به دسترسی SSH مستقیم بین آن‌ها
 - نصب HTTPS خودکار با دامنه یا گواهی رمزنگاری‌شده برای IP
 - ساخت خودکار نام کاربری و رمز اولیه قوی
 - نصب جداگانه Hub و Node و حفظ تونل‌های قبلی سرور
 
-در نسخه فعلی فقط افزونه **DARK Backhaul** در بخش تونل نمایش داده می‌شود.
+در نسخه فعلی افزونه‌های **DARK Backhaul**، **DARK Ghost Pro** و **DARK Packet Pro** در بخش تونل ارائه می‌شوند. Packet Pro جهت واقعی متفاوتی دارد: ایران Client و خارج Server است؛ پنل در حالت Pair Code سمت ایران را می‌سازد و کد `DPP-N1` را برای اسکریپت خارج تحویل می‌دهد.
+
+بخش **TLS Vault** دامنه را با IP نود ایران تطبیق می‌دهد، گواهی Let's Encrypt را توسط Agent روی همان سرور دریافت می‌کند و ۳۰ روز مانده به انقضا تمدید را خودکار در صف قرار می‌دهد. کلید خصوصی به مرورگر یا Pair Code ارسال نمی‌شود. هنگام انتخاب ترنسپورت TLS/WSS/H2/gRPC فقط گواهی معتبر همان نود قابل انتخاب است.
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v1.7.0.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v2.5.0.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v1.7.0.tar.gz
+tar -xzf DARK-NOC-HUB-v2.5.0.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -55,18 +63,21 @@ sudo bash install-hub.sh
 
 ## نصب Node
 
-داخل پنل ابتدا **ADD SERVER** را بزنید و Token یک‌بارمصرف آن سرور را بردارید.
-سپس فایل `DARK-NOC-NODE-v1.7.0.tar.gz` را روی همان Node اجرا کنید:
+فایل `DARK-NOC-NODE-v2.5.0.tar.gz` را روی Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v1.7.0.tar.gz
+tar -xzf DARK-NOC-NODE-v2.5.0.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh
 ```
 
-آدرس HTTPS هاب و Token همان Node را وارد کنید. نصب Node فقط Agent و پیش‌نیازها
-را نصب می‌کند و تونل‌های قبلی را تغییر نمی‌دهد.
+نصاب Node هیچ آدرس Hub یا Tokenی نمی‌پرسد؛ فقط پیش‌نیازها و SSH را آماده می‌کند
+و تونل‌های قبلی را تغییر نمی‌دهد. بعد از پایان، در پنل **ADD NODE** را بزنید و
+IP، پورت SSH و رمز root یا Private Key را وارد کنید. Hub به‌صورت خودکار Agent،
+Token خصوصی و TLS را روی Node تنظیم می‌کند و تا دریافت اولین Heartbeat منتظر می‌ماند.
+وضعیت در کارت سرور نمایش داده می‌شود؛ برای خطا **INSTALL LOG** و سپس
+**RETRY INSTALL** را استفاده کنید.
 
 ## ارتقا
 
@@ -74,7 +85,7 @@ sudo bash install-node.sh
 # روی Hub
 sudo bash upgrade.sh hub
 
-# روی Node با بسته جدید Node
+# روی Node فقط برای تازه‌سازی پیش‌نیازها
 sudo bash install-node.sh
 ```
 
@@ -85,7 +96,7 @@ sudo bash install-node.sh
 
 - پورت داخلی Hub فقط روی `127.0.0.1` گوش می‌دهد.
 - برای Node راه‌دور فقط HTTPS پذیرفته می‌شود.
-- Token هر Node محرمانه و مستقل است.
+- Token هر Node محرمانه و مستقل است و توسط Hub ساخته و مستقیم روی Node تنظیم می‌شود.
 - کلید یا رمز SSH هیچ‌وقت به مرورگر بازگردانده نمی‌شود.
 - گزارش آسیب‌پذیری را عمومی نکنید؛ از بخش Security Advisory گیت‌هاب استفاده کنید.
 

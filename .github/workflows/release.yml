@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches source version
+        run: |
+          source_version="$(sed -n 's/^VERSION = "\([0-9][0-9.]*\)"$/\1/p' hub/app.py)"
+          test "v$source_version" = "$GITHUB_REF_NAME"
+      - name: Build packages
+        run: scripts/build-release.sh
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            dist/DARK-NOC-HUB-"$GITHUB_REF_NAME".tar.gz
+            dist/DARK-NOC-NODE-"$GITHUB_REF_NAME".tar.gz
+            dist/SHA256SUMS
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "DARK NOC $GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "DARK NOC $GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md
+          fi

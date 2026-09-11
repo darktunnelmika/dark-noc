@@ -1,0 +1,23 @@
+[Unit]
+Description=DARK NOC Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=darknoc
+Group=darknoc
+WorkingDirectory=/opt/dark-noc/hub
+EnvironmentFile=/etc/dark-noc/hub.env
+ExecStart=/opt/dark-noc/venv/bin/uvicorn app:app --host 127.0.0.1 --port ${DARK_NOC_HUB_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dark-noc
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
