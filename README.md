@@ -1,4 +1,4 @@
-# DARK NOC Hub v2.5.0 — Nightfall Command
+# DARK NOC Hub v2.6.0 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
@@ -19,22 +19,27 @@ bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main
 ```
 
 The bootstrapper downloads the latest stable GitHub Release and verifies its
-SHA-256 checksum before starting the interactive installer.
+SHA-256 checksum before starting. On an existing Hub it automatically uses the
+package's rollback-protected upgrade path; on a new server it starts the fresh
+interactive installer.
 
 ## Included
 
 - Central FastAPI Hub with SQLite/WAL storage
 - Lightweight Python Agent for Ubuntu/Debian nodes
 - CPU, RAM, swap, disk, load, bandwidth, uptime and connection telemetry
+- Inode, temperature, disk-I/O, interface error/drop, OS update/reboot and Docker-health telemetry
+- Agent-based ICMP, TCP, HTTP, HTTPS, DNS, TLS-expiry and encrypted SNMP monitoring
 - Tunnel process and TCP path checks
-- Incident creation and automatic resolution
+- Incident Center with timeline, notes, acknowledgement, root cause, resolution, reopen and automatic recovery
 - Optional Telegram incident and recovery alerts
 - Allowlisted remote diagnostics and service restarts
 - Auto-Heal with cooldown and hourly restart limits
 - Interactive SSH over authenticated WebSocket
 - Full xterm.js SSH console with ANSI/VT support, two concurrent sessions, PTY resize, search, clipboard, fullscreen and log export
-- Browser-to-server file upload over pinned SFTP with real upload progress, size limits and atomic destination writes
+- Browser-to-server file upload over pinned SFTP with real progress, size limits, atomic POSIX replacement on OpenSSH and a recoverable fallback on older SFTP servers
 - Cross-server SFTP relay through the Hub, requiring no direct SSH path between the two Nodes
+- Remote SFTP File Manager with browsing, atomic UTF-8 editing, download, SHA-256, mkdir, rename, chmod and guarded deletion
 - Encrypted SSH credentials at rest
 - Scrypt passwords, HTTP-only sessions and audit logs
 - Responsive NIGHTFALL command interface
@@ -42,6 +47,7 @@ SHA-256 checksum before starting the interactive installer.
 - Random strong first-login credentials and in-panel username/password change
 - Hub bound privately to a chosen or randomly generated localhost port behind Nginx
 - Controlled iperf3 speed tests through a fixed configured endpoint
+- Fleet Operations for safe multi-Node diagnostics, tunnel tests, logs, managed-service actions, Auto-Heal and bounded Agent sync
 - Extensible Tunnel Plugin Store with coordinated two-node deployment
 - Hybrid DARK Backhaul Pair Code mode for KHAREJ servers without SSH or an Agent
 - Native DARK Packet Pro plugin with managed IRAN-client/KHAREJ-server deployment and DPP-N1 Pair Code mode
@@ -56,6 +62,7 @@ SHA-256 checksum before starting the interactive installer.
 - Automatic stale tunnel cleanup and offline-node exclusion from live aggregates
 - Safe Agent systemd write paths for real tunnel/plugin configuration
 - Recoverable plugin retry and coordinated two-node removal
+- Hourly metric rollups, configurable retention, readiness/runtime health endpoints and a renewable single-controller lease for multi-process safety
 - Job leases with crash recovery and atomic Agent job claiming
 - Debounced incidents to prevent flapping alerts
 - Live systemd service inventory, security headers and login rate limiting
@@ -102,7 +109,7 @@ Use the separate `DARK-NOC-NODE` archive on monitored servers. It installs only 
 
 The Node installer asks for no Hub URL and no enrollment token. After it finishes, open the Hub panel, select **ADD NODE**, choose Iran Edge or Global Exit, and enter the Node IP, SSH port plus root password or private key. The Hub installs and configures the Agent remotely, creates its private enrollment token, applies the correct TLS trust and waits for the first heartbeat. Progress and actionable errors appear on the server card under **INSTALL LOG**; use **RETRY INSTALL** after fixing the reported issue.
 
-Running `install-node.sh` again only refreshes prerequisites. Agent updates and configuration are controlled by the Hub while preserving tunnel, service and Auto-Heal rules. Remote Hub addresses always use HTTPS.
+Running `install-node.sh` again only refreshes prerequisites. Agent updates and configuration are controlled by the Hub while preserving tunnel, service and Auto-Heal rules. After a Hub upgrade, use **SYNC AGENT** on each remote server card to deploy the matching Agent and hardened service unit. Remote Hub addresses always use HTTPS.
 
 For a self-signed IP certificate, the Hub securely copies its exact certificate to the Node and configures certificate pinning instead of disabling TLS verification.
 
@@ -155,13 +162,12 @@ journalctl -u dark-noc-agent -f
 
 ## Upgrade an existing installation
 
-Extract the new archive, enter `dark-noc-pro`, then run:
+The recommended command detects the existing Hub, downloads and verifies the latest release, then enters the rollback-protected upgrade path automatically:
 
 ```bash
-sudo bash upgrade.sh hub
-sudo bash upgrade.sh agent
+bash <(curl -fsSL https://raw.githubusercontent.com/darktunnelmika/dark-noc/main/install.sh) hub
 ```
 
-Agent configuration, Hub database, credentials and telemetry are preserved. A Hub upgrade asks for the desired domain/IP again, rebuilds the Nginx HTTPS configuration, obtains the domain certificate when required, and disables obsolete uvicorn systemd overrides after keeping a backup.
+For an archive already downloaded and verified, run `sudo bash upgrade.sh hub`. Hub database, credentials, Nodes and telemetry are preserved. A Hub upgrade asks for the desired domain/IP again, rebuilds the Nginx HTTPS configuration, obtains the domain certificate when required, and disables obsolete uvicorn systemd overrides after keeping a backup.
 
-If an upgraded Agent still points to a legacy HTTP `:9090` URL, edit that Node in the panel, make sure its root SSH credentials are present, then select **RETRY INSTALL**. The Hub migrates it to HTTPS automatically.
+Afterward, select **SYNC AGENT** on every remote Node with SSH credentials. This deploys the matching Agent version and service sandbox while preserving its tunnel, service and Auto-Heal rules. If a Node still points to a legacy HTTP `:9090` URL, the same action migrates it to HTTPS automatically.
