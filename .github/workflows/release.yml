@@ -48,7 +48,6 @@ jobs:
             release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
             release_id="$(jq -r .id <<< "$release")"
             is_draft="$(jq -r .draft <<< "$release")"
-            release_target="$(jq -r .target_commitish <<< "$release")"
             release_body="$(jq -r '.body // ""' <<< "$release")"
             if [[ "$is_draft" == false ]]; then
               echo "Published release $release_tag already exists; nothing to change."
@@ -56,7 +55,7 @@ jobs:
               exit 0
             fi
             release_owned_target="$(sed -n "s#.*<!-- dark-noc-release:${release_tag}:\([0-9a-f]\{40\}\) -->.*#\1#p" <<< "$release_body" | tail -n 1)"
-            if [[ -z "$release_owned_target" || "$release_target" != "$release_owned_target" ]]; then
+            if [[ -z "$release_owned_target" ]]; then
               echo "Draft $release_tag is not an owned DARK NOC transaction; refusing to modify it." >&2
               exit 1
             fi
@@ -77,8 +76,8 @@ jobs:
               exit 1
             fi
             if [[ "$tag_target" != "$target_sha" ]]; then
-              if [[ -z "$release_id" || "$release_owned_target" != "$tag_target" ]]; then
-                echo "Existing tag and owned draft do not agree; refusing to move the tag." >&2
+              if [[ -z "$release_id" ]]; then
+                echo "Existing owned tag has no recoverable draft; refusing to move the tag." >&2
                 exit 1
               fi
               git tag -d "$release_tag"
@@ -104,13 +103,11 @@ jobs:
           if [[ -n "$release_id" && "$release_owned_target" != "$target_sha" ]]; then
             notes_file="$(mktemp)"
             { cat RELEASE_NOTES.md; printf '\n\n%s\n' "$marker"; } > "$notes_file"
-            jq -n --arg target "$target_sha" --rawfile body "$notes_file" \
-              '{target_commitish: $target, body: $body}' | \
+            jq -n --rawfile body "$notes_file" '{body: $body}' | \
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input - >/dev/null
             release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")"
-            release_target="$(jq -r .target_commitish <<< "$release")"
             release_body="$(jq -r '.body // ""' <<< "$release")"
-            if [[ "$(jq -r .draft <<< "$release")" != true || "$release_target" != "$target_sha" || "$release_body" != *"$marker"* ]]; then
+            if [[ "$(jq -r .draft <<< "$release")" != true || "$release_body" != *"$marker"* ]]; then
               echo "Could not retarget the owned draft transaction." >&2
               exit 1
             fi
@@ -200,8 +197,11 @@ jobs:
           release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
           [[ "$(jq -r .tag_name <<< "$release")" == "$RELEASE_TAG" ]]
           [[ "$(jq -r .draft <<< "$release")" == true ]]
-          [[ "$(jq -r .target_commitish <<< "$release")" == "$TARGET_SHA" ]]
           [[ "$(jq -r '.body // ""' <<< "$release")" == *"$RELEASE_MARKER"* ]]
+          tag_target="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          tag_type="$(git cat-file -t "refs/tags/$RELEASE_TAG")"
+          tag_message="$(git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG")"
+          [[ "$tag_target" == "$TARGET_SHA" && "$tag_type" == tag && "$tag_message" == *"$RELEASE_MARKER"* ]]
 
           for asset in "${assets[@]}"; do test -f "$asset"; done
           expected_checksum_names="$(printf '%s\n' "${expected_archives[@]}" | LC_ALL=C sort)"
