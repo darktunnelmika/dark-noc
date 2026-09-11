@@ -40,7 +40,7 @@ jobs:
             exit 1
           fi
 
-          all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+          all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
           release_count="$(jq --arg tag "$release_tag" '[.[] | select(.tag_name == $tag)] | length' <<< "$all_releases")"
           [[ "$release_count" -le 1 ]] || { echo "More than one release uses $release_tag." >&2; exit 1; }
           if [[ "$release_count" == 1 ]]; then
@@ -93,7 +93,7 @@ jobs:
             { cat RELEASE_NOTES.md; printf '\n\n%s\n' "$marker"; } > "$notes_file"
             if ! gh release create "$release_tag" --draft --verify-tag --target "$target_sha" \
               --title "DARK NOC $release_tag" --notes-file "$notes_file"; then
-              all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+              all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
               release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
               [[ -n "$release" ]] || { echo "Draft creation failed and no recoverable draft exists." >&2; exit 1; }
               release_id="$(jq -r .id <<< "$release")"
@@ -105,7 +105,7 @@ jobs:
                 exit 1
               fi
             else
-              all_releases="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'add')"
+              all_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add')"
               release="$(jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<< "$all_releases")"
               release_id="$(jq -r .id <<< "$release")"
               [[ "$release_id" =~ ^[0-9]+$ ]] || { echo "Could not prove ownership of the new draft." >&2; exit 1; }
