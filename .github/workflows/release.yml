@@ -76,10 +76,6 @@ jobs:
               exit 1
             fi
             if [[ "$tag_target" != "$target_sha" ]]; then
-              if [[ -z "$release_id" ]]; then
-                echo "Existing owned tag has no recoverable draft; refusing to move the tag." >&2
-                exit 1
-              fi
               git tag -d "$release_tag"
               git tag -a "$release_tag" "$target_sha" -m "DARK NOC $release_tag" -m "$marker"
               git push --force origin "refs/tags/$release_tag:refs/tags/$release_tag"
