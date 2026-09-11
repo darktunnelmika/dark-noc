@@ -13,19 +13,137 @@ PUBLIC_HOST="${DARK_NOC_PUBLIC_HOST:-}"
 HUB_PORT="${DARK_NOC_HUB_PORT:-}"
 TELEGRAM_BOT_TOKEN="${DARK_NOC_TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${DARK_NOC_TELEGRAM_CHAT_ID:-}"
+SSH_UPLOAD_LIMIT_MB="${DARK_NOC_SSH_UPLOAD_LIMIT_MB:-}"
+SSH_RELAY_LIMIT_MB="${DARK_NOC_SSH_RELAY_LIMIT_MB:-}"
+SSH_TRANSFER_CONCURRENCY="${DARK_NOC_SSH_TRANSFER_CONCURRENCY:-}"
+SSH_TRANSFER_TIMEOUT_SECONDS="${DARK_NOC_SSH_TRANSFER_TIMEOUT_SECONDS:-}"
+SSH_IDLE_TIMEOUT_SECONDS="${DARK_NOC_SSH_IDLE_TIMEOUT_SECONDS:-}"
+SSH_KEEPALIVE_INTERVAL_SECONDS="${DARK_NOC_SSH_KEEPALIVE_INTERVAL_SECONDS:-}"
+SSH_KEEPALIVE_COUNT_MAX="${DARK_NOC_SSH_KEEPALIVE_COUNT_MAX:-}"
+SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS="${DARK_NOC_SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS:-}"
+PROVISION_TIMEOUT_SECONDS="${DARK_NOC_PROVISION_TIMEOUT_SECONDS:-}"
+PROVISION_CONCURRENCY="${DARK_NOC_PROVISION_CONCURRENCY:-}"
+SSH_EDITOR_LIMIT_KB="${DARK_NOC_SSH_EDITOR_LIMIT_KB:-}"
+MONITOR_RETENTION_DAYS="${DARK_NOC_MONITOR_RETENTION_DAYS:-}"
+METRIC_RETENTION_DAYS="${DARK_NOC_METRIC_RETENTION_DAYS:-}"
+ROLLUP_RETENTION_DAYS="${DARK_NOC_ROLLUP_RETENTION_DAYS:-}"
+HUB_LEASE_SECONDS="${DARK_NOC_HUB_LEASE_SECONDS:-}"
+DATA_DIR="${DARK_NOC_DATA:-}"
 LOCAL_ENROLL_SECRET=""
+
+validate_data_dir() {
+  local candidate="$1" normalized
+  if [[ ! "$candidate" =~ ^(/[A-Za-z0-9._+@:-]+)+/?$ ]]; then
+    echo "DARK_NOC_DATA must be a dedicated absolute directory without spaces." >&2
+    return 1
+  fi
+  normalized="$(realpath -m -- "$candidate")"
+  if [[ ! "$normalized" =~ ^(/[A-Za-z0-9._+@:-]+)+$ ]]; then
+    echo "DARK_NOC_DATA resolves to an unsupported path: $normalized" >&2
+    return 1
+  fi
+  case "$normalized" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib32|/lib64|/proc|/root|/run|/sbin|/sys|/tmp|/usr|/var|/var/lib)
+      echo "DARK_NOC_DATA is too broad or protected: $normalized" >&2
+      return 1
+      ;;
+    /bin/*|/boot/*|/dev/*|/etc/*|/home/*|/lib/*|/lib32/*|/lib64/*|/proc/*|/root/*|/run/*|/sbin/*|/sys/*|/tmp/*|/usr/*)
+      echo "DARK_NOC_DATA cannot be placed under a protected system/runtime directory: $normalized" >&2
+      return 1
+      ;;
+  esac
+  if [[ -e "$normalized" && ! -d "$normalized" ]]; then
+    echo "DARK_NOC_DATA is not a directory: $normalized" >&2
+    return 1
+  fi
+  printf '%s' "$normalized"
+}
+
+validate_integer_setting() {
+  local name="$1" value="$2" minimum="$3" maximum="$4"
+  if [[ ! "$value" =~ ^[1-9][0-9]{0,5}$ ]] || (( 10#$value < minimum || 10#$value > maximum )); then
+    echo "$name must be a whole number from $minimum to $maximum." >&2
+    return 1
+  fi
+}
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.5.0"
+echo "  Nightfall Command v2.6.0"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
 DEFAULT_PUBLIC_HOST="$SERVER_IP"
 if [[ -f /etc/dark-noc/hub.env ]]; then
   saved_public_host="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PUBLIC_HOST:-}"' _ /etc/dark-noc/hub.env)"
+  saved_upload_limit="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_UPLOAD_LIMIT_MB:-}"' _ /etc/dark-noc/hub.env)"
+  saved_relay_limit="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_RELAY_LIMIT_MB:-}"' _ /etc/dark-noc/hub.env)"
+  saved_transfer_concurrency="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_TRANSFER_CONCURRENCY:-}"' _ /etc/dark-noc/hub.env)"
+  saved_transfer_timeout="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_TRANSFER_TIMEOUT_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_idle_timeout="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_IDLE_TIMEOUT_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_keepalive_interval="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_KEEPALIVE_INTERVAL_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_keepalive_count="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_KEEPALIVE_COUNT_MAX:-}"' _ /etc/dark-noc/hub.env)"
+  saved_upload_queue_timeout="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_provision_timeout="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PROVISION_TIMEOUT_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_provision_concurrency="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PROVISION_CONCURRENCY:-}"' _ /etc/dark-noc/hub.env)"
+  saved_editor_limit="$(bash -c 'source "$1"; printf %s "${DARK_NOC_SSH_EDITOR_LIMIT_KB:-}"' _ /etc/dark-noc/hub.env)"
+  saved_monitor_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_MONITOR_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_metric_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_METRIC_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_rollup_retention="$(bash -c 'source "$1"; printf %s "${DARK_NOC_ROLLUP_RETENTION_DAYS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_hub_lease="$(bash -c 'source "$1"; printf %s "${DARK_NOC_HUB_LEASE_SECONDS:-}"' _ /etc/dark-noc/hub.env)"
+  saved_data_dir="$(bash -c 'source "$1"; printf %s "${DARK_NOC_DATA:-}"' _ /etc/dark-noc/hub.env)"
   [[ -z "$saved_public_host" ]] || DEFAULT_PUBLIC_HOST="$saved_public_host"
+  [[ -n "$SSH_UPLOAD_LIMIT_MB" ]] || SSH_UPLOAD_LIMIT_MB="$saved_upload_limit"
+  [[ -n "$SSH_RELAY_LIMIT_MB" ]] || SSH_RELAY_LIMIT_MB="$saved_relay_limit"
+  [[ -n "$SSH_TRANSFER_CONCURRENCY" ]] || SSH_TRANSFER_CONCURRENCY="$saved_transfer_concurrency"
+  [[ -n "$SSH_TRANSFER_TIMEOUT_SECONDS" ]] || SSH_TRANSFER_TIMEOUT_SECONDS="$saved_transfer_timeout"
+  [[ -n "$SSH_IDLE_TIMEOUT_SECONDS" ]] || SSH_IDLE_TIMEOUT_SECONDS="$saved_idle_timeout"
+  [[ -n "$SSH_KEEPALIVE_INTERVAL_SECONDS" ]] || SSH_KEEPALIVE_INTERVAL_SECONDS="$saved_keepalive_interval"
+  [[ -n "$SSH_KEEPALIVE_COUNT_MAX" ]] || SSH_KEEPALIVE_COUNT_MAX="$saved_keepalive_count"
+  [[ -n "$SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS" ]] || SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS="$saved_upload_queue_timeout"
+  [[ -n "$PROVISION_TIMEOUT_SECONDS" ]] || PROVISION_TIMEOUT_SECONDS="$saved_provision_timeout"
+  [[ -n "$PROVISION_CONCURRENCY" ]] || PROVISION_CONCURRENCY="$saved_provision_concurrency"
+  [[ -n "$SSH_EDITOR_LIMIT_KB" ]] || SSH_EDITOR_LIMIT_KB="$saved_editor_limit"
+  [[ -n "$MONITOR_RETENTION_DAYS" ]] || MONITOR_RETENTION_DAYS="$saved_monitor_retention"
+  [[ -n "$METRIC_RETENTION_DAYS" ]] || METRIC_RETENTION_DAYS="$saved_metric_retention"
+  [[ -n "$ROLLUP_RETENTION_DAYS" ]] || ROLLUP_RETENTION_DAYS="$saved_rollup_retention"
+  [[ -n "$HUB_LEASE_SECONDS" ]] || HUB_LEASE_SECONDS="$saved_hub_lease"
+  # Existing installations retain their data location. Moving the database and
+  # master key requires a separate explicit migration, never a routine upgrade.
+  [[ -z "$saved_data_dir" ]] || DATA_DIR="$saved_data_dir"
 fi
+SSH_UPLOAD_LIMIT_MB="${SSH_UPLOAD_LIMIT_MB:-1024}"
+SSH_RELAY_LIMIT_MB="${SSH_RELAY_LIMIT_MB:-20480}"
+SSH_TRANSFER_CONCURRENCY="${SSH_TRANSFER_CONCURRENCY:-4}"
+SSH_TRANSFER_TIMEOUT_SECONDS="${SSH_TRANSFER_TIMEOUT_SECONDS:-86400}"
+SSH_IDLE_TIMEOUT_SECONDS="${SSH_IDLE_TIMEOUT_SECONDS:-60}"
+SSH_KEEPALIVE_INTERVAL_SECONDS="${SSH_KEEPALIVE_INTERVAL_SECONDS:-15}"
+SSH_KEEPALIVE_COUNT_MAX="${SSH_KEEPALIVE_COUNT_MAX:-3}"
+SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS="${SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS:-30}"
+PROVISION_TIMEOUT_SECONDS="${PROVISION_TIMEOUT_SECONDS:-1800}"
+PROVISION_CONCURRENCY="${PROVISION_CONCURRENCY:-4}"
+SSH_EDITOR_LIMIT_KB="${SSH_EDITOR_LIMIT_KB:-1024}"
+MONITOR_RETENTION_DAYS="${MONITOR_RETENTION_DAYS:-90}"
+METRIC_RETENTION_DAYS="${METRIC_RETENTION_DAYS:-31}"
+ROLLUP_RETENTION_DAYS="${ROLLUP_RETENTION_DAYS:-730}"
+HUB_LEASE_SECONDS="${HUB_LEASE_SECONDS:-75}"
+DATA_DIR="$(validate_data_dir "${DATA_DIR:-/var/lib/dark-noc}")"
+validate_integer_setting DARK_NOC_SSH_UPLOAD_LIMIT_MB "$SSH_UPLOAD_LIMIT_MB" 1 102400
+validate_integer_setting DARK_NOC_SSH_RELAY_LIMIT_MB "$SSH_RELAY_LIMIT_MB" 1 102400
+validate_integer_setting DARK_NOC_SSH_TRANSFER_CONCURRENCY "$SSH_TRANSFER_CONCURRENCY" 1 32
+validate_integer_setting DARK_NOC_SSH_TRANSFER_TIMEOUT_SECONDS "$SSH_TRANSFER_TIMEOUT_SECONDS" 30 86400
+validate_integer_setting DARK_NOC_SSH_IDLE_TIMEOUT_SECONDS "$SSH_IDLE_TIMEOUT_SECONDS" 5 3600
+validate_integer_setting DARK_NOC_SSH_KEEPALIVE_INTERVAL_SECONDS "$SSH_KEEPALIVE_INTERVAL_SECONDS" 1 300
+validate_integer_setting DARK_NOC_SSH_KEEPALIVE_COUNT_MAX "$SSH_KEEPALIVE_COUNT_MAX" 1 20
+validate_integer_setting DARK_NOC_SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS "$SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS" 1 300
+validate_integer_setting DARK_NOC_PROVISION_TIMEOUT_SECONDS "$PROVISION_TIMEOUT_SECONDS" 60 7200
+validate_integer_setting DARK_NOC_PROVISION_CONCURRENCY "$PROVISION_CONCURRENCY" 1 32
+validate_integer_setting DARK_NOC_SSH_EDITOR_LIMIT_KB "$SSH_EDITOR_LIMIT_KB" 16 16384
+validate_integer_setting DARK_NOC_MONITOR_RETENTION_DAYS "$MONITOR_RETENTION_DAYS" 7 730
+validate_integer_setting DARK_NOC_METRIC_RETENTION_DAYS "$METRIC_RETENTION_DAYS" 1 365
+validate_integer_setting DARK_NOC_ROLLUP_RETENTION_DAYS "$ROLLUP_RETENTION_DAYS" 30 3650
+validate_integer_setting DARK_NOC_HUB_LEASE_SECONDS "$HUB_LEASE_SECONDS" 30 300
+NGINX_UPLOAD_LIMIT_MB=$((10#$SSH_UPLOAD_LIMIT_MB + 1))
 if [[ -z "$PUBLIC_HOST" ]]; then
   read -r -p "Panel domain or public IP [$DEFAULT_PUBLIC_HOST]: " input_host
   PUBLIC_HOST="${input_host:-$DEFAULT_PUBLIC_HOST}"
@@ -33,6 +151,19 @@ fi
 PUBLIC_HOST="${PUBLIC_HOST#http://}"; PUBLIC_HOST="${PUBLIC_HOST#https://}"; PUBLIC_HOST="${PUBLIC_HOST%%/*}"
 if [[ ! "$PUBLIC_HOST" =~ ^([A-Za-z0-9.-]+|[0-9A-Fa-f:]+)$ ]]; then
   echo "Invalid domain or IP: $PUBLIC_HOST"; exit 1
+fi
+if [[ "$PUBLIC_HOST" == *:* ]]; then
+  if ! python3 - "$PUBLIC_HOST" <<'PY'
+import ipaddress, sys
+raise SystemExit(0 if isinstance(ipaddress.ip_address(sys.argv[1]), ipaddress.IPv6Address) else 1)
+PY
+  then
+    echo "Invalid IPv6 address: $PUBLIC_HOST"
+    exit 1
+  fi
+  PUBLIC_URL_HOST="[$PUBLIC_HOST]"
+else
+  PUBLIC_URL_HOST="$PUBLIC_HOST"
 fi
 OLD_HUB_PORT="9090"
 if [[ -f /etc/dark-noc/hub.env ]]; then
@@ -68,7 +199,7 @@ then
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl iproute2 iputils-ping iptables
+apt-get install -y python3 python3-venv python3-pip ca-certificates curl tar nginx openssl certbot python3-certbot-nginx iproute2 iputils-ping iptables iperf3 snmp
 for public_port in 80 443; do
   holder="$(ss -H -ltnp "sport = :$public_port" 2>/dev/null || true)"
   if [[ -n "$holder" && "$holder" != *nginx* ]]; then
@@ -81,9 +212,11 @@ done
 LOCAL_ENROLL_SECRET="$(openssl rand -hex 32)"
 EXISTING_ACCOUNT=0
 OLD_PUBLIC_HOST=""
-if [[ -s /var/lib/dark-noc/dark-noc.db ]] && python3 - <<'PY' >/dev/null 2>&1
+DB_PATH="$DATA_DIR/dark-noc.db"
+if [[ -s "$DB_PATH" ]] && python3 - "$DB_PATH" <<'PY' >/dev/null 2>&1
 import sqlite3
-c=sqlite3.connect('/var/lib/dark-noc/dark-noc.db')
+import sys
+c=sqlite3.connect(sys.argv[1])
 raise SystemExit(0 if c.execute("SELECT 1 FROM users LIMIT 1").fetchone() else 1)
 PY
 then EXISTING_ACCOUNT=1; fi
@@ -100,7 +233,7 @@ if [[ ${#ADMIN_PASSWORD} -lt 10 ]]; then
 fi
 
 id darknoc >/dev/null 2>&1 || useradd --system --home /var/lib/dark-noc --shell /usr/sbin/nologin darknoc
-install -d -m 0750 -o darknoc -g darknoc /opt/dark-noc/hub /var/lib/dark-noc
+install -d -m 0750 -o darknoc -g darknoc /opt/dark-noc/hub "$DATA_DIR"
 install -d -m 0750 -o root -g darknoc /etc/dark-noc
 cp -a "$SCRIPT_DIR/hub/." /opt/dark-noc/hub/
 python3 -m venv /opt/dark-noc/venv
@@ -110,16 +243,37 @@ umask 0077
 {
   printf 'DARK_NOC_ADMIN_USER=%q\n' "$ADMIN_USER"
   printf 'DARK_NOC_ADMIN_PASSWORD=%q\n' "$ADMIN_PASSWORD"
-  printf 'DARK_NOC_DATA=%q\n' "/var/lib/dark-noc"
+  printf 'DARK_NOC_DATA=%q\n' "$DATA_DIR"
   printf 'DARK_NOC_COOKIE_SECURE=%q\n' "1"
   printf 'DARK_NOC_PUBLIC_HOST=%q\n' "$PUBLIC_HOST"
   printf 'DARK_NOC_HUB_PORT=%q\n' "$HUB_PORT"
   printf 'DARK_NOC_TELEGRAM_BOT_TOKEN=%q\n' "$TELEGRAM_BOT_TOKEN"
   printf 'DARK_NOC_TELEGRAM_CHAT_ID=%q\n' "$TELEGRAM_CHAT_ID"
   printf 'DARK_NOC_LOCAL_ENROLL_SECRET=%q\n' "$LOCAL_ENROLL_SECRET"
+  printf 'DARK_NOC_SSH_UPLOAD_LIMIT_MB=%q\n' "$SSH_UPLOAD_LIMIT_MB"
+  printf 'DARK_NOC_SSH_RELAY_LIMIT_MB=%q\n' "$SSH_RELAY_LIMIT_MB"
+  printf 'DARK_NOC_SSH_TRANSFER_CONCURRENCY=%q\n' "$SSH_TRANSFER_CONCURRENCY"
+  printf 'DARK_NOC_SSH_TRANSFER_TIMEOUT_SECONDS=%q\n' "$SSH_TRANSFER_TIMEOUT_SECONDS"
+  printf 'DARK_NOC_SSH_IDLE_TIMEOUT_SECONDS=%q\n' "$SSH_IDLE_TIMEOUT_SECONDS"
+  printf 'DARK_NOC_SSH_KEEPALIVE_INTERVAL_SECONDS=%q\n' "$SSH_KEEPALIVE_INTERVAL_SECONDS"
+  printf 'DARK_NOC_SSH_KEEPALIVE_COUNT_MAX=%q\n' "$SSH_KEEPALIVE_COUNT_MAX"
+  printf 'DARK_NOC_SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS=%q\n' "$SSH_UPLOAD_QUEUE_TIMEOUT_SECONDS"
+  printf 'DARK_NOC_PROVISION_TIMEOUT_SECONDS=%q\n' "$PROVISION_TIMEOUT_SECONDS"
+  printf 'DARK_NOC_PROVISION_CONCURRENCY=%q\n' "$PROVISION_CONCURRENCY"
+  printf 'DARK_NOC_SSH_EDITOR_LIMIT_KB=%q\n' "$SSH_EDITOR_LIMIT_KB"
+  printf 'DARK_NOC_MONITOR_RETENTION_DAYS=%q\n' "$MONITOR_RETENTION_DAYS"
+  printf 'DARK_NOC_METRIC_RETENTION_DAYS=%q\n' "$METRIC_RETENTION_DAYS"
+  printf 'DARK_NOC_ROLLUP_RETENTION_DAYS=%q\n' "$ROLLUP_RETENTION_DAYS"
+  printf 'DARK_NOC_HUB_LEASE_SECONDS=%q\n' "$HUB_LEASE_SECONDS"
 } > /etc/dark-noc/hub.env
 
 install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-hub.service" /etc/systemd/system/dark-noc-hub.service
+install -d -m 0755 /etc/systemd/system/dark-noc-hub.service.d
+{
+  printf '[Service]\n'
+  printf 'ReadWritePaths=%s\n' "$DATA_DIR"
+} > /etc/systemd/system/dark-noc-hub.service.d/data-path.conf
+chmod 0644 /etc/systemd/system/dark-noc-hub.service.d/data-path.conf
 if [[ -f /etc/systemd/system/dark-noc-hub.service.d/override.conf ]] && grep -q '^ExecStart=.*uvicorn' /etc/systemd/system/dark-noc-hub.service.d/override.conf; then
   install -m 0600 /etc/systemd/system/dark-noc-hub.service.d/override.conf /etc/dark-noc/legacy-systemd-override.conf
   rm -f /etc/systemd/system/dark-noc-hub.service.d/override.conf
@@ -127,7 +281,7 @@ if [[ -f /etc/systemd/system/dark-noc-hub.service.d/override.conf ]] && grep -q 
 fi
 
 CERT_DIR="/etc/dark-noc/tls"
-install -d -m 0700 "$CERT_DIR"
+install -d -m 0710 -o root -g darknoc "$CERT_DIR"
 if [[ -f /etc/nginx/sites-available/dark-noc ]]; then
   if ! grep -qE 'proxy_pass http://127\.0\.0\.1:[0-9]+' /etc/nginx/sites-available/dark-noc; then
     echo "Existing /etc/nginx/sites-available/dark-noc is not managed by DARK NOC; refusing to overwrite it."
@@ -142,9 +296,12 @@ if [[ "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || "$PUBLIC_HOST" == *:
       -keyout "$CERT_DIR/panel.key" -out "$CERT_DIR/panel.crt" \
       -subj "/CN=$PUBLIC_HOST/O=DARK NOC" -addext "subjectAltName=IP:$PUBLIC_HOST" >/dev/null 2>&1
   fi
+  chown root:darknoc "$CERT_DIR/panel.crt"
+  chown root:root "$CERT_DIR/panel.key"
+  chmod 0640 "$CERT_DIR/panel.crt"
+  chmod 0600 "$CERT_DIR/panel.key"
   CERT_KIND="self-signed IP certificate"
 else
-  apt-get install -y certbot python3-certbot-nginx
   systemctl enable --now nginx
   cat > /etc/nginx/sites-available/dark-noc <<EOF
 server { listen 80; listen [::]:80; server_name $PUBLIC_HOST; location / { proxy_pass http://127.0.0.1:$HUB_PORT; } }
@@ -169,6 +326,20 @@ server {
   ssl_protocols TLSv1.2 TLSv1.3;
   add_header Strict-Transport-Security "max-age=31536000" always;
   client_max_body_size 1m;
+  location ^~ /api/ssh/upload/ {
+    client_max_body_size ${NGINX_UPLOAD_LIMIT_MB}m;
+    proxy_request_buffering off;
+    proxy_pass http://127.0.0.1:$HUB_PORT;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_connect_timeout 86400;
+    proxy_send_timeout 86400;
+    proxy_read_timeout 86400;
+    send_timeout 86400;
+  }
   location / {
     proxy_pass http://127.0.0.1:$HUB_PORT;
     proxy_http_version 1.1;
@@ -203,6 +374,7 @@ done
 LOCAL_AGENT_TOKEN="$(curl -fsS -X POST -H "X-Dark-Noc-Bootstrap: $LOCAL_ENROLL_SECRET" "http://127.0.0.1:$HUB_PORT/api/agent/local-enroll" | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_token"])')"
 install -d -m 0755 /opt/dark-noc-agent
 install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
+install -d -m 0755 /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d
 install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc-agent/agent.py
 install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc-agent/requirements.txt
 python3 -m venv /opt/dark-noc-agent/venv
@@ -214,7 +386,7 @@ path = Path('/etc/dark-noc-agent/config.json')
 old = {}
 try:
     old = json.loads(path.read_text())
-except Exception:
+except FileNotFoundError:
     pass
 old.update({
     'hub_url': f'http://127.0.0.1:{sys.argv[1]}', 'agent_token': sys.argv[2], 'verify_tls': True,
@@ -224,16 +396,19 @@ old.update({
     'auto_discovery': True,
     'autoheal': old.get('autoheal', {'enabled': False, 'cooldown_seconds': 300, 'max_restarts_per_hour': 3}),
 })
-path.write_text(json.dumps(old, indent=2)); path.chmod(0o600)
+tmp = path.with_name(path.name + '.installing')
+tmp.write_text(json.dumps(old, indent=2))
+tmp.chmod(0o600)
+tmp.replace(path)
 PY
 install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /etc/systemd/system/dark-noc-agent.service
 systemctl daemon-reload
 systemctl enable --now dark-noc-agent.service
 systemctl restart dark-noc-agent.service
 if [[ "$CERT_KIND" == "self-signed IP certificate" ]]; then
-  curl -fsS --resolve "$PUBLIC_HOST:443:127.0.0.1" --cacert "$CERT_DIR/panel.crt" --max-time 8 "https://$PUBLIC_HOST/healthz" >/dev/null
+  curl -fsS --connect-to "$PUBLIC_URL_HOST:443:127.0.0.1:443" --cacert "$CERT_DIR/panel.crt" --max-time 8 "https://$PUBLIC_URL_HOST/healthz" >/dev/null
 else
-  curl -fsS --resolve "$PUBLIC_HOST:443:127.0.0.1" --max-time 8 "https://$PUBLIC_HOST/healthz" >/dev/null
+  curl -fsS --connect-to "$PUBLIC_URL_HOST:443:127.0.0.1:443" --max-time 8 "https://$PUBLIC_URL_HOST/healthz" >/dev/null
 fi
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw delete allow "$OLD_HUB_PORT/tcp" >/dev/null 2>&1 || true
@@ -244,7 +419,7 @@ fi
 
 echo ""
 echo "DARK NOC Hub is active."
-echo "Open: https://$PUBLIC_HOST"
+echo "Open: https://$PUBLIC_URL_HOST"
 echo "Internal Hub: 127.0.0.1:$HUB_PORT (not exposed publicly)"
 echo "Local monitoring Agent: enabled (Hub node is registered automatically)"
 echo "TLS: $CERT_KIND"
