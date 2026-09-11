@@ -71,7 +71,13 @@ with tempfile.TemporaryDirectory(prefix="darknoc-cli-") as temporary:
         )
 
     process_env = os.environ.copy()
-    process_env.update({"DARK_NOC_ENV_FILE": str(env_file), "DARK_NOC_HUB_DIR": str(hub_dir)})
+    process_env.update(
+        {
+            "DARK_NOC_ENV_FILE": str(env_file),
+            "DARK_NOC_HUB_DIR": str(hub_dir),
+            "DARK_NOC_TEST_ROOT": str(root),
+        }
+    )
 
     credentials = subprocess.run(
         [str(CLI), "credentials"], env=process_env, text=True, capture_output=True, check=True

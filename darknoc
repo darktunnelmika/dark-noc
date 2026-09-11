@@ -27,7 +27,18 @@ warn() { printf '%s[WARN]%s %s\n' "$RED" "$RESET" "$*" >&2; }
 die() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 
 require_root() {
-  [[ ${EUID:-999} -eq 0 ]] || die "Run as root: sudo darknoc"
+  if [[ ${EUID:-999} -eq 0 ]]; then
+    return 0
+  fi
+  # The regression suite runs against an isolated, caller-owned filesystem on
+  # GitHub-hosted runners. Never permit the override unless both authoritative
+  # paths are contained by that explicit test root.
+  if [[ -n ${DARK_NOC_TEST_ROOT:-} &&
+        "$ENV_FILE" == "$DARK_NOC_TEST_ROOT/"* &&
+        "$HUB_DIR" == "$DARK_NOC_TEST_ROOT/"* ]]; then
+    return 0
+  fi
+  die "Run as root: sudo darknoc"
 }
 
 require_hub() {
