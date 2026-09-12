@@ -34,6 +34,31 @@ jobs:
       - name: Apply v2.9.5 repair
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          patcher = Path('.v295-bootstrap/apply_v295.py')
+          source = patcher.read_text(encoding='utf-8')
+          old = '''upgrade = replace_once(
+              upgrade, old_agent_restore, new_agent_restore,
+              "Hub success path Agent-state repair",
+          )
+          write("upgrade.sh", upgrade)
+          '''
+          new = '''hub_install_anchor = '    bash "$SCRIPT_DIR/install-hub.sh"\\n'
+          if upgrade.count(hub_install_anchor) != 1:
+              raise SystemExit("Hub install success-path anchor mismatch")
+          upgrade_prefix, upgrade_success = upgrade.split(hub_install_anchor, 1)
+          upgrade_success = replace_once(
+              upgrade_success, old_agent_restore, new_agent_restore,
+              "Hub success path Agent-state repair",
+          )
+          upgrade = upgrade_prefix + hub_install_anchor + upgrade_success
+          write("upgrade.sh", upgrade)
+          '''
+          if source.count(old) != 1:
+              raise SystemExit('Patch bootstrap success-path anchor mismatch')
+          patcher.write_text(source.replace(old, new), encoding='utf-8')
+          PY
           python -m py_compile .v295-bootstrap/apply_v295.py
           python .v295-bootstrap/apply_v295.py
 
