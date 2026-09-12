@@ -485,11 +485,20 @@ def _configure_ufw(directory: Path, role: str, mappings: list[tuple[int, int, in
         rule = f"{port}/tcp"
         code, output = _run(["ufw", "allow", rule, "comment", "DARK-NOC-REALM"], timeout=20)
         if code != 0:
+            _remove_ufw_rules(created)
             raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")
         if "Rule added" in output:
             created.append(rule)
     _atomic_text(directory / "ufw-created.json", json.dumps(created), 0o600)
     return created
+
+
+def _remove_ufw_rules(rules: list[str]) -> None:
+    if not rules or shutil.which("ufw") is None:
+        return
+    for rule in rules:
+        if re.fullmatch(r"[0-9]{1,5}/tcp", str(rule)):
+            _run(["ufw", "--force", "delete", "allow", str(rule)], timeout=20)
 
 
 def _save_agent_config(config: dict[str, Any], config_path: Path) -> None:
@@ -540,6 +549,7 @@ def deploy(payload: dict[str, Any], config: dict[str, Any], config_path: Path) -
         shutil.rmtree(backup_root, ignore_errors=True)
         raise RuntimeError(f"Realm port conflict detected: {', '.join(map(str, conflicts))}")
 
+    firewall_rules: list[str] = []
     try:
         config_text = render_config(payload, role)
         _atomic_text(directory / "config.toml", config_text, 0o600)
@@ -571,6 +581,7 @@ def deploy(payload: dict[str, Any], config: dict[str, Any], config_path: Path) -
             raise RuntimeError(f"Realm expected listener(s) missing: {', '.join(map(str, missing))}")
     except Exception:
         _run(["systemctl", "disable", "--now", service], timeout=30)
+        _remove_ufw_rules(firewall_rules)
         if existed and (backup_root / "tunnel").exists():
             shutil.rmtree(directory, ignore_errors=True)
             shutil.copytree(backup_root / "tunnel", directory)
@@ -634,11 +645,9 @@ def remove(payload: dict[str, Any], config: dict[str, Any], config_path: Path) -
     _run(["systemctl", "disable", "--now", service], timeout=30)
     directory = TUNNEL_DIR / name
     firewall_file = directory / "ufw-created.json"
-    if firewall_file.is_file() and shutil.which("ufw"):
+    if firewall_file.is_file():
         try:
-            for rule in json.loads(firewall_file.read_text(encoding="utf-8")):
-                if re.fullmatch(r"[0-9]{1,5}/tcp", str(rule)):
-                    _run(["ufw", "--force", "delete", "allow", str(rule)], timeout=20)
+            _remove_ufw_rules(json.loads(firewall_file.read_text(encoding="utf-8")))
         except (OSError, TypeError, ValueError):
             pass
     if directory.parent == TUNNEL_DIR:

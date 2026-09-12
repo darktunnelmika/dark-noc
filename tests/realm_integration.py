@@ -108,6 +108,16 @@ def main() -> None:
     assert "plugin-realm" in index
     assert 'VERSION = "2.9.0"' in app_source
     assert 'VERSION = "2.9.0"' in agent_source
+    assert "_remove_ufw_rules(firewall_rules)" in (ROOT / "agent" / "realm_plugin.py").read_text()
+
+    commands = []
+    realm_agent.shutil.which = lambda command: "/usr/sbin/ufw" if command == "ufw" else None
+    realm_agent._run = lambda command, timeout=30: (commands.append(command) or (0, ""))
+    realm_agent._remove_ufw_rules(["443/tcp", "invalid", "8443/tcp"])
+    assert commands == [
+        ["ufw", "--force", "delete", "allow", "443/tcp"],
+        ["ufw", "--force", "delete", "allow", "8443/tcp"],
+    ]
     print("DARK Realm NOC integration tests passed")
 
 
