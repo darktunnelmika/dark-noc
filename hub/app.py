@@ -63,7 +63,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.2"
+VERSION = "2.9.3"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2458,6 +2458,22 @@ def metrics(node_id: int, hours: int = 24, resolution: str = "auto", _: sqlite3.
     return [{**dict(row), "resolution": "hour"} for row in combined]
 
 
+def tunnel_topology_side(node_role: str, method: str, tunnel_role: str) -> str:
+    node_role = str(node_role or "").casefold()
+    tunnel_role = str(tunnel_role or "").casefold()
+    if node_role in {"hub", "edge"}:
+        return "iran"
+    if node_role == "exit":
+        return "kharej"
+    if method in {"DARK Backhaul", "DARK Ghost Pro"}:
+        return "iran" if tunnel_role == "server" else "kharej" if tunnel_role == "client" else "unknown"
+    if method == "DARK Packet Pro":
+        return "iran" if tunnel_role == "client" else "kharej" if tunnel_role == "server" else "unknown"
+    if method == "DARK Realm Pro":
+        return "iran" if tunnel_role == "edge" else "kharej" if tunnel_role == "gateway" else "unknown"
+    return "unknown"
+
+
 def tunnel_health_score(item: dict[str, Any]) -> int:
     status = str(item.get("status") or "unknown").casefold()
     if status in {"down", "offline"}:
@@ -2495,10 +2511,17 @@ def list_tunnels(_: sqlite3.Row = Depends(current_user)):
             FROM tunnels JOIN nodes ON nodes.id=tunnels.node_id ORDER BY tunnels.status DESC,tunnels.name""").fetchall()
         nodes = conn.execute("""SELECT id,name,host,observed_ip,region,role,status,last_seen,
             CASE WHEN ssh_password_enc IS NOT NULL OR ssh_key_enc IS NOT NULL THEN 1 ELSE 0 END ssh_configured FROM nodes""").fetchall()
-        deployments = conn.execute("SELECT name,iran_node_id,kharej_node_id FROM plugin_deployments WHERE lifecycle!='removed'").fetchall()
+        deployments = conn.execute(
+            """SELECT id,name,iran_node_id,kharej_node_id FROM plugin_deployments
+               WHERE lifecycle NOT IN ('removed','rolled_back') ORDER BY id DESC"""
+        ).fetchall()
     now = utc_ts()
     node_index = {row["id"]: dict(row) for row in nodes}
-    deployment_index = {row["name"]: dict(row) for row in deployments}
+    deployment_index: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in deployments:
+        deployment = dict(row)
+        deployment_index.setdefault((row["name"], row["iran_node_id"]), deployment)
+        deployment_index.setdefault((row["name"], row["kharej_node_id"]), deployment)
     result: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -2507,6 +2530,7 @@ def list_tunnels(_: sqlite3.Row = Depends(current_user)):
         except (TypeError, ValueError):
             details = {}
         item["tunnel_role"] = str(details.get("role") or "")
+        item["topology_side"] = tunnel_topology_side(item["node_role"], str(item.get("method") or ""), item["tunnel_role"])
         item["target_host"] = normalize_ip(details.get("target_host"))
         item["target_port"] = details.get("target_port")
         item["user_ports"] = details.get("user_ports") if isinstance(details.get("user_ports"), list) else []
@@ -2529,27 +2553,67 @@ def list_tunnels(_: sqlite3.Row = Depends(current_user)):
 
     for item in result:
         peer_id: int | None = None
-        deployment = deployment_index.get(item["name"])
-        if deployment and item["node_id"] in {deployment["iran_node_id"], deployment["kharej_node_id"]}:
-            peer_id = deployment["kharej_node_id"] if item["node_id"] == deployment["iran_node_id"] else deployment["iran_node_id"]
-        if not peer_id:
-            opposite = next((candidate for candidate in result if candidate["node_id"] != item["node_id"] and candidate["name"] == item["name"] and (not item["tunnel_role"] or not candidate["tunnel_role"] or candidate["tunnel_role"] != item["tunnel_role"])), None)
-            if opposite:
-                peer_id = opposite["node_id"]
-        remote_addresses = {normalize_ip(value) for value in item["peer_ips"]}
+        deployment = deployment_index.get((item["name"], item["node_id"]))
+        if deployment:
+            peer_id = (
+                deployment["kharej_node_id"]
+                if item["node_id"] == deployment["iran_node_id"]
+                else deployment["iran_node_id"]
+            )
+
+        remote_addresses = {normalize_ip(value) for value in item["peer_ips"] if normalize_ip(value)}
         if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}:
             remote_addresses.add(item["target_host"])
         if not peer_id and remote_addresses:
-            peer = next((node for node in node_index.values() if remote_addresses.intersection({normalize_ip(node["host"]), normalize_ip(node.get("observed_ip"))})), None)
-            if peer:
-                peer_id = peer["id"]
+            matching_nodes = [
+                candidate for candidate in node_index.values()
+                if candidate["id"] != item["node_id"]
+                and remote_addresses.intersection({
+                    normalize_ip(candidate["host"]),
+                    normalize_ip(candidate.get("observed_ip")),
+                })
+            ]
+            if len(matching_nodes) == 1:
+                peer_id = matching_nodes[0]["id"]
+
+        if not peer_id:
+            opposite_candidates = [
+                candidate for candidate in result
+                if candidate["node_id"] != item["node_id"]
+                and candidate["name"] == item["name"]
+                and candidate.get("method") == item.get("method")
+                and (
+                    item["topology_side"] == "unknown"
+                    or candidate["topology_side"] == "unknown"
+                    or candidate["topology_side"] != item["topology_side"]
+                )
+            ]
+            if len(opposite_candidates) == 1:
+                peer_id = opposite_candidates[0]["node_id"]
+
         peer = node_index.get(peer_id) if peer_id else None
         item["peer_node_id"] = peer_id
         item["peer_name"] = peer["name"] if peer else None
-        item["peer_host"] = (peer["host"] or peer.get("observed_ip")) if peer else (item["peer_ips"][0] if item["peer_ips"] else (item["target_host"] if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"} else None))
+        item["peer_host"] = (
+            (peer.get("observed_ip") or peer["host"])
+            if peer else (
+                item["peer_ips"][0]
+                if item["peer_ips"] else (
+                    item["target_host"]
+                    if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}
+                    else None
+                )
+            )
+        )
         item["peer_role"] = peer["role"] if peer else None
         item["peer_agent_online"] = bool(peer and peer.get("last_seen") and peer["last_seen"] >= now - NODE_STALE_AFTER)
         item["peer_ssh_configured"] = bool(peer and peer.get("ssh_configured"))
+        if peer_id:
+            first, second = sorted((int(item["node_id"]), int(peer_id)))
+            item["topology_key"] = f"{item.get('method') or 'DARK'}|{item['name']}|{first}|{second}"
+        else:
+            item["topology_key"] = f"{item.get('method') or 'DARK'}|{item['name']}|{item['node_id']}|{item.get('service') or item['id']}"
+        item["peer_resolved"] = bool(peer_id)
     return result
 
 
@@ -3668,10 +3732,29 @@ def managed_tunnel_report(method: str, service: str) -> bool:
     )
 
 
+def agent_inventory_flags(metrics: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (complete, fresh) for Agent service/plugin/tunnel inventory.
+
+    v2.9.2 lightweight heartbeats expose telemetry_status but no explicit marker;
+    legacy Agents expose neither and remain authoritative for compatibility.
+    """
+    marker = metrics.get("inventory_complete")
+    status = str(metrics.get("telemetry_status") or "").strip().casefold()
+    if marker is None:
+        complete = status not in {"starting", "collecting", "stale"}
+    elif isinstance(marker, bool):
+        complete = marker
+    else:
+        complete = str(marker).strip().casefold() in {"1", "true", "yes", "on"}
+    fresh = complete and status in {"", "fresh"}
+    return complete, fresh
+
+
 @app.post("/api/agent/heartbeat")
 async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.Row = Depends(agent_node)):
     now = utc_ts()
     m = report.metrics
+    inventory_complete, inventory_fresh = agent_inventory_flags(m)
     notifications: list[str] = []
     with db() as conn:
         autoheal = report.autoheal or {}
@@ -3683,7 +3766,17 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
         observed_ip = request.client.host if request.client else None
         if observed_ip in {"127.0.0.1", "::1"} and node["role"] == "hub":
             observed_ip = node["host"]
-        conn.execute("UPDATE nodes SET status='online',agent_version=?,observed_ip=?,plugin_inventory=?,autoheal_enabled=?,autoheal_cooldown=?,autoheal_max_restarts=?,last_seen=?,updated_at=? WHERE id=?", (report.agent_version, observed_ip, json.dumps(report.plugins), 1 if autoheal.get("enabled") else 0, autoheal_cooldown, autoheal_max, now, now, node["id"]))
+        conn.execute(
+            """UPDATE nodes SET status='online',agent_version=?,observed_ip=?,
+                      plugin_inventory=CASE WHEN ? THEN ? ELSE plugin_inventory END,
+                      autoheal_enabled=?,autoheal_cooldown=?,autoheal_max_restarts=?,
+                      last_seen=?,updated_at=? WHERE id=?""",
+            (
+                report.agent_version, observed_ip, 1 if inventory_complete else 0,
+                json.dumps(report.plugins), 1 if autoheal.get("enabled") else 0,
+                autoheal_cooldown, autoheal_max, now, now, node["id"],
+            ),
+        )
         conn.execute("INSERT INTO metrics(node_id,ts,cpu,ram,swap,disk,load1,rx_bps,tx_bps,uptime,connections,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (node["id"], now, m.get("cpu"), m.get("ram"), m.get("swap"), m.get("disk"), m.get("load1"), m.get("rx_bps"), m.get("tx_bps"), m.get("uptime"), m.get("connections"), json.dumps(m)))
         recovered_node_incidents = conn.execute(
             "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')",
@@ -3723,10 +3816,11 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             active_services.append(service_name)
             service_status = str(service.get("status", "unknown"))[:32]
             conn.execute("INSERT INTO node_services(node_id,name,status,last_check) VALUES(?,?,?,?) ON CONFLICT(node_id,name) DO UPDATE SET status=excluded.status,last_check=excluded.last_check", (node["id"], service_name, service_status, now))
-        if active_services:
-            conn.execute(f"DELETE FROM node_services WHERE node_id=? AND name NOT IN ({','.join('?' for _ in active_services)})", (node["id"], *active_services))
-        else:
-            conn.execute("DELETE FROM node_services WHERE node_id=?", (node["id"],))
+        if inventory_complete:
+            if active_services:
+                conn.execute(f"DELETE FROM node_services WHERE node_id=? AND name NOT IN ({','.join('?' for _ in active_services)})", (node["id"], *active_services))
+            else:
+                conn.execute("DELETE FROM node_services WHERE node_id=?", (node["id"],))
         for tunnel in report.tunnels:
             method, service = str(tunnel.get("method", "")), str(tunnel.get("service", ""))
             if not managed_tunnel_report(method, service):
@@ -3764,17 +3858,26 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             elif current == "healthy" and open_incident:
                 resolve_incident(conn, open_incident["id"], "Tunnel telemetry returned to healthy")
                 notifications.append(f"🟢 DARK NOC RECOVERED\nNode: {node['name']}\nTunnel: {name}\nStatus: HEALTHY")
-        active_names = [str(tunnel.get("name", "unnamed"))[:128] for tunnel in report.tunnels if managed_tunnel_report(str(tunnel.get("method", "")), str(tunnel.get("service", "")))]
-        stale_rows = conn.execute("SELECT id FROM tunnels WHERE node_id=?" + (f" AND name NOT IN ({','.join('?' for _ in active_names)})" if active_names else ""), (node["id"], *active_names)).fetchall()
-        if stale_rows:
-            stale_ids = [row["id"] for row in stale_rows]
-            stale_incidents = conn.execute(
-                f"SELECT id FROM incidents WHERE tunnel_id IN ({','.join('?' for _ in stale_ids)}) AND status IN ('open','acknowledged')",
-                stale_ids,
+        if inventory_fresh:
+            active_names = [
+                str(tunnel.get("name", "unnamed"))[:128]
+                for tunnel in report.tunnels
+                if managed_tunnel_report(str(tunnel.get("method", "")), str(tunnel.get("service", "")))
+            ]
+            stale_rows = conn.execute(
+                "SELECT id FROM tunnels WHERE node_id=?"
+                + (f" AND name NOT IN ({','.join('?' for _ in active_names)})" if active_names else ""),
+                (node["id"], *active_names),
             ).fetchall()
-            for incident in stale_incidents:
-                resolve_incident(conn, incident["id"], "Tunnel was removed from the active Agent inventory")
-            conn.executemany("DELETE FROM tunnels WHERE id=?", [(tunnel_id,) for tunnel_id in stale_ids])
+            if stale_rows:
+                stale_ids = [row["id"] for row in stale_rows]
+                stale_incidents = conn.execute(
+                    f"SELECT id FROM incidents WHERE tunnel_id IN ({','.join('?' for _ in stale_ids)}) AND status IN ('open','acknowledged')",
+                    stale_ids,
+                ).fetchall()
+                for incident in stale_incidents:
+                    resolve_incident(conn, incident["id"], "Tunnel was removed from the active Agent inventory")
+                conn.executemany("DELETE FROM tunnels WHERE id=?", [(tunnel_id,) for tunnel_id in stale_ids])
     for message in notifications:
         await asyncio.to_thread(telegram_notify, message)
     stale_clients: list[WebSocket] = []

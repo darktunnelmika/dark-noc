@@ -1,3 +1,11 @@
+# DARK NOC v2.9.3 — Topology & Inventory Integrity
+
+This maintenance release restores Hub-local tunnel visibility and makes the cyber topology deterministic. Lightweight liveness heartbeats can no longer erase the last complete tunnel, service or plugin inventory. Agent discovery now includes stopped/disabled managed tunnel directories, preserves the last good payload across restarts and marks incomplete discovery snapshots as non-authoritative.
+
+The topology renderer now understands the native side semantics of Backhaul, Ghost Pro, Packet Pro and Realm Pro, groups paired rows safely, separates parallel paths and expands vertically as the fleet grows.
+
+---
+
 # DARK NOC v2.9.2 — Heartbeat Resilience
 
 This maintenance release keeps Hub and Node liveness independent from expensive telemetry collection. Full socket, service, plugin and tunnel inventory now runs in a background worker while a lightweight heartbeat continues at the configured interval.
