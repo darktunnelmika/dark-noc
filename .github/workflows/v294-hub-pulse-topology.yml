@@ -37,6 +37,15 @@ jobs:
           set -euo pipefail
           xz -t .v294-bootstrap/apply_v294.py.xz
           xz -dc .v294-bootstrap/apply_v294.py.xz > /tmp/apply_v294.py
+          python - <<'PY'
+          from pathlib import Path
+          patcher = Path('/tmp/apply_v294.py')
+          source = patcher.read_text(encoding='utf-8')
+          old = 'ROOT = Path(__file__).resolve().parents[1]'
+          if source.count(old) != 1:
+              raise SystemExit('v2.9.4 patcher root anchor mismatch')
+          patcher.write_text(source.replace(old, 'ROOT = Path.cwd()'), encoding='utf-8')
+          PY
           python -m py_compile /tmp/apply_v294.py
           python /tmp/apply_v294.py
 
