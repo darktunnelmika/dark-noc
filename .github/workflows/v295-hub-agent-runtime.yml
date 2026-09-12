@@ -1,0 +1,84 @@
+name: DARK NOC v2.9.5 Hub Agent Runtime Repair
+
+on:
+  push:
+    branches: ["fix/hub-agent-runtime-v2.9.5"]
+    paths:
+      - ".github/workflows/v295-hub-agent-runtime.yml"
+      - ".v295-bootstrap/apply_v295.py"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply v2.9.5 repair
+        run: |
+          set -euo pipefail
+          python -m py_compile .v295-bootstrap/apply_v295.py
+          python .v295-bootstrap/apply_v295.py
+
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+
+      - name: Full regression suite
+        run: |
+          set -euo pipefail
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+
+      - name: Verify reproducible release archives
+        run: |
+          set -euo pipefail
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
+
+      - name: Publish validated production source
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf .v295-bootstrap
+          git restore --source=HEAD -- .github/workflows/v295-hub-agent-runtime.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: keep Hub Agent online and restore solid live routes"
+          git push origin HEAD:fix/hub-agent-runtime-v2.9.5
