@@ -3,6 +3,21 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.1] - 2026-09-12
+
+### Fixed
+
+- Installed the Realm adapter beside the local Hub Agent, fixing the Hub Node remaining `PENDING` after the v2.9.0 upgrade.
+- Added a canonical Agent payload for remote synchronization instead of depending on the health of the running local Agent directory.
+- Reused a verified local Agent token during upgrades and required a fresh exact-version heartbeat before installation succeeds.
+- Added fail-soft optional Realm imports so missing adapter/support files disable Realm operations without taking down Agent heartbeats or the Hub.
+- Added Realm adapter backup/rollback to standalone Agent upgrades and created `/etc/dark-realm` in every prerequisite path.
+- Updated stale Node and `darknoc` version banners.
+
+### Reliability
+
+- Added local Hub enrollment recovery and installer/package contract tests to CI and release validation.
+
 ## [2.9.0] - 2026-09-12
 
 ### Added

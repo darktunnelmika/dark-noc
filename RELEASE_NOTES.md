@@ -1,3 +1,16 @@
+# DARK NOC v2.9.1 — Hub Agent Recovery
+
+This maintenance release repairs the local Hub monitoring Agent and hardens every Agent delivery path introduced with Realm integration.
+
+- Installs `realm_plugin.py` beside the local Hub Agent and keeps a canonical, compile-checked Agent payload for remote **SYNC AGENT** operations.
+- Reuses a verified local enrollment token during routine upgrades, so a healthy Hub Node is not reset to `PENDING`.
+- Requires a new exact-version heartbeat before the installer reports success and prints actionable service logs on failure.
+- Keeps the monitoring Agent online when an optional Realm adapter is missing or damaged; only Realm operations are disabled.
+- Aligns standalone Agent upgrades and Node prerequisites with `/etc/dark-realm`, Realm adapter backup/rollback and version `2.9.1`.
+- Adds local-enrollment recovery and installer-contract regression tests to both CI and the release transaction.
+
+---
+
 # DARK NOC v2.9.0 — DARK Realm Integration
 
 DARK Realm Pro v1.0.0 is now a first-class plugin with native Realm TCP/TLS/WS/WSS semantics, managed Iran Edge and Kharej Gateway deployment, DR1 Pair Code mode, Gateway-owned TLS Vault certificates, native multi-endpoint TOML generation and Agent telemetry.

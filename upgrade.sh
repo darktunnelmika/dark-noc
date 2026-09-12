@@ -109,7 +109,7 @@ case "${1:-}" in
     backup_dir="$(mktemp -d /tmp/dark-noc-hub-upgrade.XXXXXX)"
     had_hub_env=0; had_nginx_site=0; had_nginx_link=0; had_systemd_override=0; had_systemd_data_path=0
     had_database=0; had_master_key=0; mutation_started=0
-    had_hub_service=0; had_tls=0; had_local_agent_opt=0; had_local_agent_etc=0; had_local_agent_service=0; had_darknoc_cli=0
+    had_hub_service=0; had_tls=0; had_local_agent_opt=0; had_local_agent_etc=0; had_local_agent_service=0; had_darknoc_cli=0; had_agent_payload=0
     hub_was_active="$(service_was_active dark-noc-hub.service)"
     hub_was_enabled="$(service_was_enabled dark-noc-hub.service)"
     hub_was_present="$(service_was_present dark-noc-hub.service)"
@@ -120,6 +120,7 @@ case "${1:-}" in
     nginx_was_enabled="$(service_was_enabled nginx.service)"
     nginx_was_present="$(service_was_present nginx.service)"
     cp -a /opt/dark-noc/hub "$backup_dir/hub"
+    if [[ -d /opt/dark-noc/agent-payload ]]; then had_agent_payload=1; cp -a /opt/dark-noc/agent-payload "$backup_dir/agent-payload"; fi
     if [[ -f /etc/systemd/system/dark-noc-hub.service ]]; then had_hub_service=1; cp -a /etc/systemd/system/dark-noc-hub.service "$backup_dir/hub.service"; fi
     if [[ -f /etc/dark-noc/hub.env ]]; then had_hub_env=1; cp -a /etc/dark-noc/hub.env "$backup_dir/hub.env"; fi
     if [[ -d /etc/dark-noc/tls ]]; then had_tls=1; cp -a /etc/dark-noc/tls "$backup_dir/tls"; fi
@@ -171,6 +172,13 @@ case "${1:-}" in
       fi
       if rollback_step "could not remove the upgraded Hub directory" rm -rf /opt/dark-noc/hub; then
         rollback_step "could not restore the Hub directory" cp -a "$backup_dir/hub" /opt/dark-noc/hub || rollback_failed=1
+      else
+        rollback_failed=1
+      fi
+      if rollback_step "could not remove the upgraded Agent payload" rm -rf /opt/dark-noc/agent-payload; then
+        if [[ "$had_agent_payload" -eq 1 ]]; then
+          rollback_step "could not restore the Agent payload" cp -a "$backup_dir/agent-payload" /opt/dark-noc/agent-payload || rollback_failed=1
+        fi
       else
         rollback_failed=1
       fi
@@ -335,8 +343,9 @@ PY
     agent_was_active="$(service_was_active dark-noc-agent.service)"
     agent_was_enabled="$(service_was_enabled dark-noc-agent.service)"
     agent_was_present="$(service_was_present dark-noc-agent.service)"
-    had_agent_service=0
+    had_agent_service=0; had_realm_adapter=0
     cp -a /opt/dark-noc-agent/agent.py /opt/dark-noc-agent/requirements.txt "$backup_dir/"
+    if [[ -f /opt/dark-noc-agent/realm_plugin.py ]]; then had_realm_adapter=1; cp -a /opt/dark-noc-agent/realm_plugin.py "$backup_dir/"; fi
     if [[ -f /etc/systemd/system/dark-noc-agent.service ]]; then had_agent_service=1; cp -a /etc/systemd/system/dark-noc-agent.service "$backup_dir/service"; fi
     rollback_agent() {
       local reason="${1:-ERR}" exit_status="${2:-1}" rollback_failed=0
@@ -350,6 +359,11 @@ PY
         rollback_step "could not stop Agent before restore" systemctl stop dark-noc-agent.service || rollback_failed=1
       fi
       rollback_step "could not restore Agent program files" cp -a "$backup_dir/agent.py" "$backup_dir/requirements.txt" /opt/dark-noc-agent/ || rollback_failed=1
+      if [[ "$had_realm_adapter" -eq 1 ]]; then
+        rollback_step "could not restore Realm Agent adapter" cp -a "$backup_dir/realm_plugin.py" /opt/dark-noc-agent/realm_plugin.py || rollback_failed=1
+      else
+        rollback_step "could not remove newly installed Realm Agent adapter" rm -f /opt/dark-noc-agent/realm_plugin.py || rollback_failed=1
+      fi
       if [[ "$had_agent_service" -eq 1 ]]; then
         rollback_step "could not restore the Agent systemd unit" cp -a "$backup_dir/service" /etc/systemd/system/dark-noc-agent.service || rollback_failed=1
       else
@@ -382,13 +396,15 @@ PY
     trap 'rollback_agent TERM 143' TERM
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y ca-certificates curl tar openssl certbot iproute2 iperf3 tmux
-    install -d -m 0700 /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
+    apt-get install -y ca-certificates curl tar openssl certbot iproute2 iputils-ping iptables iperf3 snmp tmux
+    install -d -m 0700 /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /etc/dark-realm
     install -d -m 0755 /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d
     systemctl stop dark-noc-agent.service
     install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc-agent/agent.py
+    install -m 0644 "$SCRIPT_DIR/agent/realm_plugin.py" /opt/dark-noc-agent/realm_plugin.py
     install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc-agent/requirements.txt
     /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt
+    /opt/dark-noc-agent/venv/bin/python -m py_compile /opt/dark-noc-agent/agent.py /opt/dark-noc-agent/realm_plugin.py
     install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /etc/systemd/system/dark-noc-agent.service
     if grep -q '"hub_url"[[:space:]]*:[[:space:]]*"http://.*:9090' /etc/dark-noc-agent/config.json 2>/dev/null; then
       echo "WARNING: Agent still uses the legacy HTTP :9090 Hub URL."
