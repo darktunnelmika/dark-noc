@@ -36,8 +36,10 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+
           patcher = Path('.v295-bootstrap/apply_v295.py')
           source = patcher.read_text(encoding='utf-8')
+
           old = '''upgrade = replace_once(
               upgrade, old_agent_restore, new_agent_restore,
               "Hub success path Agent-state repair",
@@ -62,7 +64,18 @@ jobs:
           '''
           if source.count(old) != 1:
               raise SystemExit('Patch bootstrap success-path anchor mismatch')
-          patcher.write_text(source.replace(old, new), encoding='utf-8')
+          source = source.replace(old, new, 1)
+
+          old_backbone = r'backbone_pattern = re.compile(r"\\.cyber-route-backbone\\{[^}]+\\}")'
+          new_backbone = r'backbone_pattern = re.compile(r"\.cyber-route-backbone\{[^}]+\}")'
+          old_flow = r'flow_pattern = re.compile(r"\\.cyber-route-flow\\{[^}]+\\}")'
+          new_flow = r'flow_pattern = re.compile(r"\.cyber-route-flow\{[^}]+\}")'
+          if source.count(old_backbone) != 1 or source.count(old_flow) != 1:
+              raise SystemExit('Topology CSS regex bootstrap anchor mismatch')
+          source = source.replace(old_backbone, new_backbone, 1)
+          source = source.replace(old_flow, new_flow, 1)
+
+          patcher.write_text(source, encoding='utf-8')
           PY
           python -m py_compile .v295-bootstrap/apply_v295.py
           python .v295-bootstrap/apply_v295.py
