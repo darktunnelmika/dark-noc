@@ -1,0 +1,171 @@
+name: Prepare Matrix v2.9.6
+
+# One-shot preparation on an isolated branch. This workflow is NOT merged to main.
+on:
+  push:
+    branches: [automation/prepare-matrix-v2.9.6]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-matrix-v2.9.6
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 53518580fb8041727b13c158e7a2619025461572
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare only version metadata and release notes
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = '53518580fb8041727b13c158e7a2619025461572'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == base
+          replacements = {
+              'hub/app.py': ('VERSION = "2.9.5"', 'VERSION = "2.9.6"'),
+              'agent/agent.py': ('VERSION = "2.9.5"', 'VERSION = "2.9.6"'),
+              'darknoc': ('VERSION="2.9.5"', 'VERSION="2.9.6"'),
+          }
+          for name, (old, new) in replacements.items():
+              path = Path(name)
+              original = path.read_text()
+              assert original.splitlines().count(old) == 1, name
+              lines = original.splitlines(keepends=True)
+              updated = ''.join(new + line[len(old):] if line.rstrip('\r\n') == old else line for line in lines)
+              assert updated.replace(new, old, 1) == original, name
+              path.write_text(updated)
+          notes = '''# DARK NOC v2.9.6 — Live Tunnel Matrix Cyber Refresh
+
+          This release delivers the already-committed, isolated Live tunnel matrix
+          enhancement through the normal verified installer and updater.
+
+          - A continuous, unfiltered base path stays visible at zero or low traffic.
+          - Separate neon cores, flow segments and packet effects decorate active paths.
+          - Flat horizontal routes have an explicit padded glow filter region.
+          - Idle, stale and offline routes do not animate fake traffic.
+          - Route/card hover, keyboard focus and status colors are clearer.
+          - Motion pauses off-screen and respects reduced-motion preferences;
+            expensive effects are bounded for large route counts.
+
+          Scope: only the overview's Live tunnel matrix visuals and interactions.
+          The main app.js, shared styles.css, other views, APIs, tunnel configuration,
+          pairing, deployment and Agent behavior are unchanged. Hub, Agent and CLI
+          version declarations are synchronized for release packaging only.
+
+          ## فارسی
+
+          این انتشار فقط ظاهر بخش Live tunnel matrix را به‌روز می‌کند: خط اتصال
+          در ترافیک کم یا صفر هم دیده می‌شود و افکت انتقال داده از خط پایه جداست.
+          هدر، منوها، صفحات دیگر و منطق تونل‌ها تغییری نکرده‌اند. شماره نسخهٔ
+          Hub، Agent و ابزار darknoc فقط برای هماهنگی بستهٔ انتشار تغییر کرده است.
+
+          ---
+
+          '''
+          p = Path('RELEASE_NOTES.md')
+          p.write_text(notes + p.read_text())
+          p = Path('CHANGELOG.md')
+          original = p.read_text()
+          heading, separator, remainder = original.partition('\n')
+          entry = '''
+          ## 2.9.6 — Live tunnel matrix only
+
+          - Publish isolated live-matrix.css and live-matrix.js with only two loader
+            additions to index.html; shared frontend logic/styles are unchanged.
+          - Keep every connection visible independently of rate, including flat paths.
+          - Add scoped neon flow, route beacons, card accents and related-route focus.
+          - Stop stale/offline/idle flow and bound motion for reduced-motion/large maps.
+          - Synchronize release version declarations only; no backend/Agent logic changes.
+
+          '''
+          p.write_text(heading + separator + entry + remainder)
+          expected = set(replacements) | {'RELEASE_NOTES.md', 'CHANGELOG.md'}
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          assert changed == expected, changed
+          # The approved frontend remains byte-for-byte intact during packaging.
+          for name in ['hub/static/app.js', 'hub/static/styles.css', 'hub/static/index.html', 'hub/static/live-matrix.js', 'hub/static/live-matrix.css']:
+              assert Path(name).read_bytes() == subprocess.check_output(['git', 'show', f'{base}:{name}']), name
+          print('Scope verified: 3 version lines and 2 release documents only.')
+          PY
+          git diff --check
+      - name: Install existing test dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Run all existing CI checks and matrix syntax
+        run: |
+          set -Eeuo pipefail
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+      - name: Verify reproducible release and matrix assets
+        run: |
+          set -Eeuo pipefail
+          bash scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          bash scripts/build-release.sh
+          diff -qr "$first_build" dist
+          (cd dist && sha256sum -c SHA256SUMS)
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path
+          with tarfile.open('dist/DARK-NOC-HUB-v2.9.6.tar.gz') as archive:
+              for name in ['index.html', 'live-matrix.css', 'live-matrix.js']:
+                  packaged = archive.extractfile('dark-noc-pro/hub/static/' + name)
+                  assert packaged is not None
+                  assert packaged.read() == Path('hub/static', name).read_bytes(), name
+          print('Reproducible Hub/Node archives, SHA256SUMS and matrix assets verified.')
+          PY
+      - name: Commit verified release metadata to a new review branch
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- hub/app.py agent/agent.py darknoc RELEASE_NOTES.md CHANGELOG.md
+          python - <<'PY'
+          import subprocess
+          changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines())
+          assert changed == {'hub/app.py','agent/agent.py','darknoc','RELEASE_NOTES.md','CHANGELOG.md'}, changed
+          PY
+          git diff --cached --check
+          git commit -m 'chore(release): publish isolated Live tunnel matrix refresh as v2.9.6'
+          git push origin HEAD:refs/heads/release/matrix-v2.9.6
+          {
+            echo '## Verified v2.9.6 candidate'
+            echo "Commit: $(git rev-parse HEAD)"
+            echo 'Only version declarations and release notes differ from the approved Matrix commit.'
+            echo 'All existing CI scripts, JS syntax, reproducible packages and packaged assets passed.'
+            echo 'Candidate only: main and published releases were not changed by this preparation job.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matrix-v2.9.6-verified-packages
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
