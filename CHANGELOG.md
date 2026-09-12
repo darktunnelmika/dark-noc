@@ -1,3 +1,14 @@
+# v2.9.3 — Topology & Inventory Integrity
+
+- Preserves Hub and Node tunnel/service/plugin inventory during lightweight or incomplete heartbeats.
+- Persists the last complete Agent payload and restores it after Agent restarts.
+- Discovers stopped and disabled local DARK tunnel instances from their managed config directories.
+- Prevents transient systemd discovery failures from publishing destructive empty snapshots.
+- Normalizes IRAN/HUB versus KHAREJ topology roles for Backhaul, Ghost, Packet and Realm.
+- Resolves peers by managed deployment and address before using an unambiguous role fallback.
+- Rebuilds the topology canvas with dynamic height and separated parallel routes.
+- Adds permanent regression coverage for Hub-local tunnels and authoritative inventory semantics.
+
 # Changelog
 
 All notable changes to DARK NOC are documented here. This project follows

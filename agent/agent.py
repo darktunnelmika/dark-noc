@@ -60,7 +60,7 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.2"
+VERSION = "2.9.3"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
@@ -173,6 +173,8 @@ def minimal_heartbeat_payload(config: dict[str, Any]) -> dict[str, Any]:
         "connections": 0,
         "telemetry_status": "starting",
         "telemetry_age_seconds": 0,
+        "inventory_complete": False,
+        "inventory_snapshot_at": 0,
         "agent_loop_ts": int(now),
     }
     return {
@@ -227,6 +229,9 @@ def collect_payload_blocking(config: dict[str, Any], state: dict[str, Any]) -> t
     }
     metrics["inventory"] = system_inventory(state)
     reports = asyncio.run(collect_reports_for_payload(config, state))
+    inventory_complete = True if not config.get("auto_discovery", True) else discovery_inventory_complete()
+    metrics["inventory_complete"] = inventory_complete
+    metrics["inventory_snapshot_at"] = int(time.time()) if inventory_complete else 0
     payload = {
         "metrics": metrics,
         "services": service_reports(config),
@@ -705,52 +710,121 @@ DARK_BACKHAUL_SERVICE_PATTERN = re.compile(r"^backhaul@[A-Za-z0-9_-]{1,64}\.serv
 GHOSTPRO_SERVICE_PATTERN = re.compile(r"^ghostpro@[A-Za-z0-9_-]{1,64}\.service$")
 PACKETPRO_SERVICE_PATTERN = re.compile(r"^paqetpro@[A-Za-z0-9_-]{1,64}\.service$")
 REALM_SERVICE_PATTERN = re.compile(r"^dark-realm@[A-Za-z0-9_-]{1,64}\.service$")
-_DISCOVERY_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_DISCOVERY_CACHE: tuple[float, list[dict[str, Any]], bool] = (0.0, [], False)
 
 
-def discover_tunnels() -> list[dict[str, Any]]:
-    """Discover managed DARK Backhaul, Ghost Pro, Packet Pro and Realm Pro instances."""
+def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
+    """Return DARK tunnel instances plus whether the inventory is authoritative.
+
+    Local tunnel directories are scanned in addition to loaded systemd units so
+    stopped/disabled Hub tunnels remain visible. Transient systemd failures reuse
+    the last known entry and mark the snapshot incomplete instead of publishing a
+    destructive empty inventory.
+    """
     global _DISCOVERY_CACHE
-    if time.time() - _DISCOVERY_CACHE[0] < 60:
-        return [dict(item) for item in _DISCOVERY_CACHE[1]]
-    code, output = run(["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"], timeout=15)
-    if code != 0:
-        return []
-    services: list[str] = []
-    for line in output.splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        service = parts[0]
-        if DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service) or GHOSTPRO_SERVICE_PATTERN.fullmatch(service) or PACKETPRO_SERVICE_PATTERN.fullmatch(service) or REALM_SERVICE_PATTERN.fullmatch(service):
-            services.append(service)
+    now = time.time()
+    if now - _DISCOVERY_CACHE[0] < 60:
+        return [dict(item) for item in _DISCOVERY_CACHE[1]], bool(_DISCOVERY_CACHE[2])
+
+    previous_by_service = {
+        str(item.get("service", "")): dict(item)
+        for item in _DISCOVERY_CACHE[1]
+        if item.get("service")
+    }
+    candidates: set[str] = set()
+    complete = True
+    code, output = run(
+        ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"],
+        timeout=15,
+    )
+    if code == 0:
+        for line in output.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            service = parts[0]
+            if (
+                DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service)
+                or GHOSTPRO_SERVICE_PATTERN.fullmatch(service)
+                or PACKETPRO_SERVICE_PATTERN.fullmatch(service)
+                or REALM_SERVICE_PATTERN.fullmatch(service)
+            ):
+                candidates.add(service)
+    else:
+        complete = False
+
+    filesystem_specs = (
+        (Path("/etc/dark-backhaul/tunnels"), "config.toml", "backhaul@"),
+        (Path("/etc/dark-ghostpro/tunnels"), "config.yaml", "ghostpro@"),
+        (Path("/etc/dark-packetpro/tunnels"), "config.yaml", "paqetpro@"),
+        (Path("/etc/dark-realm/tunnels"), "config.toml", "dark-realm@"),
+    )
+    for base, config_name, prefix in filesystem_specs:
+        try:
+            directories = list(base.iterdir()) if base.is_dir() else []
+        except OSError:
+            complete = False
+            directories = []
+        for directory in directories:
+            if (
+                directory.is_dir()
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", directory.name)
+                and (directory / config_name).is_file()
+            ):
+                candidates.add(f"{prefix}{directory.name}.service")
+
+    if not candidates and not complete and previous_by_service:
+        return [dict(item) for item in previous_by_service.values()], False
+
     try:
         connections = connections_snapshot()
     except (psutil.AccessDenied, OSError):
         connections = []
+        complete = False
+
     discovered: list[dict[str, Any]] = []
-    for service in sorted(set(services))[:128]:
+    for service in sorted(candidates)[:256]:
         ghost = bool(GHOSTPRO_SERVICE_PATTERN.fullmatch(service))
         packet = bool(PACKETPRO_SERVICE_PATTERN.fullmatch(service))
         realm = bool(REALM_SERVICE_PATTERN.fullmatch(service))
         prefix = "ghostpro@" if ghost else "paqetpro@" if packet else "dark-realm@" if realm else "backhaul@"
         instance = service.removeprefix(prefix).removesuffix(".service")
-        tunnel_dir = Path("/etc/dark-ghostpro/tunnels" if ghost else "/etc/dark-packetpro/tunnels" if packet else "/etc/dark-realm/tunnels" if realm else "/etc/dark-backhaul/tunnels") / instance
+        tunnel_dir = Path(
+            "/etc/dark-ghostpro/tunnels"
+            if ghost else "/etc/dark-packetpro/tunnels"
+            if packet else "/etc/dark-realm/tunnels"
+            if realm else "/etc/dark-backhaul/tunnels"
+        ) / instance
         expected_config = tunnel_dir / ("config.yaml" if ghost or packet else "config.toml")
-        _, exec_start = run(["systemctl", "show", service, "--property=ExecStart", "--value"], timeout=8)
-        if str(expected_config) not in exec_start:
+        show_code, properties = run(
+            ["systemctl", "show", service, "--property=ExecStart", "--property=MainPID"],
+            timeout=8,
+        )
+        if show_code != 0:
+            complete = False
+            cached = previous_by_service.get(service)
+            if cached:
+                discovered.append(cached)
             continue
+        systemd_values: dict[str, str] = {}
+        for line in properties.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                systemd_values[key] = value
+        if str(expected_config) not in systemd_values.get("ExecStart", ""):
+            # A matching unit name without the DARK config path is not ours.
+            continue
+
         meta: dict[str, str] = {}
         try:
-            for raw_line in (tunnel_dir / "meta.conf").read_text().splitlines():
+            for raw_line in (tunnel_dir / "meta.conf").read_text(encoding="utf-8").splitlines():
                 if "=" in raw_line:
                     key, value = raw_line.split("=", 1)
                     meta[key.strip()] = value.strip().strip('"')
         except OSError:
             pass
-        _, pid_text = run(["systemctl", "show", service, "--property=MainPID", "--value"], timeout=8)
         try:
-            root_pid = int(pid_text.strip())
+            root_pid = int(systemd_values.get("MainPID", "0").strip())
         except ValueError:
             root_pid = 0
         pids = {root_pid} if root_pid > 0 else set()
@@ -775,30 +849,58 @@ def discover_tunnels() -> list[dict[str, Any]]:
                 match = re.fullmatch(r"([0-9]{1,5})>([0-9]{1,5})@([0-9]{1,5})", item.strip())
                 if match:
                     public, target, backbone = map(int, match.groups())
-                    user_ports.append(public); target_ports.append(target); backbone_ports.append(backbone); port_mappings.append(item.strip())
-            role = configured_role if configured_role in {"edge", "gateway"} else ("gateway" if listeners and backbone_ports and listeners[0] in backbone_ports else "edge")
-            listen_port = (user_ports[0] if role == "edge" and user_ports else backbone_ports[0] if backbone_ports else None)
+                    user_ports.append(public)
+                    target_ports.append(target)
+                    backbone_ports.append(backbone)
+                    port_mappings.append(item.strip())
+            role = configured_role if configured_role in {"edge", "gateway"} else (
+                "gateway" if listeners and backbone_ports and listeners[0] in backbone_ports else "edge"
+            )
+            listen_port = user_ports[0] if role == "edge" and user_ports else backbone_ports[0] if backbone_ports else None
             target_host = meta.get("GATEWAY_HOST", "127.0.0.1") if role == "edge" else meta.get("TARGET_HOST", "127.0.0.1")
-            target_port = (backbone_ports[0] if role == "edge" and backbone_ports else target_ports[0] if target_ports else 0)
+            target_port = backbone_ports[0] if role == "edge" and backbone_ports else target_ports[0] if target_ports else 0
         else:
             listen_port = configured_port if configured_role == "server" else None
             role = configured_role if configured_role in {"server", "client"} else ("server" if listeners else "client")
             target_host = "127.0.0.1" if role == "server" else (meta.get("PEER_IP") or (remote.ip if remote else "127.0.0.1"))
             target_port = configured_port or (remote.port if remote else 0)
             try:
-                user_ports = [int(line.split()[0]) for line in (tunnel_dir / "ports.list").read_text().splitlines() if line.split() and line.split()[0].isdigit()]
+                user_ports = [
+                    int(line.split()[0])
+                    for line in (tunnel_dir / "ports.list").read_text(encoding="utf-8").splitlines()
+                    if line.split() and line.split()[0].isdigit()
+                ]
             except OSError:
                 pass
         discovered.append({
-            "name": instance, "method": method, "role": role,
-            "service": service, "listen_port": listen_port, "target_host": target_host,
-            "target_port": target_port, "user_ports": user_ports,
-            "backbone_ports": backbone_ports, "target_ports": target_ports, "port_mappings": port_mappings,
-            "transport": meta.get("TRANSPORT", "unknown"), "profile": meta.get("PROFILE", "unknown"),
-            "restart_every": meta.get("SCHEDULE", meta.get("RESTART_EVERY", "off")), "tls_domain": meta.get("TLS_DOMAIN", ""), "auto_discovered": True,
+            "name": instance,
+            "method": method,
+            "role": role,
+            "service": service,
+            "listen_port": listen_port,
+            "target_host": target_host,
+            "target_port": target_port,
+            "user_ports": user_ports,
+            "backbone_ports": backbone_ports,
+            "target_ports": target_ports,
+            "port_mappings": port_mappings,
+            "transport": meta.get("TRANSPORT", "unknown"),
+            "profile": meta.get("PROFILE", "unknown"),
+            "restart_every": meta.get("SCHEDULE", meta.get("RESTART_EVERY", "off")),
+            "tls_domain": meta.get("TLS_DOMAIN", ""),
+            "auto_discovered": True,
         })
-    _DISCOVERY_CACHE = (time.time(), discovered)
-    return [dict(item) for item in discovered]
+
+    _DISCOVERY_CACHE = (now, discovered, complete)
+    return [dict(item) for item in discovered], complete
+
+
+def discover_tunnels() -> list[dict[str, Any]]:
+    return discover_tunnels_snapshot()[0]
+
+
+def discovery_inventory_complete() -> bool:
+    return bool(_DISCOVERY_CACHE[2])
 
 
 def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -809,9 +911,11 @@ def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     if not config.get("auto_discovery", True):
         return explicit
-    known_services = {str(item.get("service", "")) for item in explicit if item.get("service")}
-    known_names = {str(item.get("name", "")) for item in explicit}
-    automatic = [item for item in discover_tunnels() if item["service"] not in known_services and item["name"] not in known_names]
+    known_instances = {(str(item.get("name", "")), str(item.get("service", ""))) for item in explicit}
+    automatic = [
+        item for item in discover_tunnels()
+        if (str(item.get("name", "")), str(item.get("service", ""))) not in known_instances
+    ]
     return explicit + automatic
 
 
@@ -1593,8 +1697,25 @@ async def main() -> None:
     if not isinstance(state, dict):
         state = {}
     timeout = httpx.Timeout(12, connect=5)
-    latest_payload = minimal_heartbeat_payload(config)
-    latest_telemetry_at = 0.0
+    cached_payload = clone_json(state.get("last_payload"), None)
+    cached_metrics = cached_payload.get("metrics", {}) if isinstance(cached_payload, dict) else {}
+    if (
+        isinstance(cached_payload, dict)
+        and isinstance(cached_metrics, dict)
+        and cached_metrics.get("inventory_complete") is True
+        and isinstance(cached_payload.get("services"), list)
+        and isinstance(cached_payload.get("tunnels"), list)
+        and isinstance(cached_payload.get("plugins"), dict)
+    ):
+        latest_payload = cached_payload
+        latest_telemetry_at = float(
+            state.get("last_telemetry_success")
+            or cached_metrics.get("inventory_snapshot_at")
+            or 0
+        )
+    else:
+        latest_payload = minimal_heartbeat_payload(config)
+        latest_telemetry_at = 0.0
     telemetry_task: asyncio.Task | None = None
     telemetry_started_at = 0.0
     job_task: asyncio.Task | None = None
@@ -1619,10 +1740,19 @@ async def main() -> None:
                 completed_task = telemetry_task
                 telemetry_task = None
                 try:
-                    latest_payload, state_updates = completed_task.result()
+                    candidate_payload, state_updates = completed_task.result()
                     state.update(state_updates)
-                    latest_telemetry_at = time.time()
-                    state["last_telemetry_success"] = latest_telemetry_at
+                    latest_payload = candidate_payload
+                    state["last_telemetry_attempt"] = time.time()
+                    candidate_metrics = latest_payload.setdefault("metrics", {})
+                    if candidate_metrics.get("inventory_complete") is True:
+                        latest_telemetry_at = time.time()
+                        candidate_metrics["inventory_snapshot_at"] = int(latest_telemetry_at)
+                        state["last_telemetry_success"] = latest_telemetry_at
+                        state["last_payload"] = clone_json(latest_payload, {})
+                        state.pop("last_telemetry_incomplete", None)
+                    else:
+                        state["last_telemetry_incomplete"] = state["last_telemetry_attempt"]
                     state.pop("last_telemetry_error", None)
                 except Exception as exc:
                     message = f"{type(exc).__name__}: {exc}"[:1000]
@@ -1631,10 +1761,14 @@ async def main() -> None:
 
             heartbeat_payload = clone_json(latest_payload, minimal_heartbeat_payload(config))
             metrics = heartbeat_payload.setdefault("metrics", {})
-            telemetry_age = int(max(0, time.time() - latest_telemetry_at)) if latest_telemetry_at else 0
+            inventory_complete = metrics.get("inventory_complete") is True
+            snapshot_at = float(metrics.get("inventory_snapshot_at") or latest_telemetry_at or 0)
+            telemetry_age = int(max(0, time.time() - snapshot_at)) if snapshot_at else 0
+            metrics["inventory_complete"] = inventory_complete
+            metrics["inventory_snapshot_at"] = int(snapshot_at) if inventory_complete else 0
             metrics["telemetry_age_seconds"] = telemetry_age
             metrics["telemetry_status"] = (
-                "fresh" if latest_telemetry_at and telemetry_age <= 90
+                "fresh" if inventory_complete and snapshot_at and telemetry_age <= 90
                 else "collecting" if telemetry_task is not None and time.monotonic() - telemetry_started_at <= 120
                 else "stale"
             )

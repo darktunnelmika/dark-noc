@@ -441,50 +441,129 @@ async function openTunnelManager(tunnel){
 }
 
 function renderLiveTopology() {
-  const topology = $('#topology');
-  const seen=new Set(), links=[];
+  const topology=$('#topology');
+  const nodeIndex=new Map(state.nodes.map(node=>[Number(node.id),node]));
+  const groups=new Map();
   state.tunnels.forEach(tunnel=>{
-    const peerId=Number(tunnel.peer_node_id||0);
-    const key=peerId?[tunnel.name,Math.min(Number(tunnel.node_id),peerId),Math.max(Number(tunnel.node_id),peerId)].join(':'):`${tunnel.id}:endpoint`;
-    if(seen.has(key))return;seen.add(key);
-    const peerRow=peerId?state.tunnels.find(item=>item.name===tunnel.name&&Number(item.node_id)===peerId):null;
-    const ownNode=state.nodes.find(node=>Number(node.id)===Number(tunnel.node_id));
-    const peerNode=state.nodes.find(node=>Number(node.id)===peerId);
-    const ownIsExit=ownNode?.role==='exit'||tunnel.tunnel_role==='client';
-    const leftNode=ownIsExit?peerNode:ownNode, rightNode=ownIsExit?ownNode:peerNode;
-    const leftFallback=ownIsExit?(tunnel.peer_name||'IRAN ENDPOINT'):(tunnel.node_name||'IRAN ENDPOINT');
-    const leftHost=displayHost(leftNode?.host||leftNode?.observed_ip||(ownIsExit?tunnel.peer_host:tunnel.node_host));
-    const rightFallback=ownIsExit?(tunnel.node_name||'REMOTE ENDPOINT'):(tunnel.peer_name||'REMOTE ENDPOINT');
-    const rightHost=displayHost(rightNode?.host||rightNode?.observed_ip||(ownIsExit?tunnel.node_host:tunnel.peer_host));
-    const statuses=[tunnel.status,peerRow?.status].filter(Boolean).map(value=>String(value).toLowerCase());
-    const status=statuses.includes('down')?'DOWN':statuses.includes('stale')?'STALE':statuses.includes('degraded')?'DEGRADED':'ONLINE';
+    const peerId=Number(tunnel.peer_node_id||0),nodeId=Number(tunnel.node_id||0);
+    const fallbackKey=peerId
+      ?`${tunnel.method||'DARK'}|${tunnel.name}|${Math.min(nodeId,peerId)}|${Math.max(nodeId,peerId)}`
+      :`${tunnel.method||'DARK'}|${tunnel.name}|${nodeId}|${tunnel.service||tunnel.id}`;
+    const key=String(tunnel.topology_key||fallbackKey);
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(tunnel);
+  });
+
+  const inferSide=(tunnel,node)=>{
+    const explicit=String(tunnel.topology_side||'').toLowerCase();
+    if(explicit==='iran'||explicit==='kharej')return explicit;
+    if(node?.role==='hub'||node?.role==='edge')return 'iran';
+    if(node?.role==='exit')return 'kharej';
+    const role=String(tunnel.tunnel_role||'').toLowerCase(),method=String(tunnel.method||'');
+    if(method==='DARK Packet Pro')return role==='client'?'iran':role==='server'?'kharej':'unknown';
+    if(method==='DARK Realm Pro')return role==='edge'?'iran':role==='gateway'?'kharej':'unknown';
+    if(method==='DARK Backhaul'||method==='DARK Ghost Pro')return role==='server'?'iran':role==='client'?'kharej':'unknown';
+    return 'unknown';
+  };
+  const endpoint=(node,name,host)=>({
+    node,
+    name:node?.name||name||'UNRESOLVED ENDPOINT',
+    host:displayHost(node?.observed_ip||node?.host||host||'IP UNAVAILABLE')
+  });
+  const severity={healthy:0,online:0,unknown:1,pending:1,degraded:2,stale:3,offline:4,down:4};
+  const links=[];
+  groups.forEach(rows=>{
+    const records=rows.map(tunnel=>{
+      const node=nodeIndex.get(Number(tunnel.node_id));
+      return {tunnel,node,side:inferSide(tunnel,node)};
+    });
+    let iran=records.find(item=>item.side==='iran')||null;
+    let kharej=records.find(item=>item.side==='kharej')||null;
+    if(!iran&&!kharej&&records.length){
+      const first=records[0];
+      if(first.node?.role==='exit')kharej=first;else iran=first;
+    }
+    const representative=iran?.tunnel||kharej?.tunnel||rows[0];
+    const peerId=Number(representative.peer_node_id||0);
+    const peerNode=nodeIndex.get(peerId);
+    const left=iran
+      ?endpoint(iran.node,iran.tunnel.node_name,iran.tunnel.node_observed_ip||iran.tunnel.node_host)
+      :endpoint(peerNode,kharej?.tunnel.peer_name||'IRAN / HUB',kharej?.tunnel.peer_host);
+    const right=kharej
+      ?endpoint(kharej.node,kharej.tunnel.node_name,kharej.tunnel.node_observed_ip||kharej.tunnel.node_host)
+      :endpoint(peerNode,iran?.tunnel.peer_name||'REMOTE ENDPOINT',iran?.tunnel.peer_host||iran?.tunnel.target_host);
+    const statuses=rows.map(item=>String(item.status||'unknown').toLowerCase());
+    if(left.node&&left.node.status!=='online')statuses.push('stale');
+    if(right.node&&right.node.status!=='online')statuses.push('stale');
+    const worst=statuses.reduce((current,value)=>(severity[value]??1)>(severity[current]??1)?value:current,'healthy');
+    const status=['down','offline'].includes(worst)?'DOWN':worst==='stale'?'STALE':worst==='degraded'?'DEGRADED':'ONLINE';
     const tone=status==='ONLINE'?'online':status==='DEGRADED'?'degraded':status==='STALE'?'stale':'down';
-    const haystack=[tunnel.name,leftNode?.name,leftHost,rightNode?.name,rightFallback,rightHost].join(' ').toLowerCase();
+    const haystack=[representative.name,representative.method,left.name,left.host,right.name,right.host].join(' ').toLowerCase();
     if(state.topologyFilter!=='all'&&state.topologyFilter!==tone)return;
     if(state.topologySearch&&!haystack.includes(state.topologySearch))return;
-    links.push({tunnel,leftNode,rightNode,leftFallback,leftHost,rightFallback,rightHost,status,tone});
+    const rates=rows.map(item=>Number(item.rx_bps||0)+Number(item.tx_bps||0));
+    links.push({
+      tunnel:representative,rows,left,right,status,tone,
+      rate:rates.length?Math.max(...rates):0,
+      sessions:Math.max(0,...rows.map(item=>Number(item.sessions||0))),
+      health:Math.min(100,...rows.map(item=>Number(item.health_score??100))),
+      latency:Math.max(0,...rows.map(item=>Number(item.latency_ms||0))),
+      loss:Math.max(0,...rows.map(item=>Number(item.packet_loss||0))),
+      uptime:Math.max(0,...rows.map(item=>Number(item.service_uptime||0)))
+    });
   });
-  if(!links.length){topology.innerHTML='<div class="grid-floor"></div><div class="empty-state compact-empty"><strong>No matching DARK Backhaul path</strong>Change the topology filter or wait for Agent telemetry.</div>';return;}
+
+  if(!links.length){
+    topology.style.setProperty('--topology-canvas-height','414px');
+    topology.innerHTML='<div class="grid-floor"></div><div class="empty-state compact-empty"><strong>No matching tunnel path</strong>Change the filter or wait for a complete Agent inventory.</div>';
+    return;
+  }
+
   const rootMap=new Map(),leafMap=new Map();
   links.forEach(link=>{
-    link.rootKey=link.leftNode?.id?`n${link.leftNode.id}`:`r${link.leftHost}`;
-    link.leafKey=link.rightNode?.id?`n${link.rightNode.id}`:`e${link.rightHost}`;
-    if(!rootMap.has(link.rootKey))rootMap.set(link.rootKey,{node:link.leftNode,name:link.leftNode?.name||link.leftFallback,host:link.leftHost});
-    if(!leafMap.has(link.leafKey))leafMap.set(link.leafKey,{node:link.rightNode,name:link.rightNode?.name||link.rightFallback,host:link.rightHost});
+    link.rootKey=link.left.node?.id?`n${link.left.node.id}`:`r${link.left.name}|${link.left.host}`;
+    link.leafKey=link.right.node?.id?`n${link.right.node.id}`:`e${link.right.name}|${link.right.host}`;
+    if(!rootMap.has(link.rootKey))rootMap.set(link.rootKey,link.left);
+    if(!leafMap.has(link.leafKey))leafMap.set(link.leafKey,link.right);
   });
   const roots=[...rootMap.entries()],leaves=[...leafMap.entries()];
-  const yAt=(index,total)=>total===1?210:65+(index*(290/(total-1)));
+  const laneCount=Math.max(roots.length,leaves.length,1);
+  const canvasHeight=Math.max(414,80+laneCount*104);
+  topology.style.setProperty('--topology-canvas-height',`${canvasHeight}px`);
+  const yAt=(index,total)=>total===1?canvasHeight/2:58+(index*((canvasHeight-116)/(total-1)));
   const rootY=Object.fromEntries(roots.map(([key],index)=>[key,yAt(index,roots.length)]));
   const leafY=Object.fromEntries(leaves.map(([key],index)=>[key,yAt(index,leaves.length)]));
+  const pairTotals=new Map();
+  links.forEach(link=>{const key=`${link.rootKey}|${link.leafKey}`;pairTotals.set(key,(pairTotals.get(key)||0)+1);});
+  const pairIndexes=new Map();
   const defs=`<defs><filter id="cyber-glow"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><marker id="route-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>`;
-  const routes=links.map((link,index)=>{const y1=rootY[link.rootKey],y2=leafY[link.leafKey],rate=Number(link.tunnel.rx_bps||0)+Number(link.tunnel.tx_bps||0),width=Math.min(4,1.6+Math.log10(rate+1)/4),path=`M165 ${y1} C330 ${y1},570 ${y2},735 ${y2}`,duration=Math.max(1.4,7-Math.log10(rate+1));const packets=link.tone==='online'?`<circle class="route-packet" r="3"><animateMotion dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle><circle class="route-packet" r="2" opacity=".65"><animateMotion begin="-${(duration/2).toFixed(1)}s" dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle>`:'';return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="${path}"/><path id="route-${index}" class="cyber-route" style="--route-width:${width.toFixed(2)}" d="${path}"/>${packets}<text class="route-label" x="450" y="${((y1+y2)/2-7).toFixed(1)}" text-anchor="middle">${esc(link.tunnel.name)} · ${esc(String(link.tunnel.transport||link.tunnel.method).toUpperCase())}</text></g>`;}).join('');
-  const nodeCard=(entry,y,side)=>{const node=entry.node,agent=node?.status==='online',ssh=Boolean(node?.ssh_configured);return `<button class="cyber-node ${side}" style="top:${(y/420*100).toFixed(2)}%" data-node-id="${node?.id||''}" data-endpoint-name="${esc(entry.name)}"><i>${side==='root'?(node?.role==='hub'?'HB':'IR'):'EX'}</i><span><strong>${esc(entry.name)}</strong><small>${esc(entry.host)}</small><em><b class="${agent?'ready':'missing'}">AG ${agent?'ON':'OFF'}</b><b class="${ssh?'ready':'missing'}">SSH ${ssh?'READY':'NO'}</b></em></span></button>`;};
+  const routes=links.map((link,index)=>{
+    const y1=rootY[link.rootKey],y2=leafY[link.leafKey],pairKey=`${link.rootKey}|${link.leafKey}`;
+    const ordinal=pairIndexes.get(pairKey)||0,total=pairTotals.get(pairKey)||1;pairIndexes.set(pairKey,ordinal+1);
+    const offset=(ordinal-(total-1)/2)*24;
+    const width=Math.min(4,1.6+Math.log10(link.rate+1)/4),path=`M165 ${y1} C330 ${y1+offset},570 ${y2+offset},735 ${y2}`;
+    const duration=Math.max(1.4,7-Math.log10(link.rate+1));
+    const packets=link.tone==='online'?`<circle class="route-packet" r="3"><animateMotion dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle><circle class="route-packet" r="2" opacity=".65"><animateMotion begin="-${(duration/2).toFixed(1)}s" dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle>`:'';
+    return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="${path}"/><path id="route-${index}" class="cyber-route" style="--route-width:${width.toFixed(2)}" d="${path}"/>${packets}<text class="route-label" x="450" y="${((y1+y2)/2+offset-7).toFixed(1)}" text-anchor="middle">${esc(link.tunnel.name)} · ${esc(String(link.tunnel.transport||link.tunnel.method).toUpperCase())}</text></g>`;
+  }).join('');
+  const nodeCard=(entry,y,side)=>{
+    const node=entry.node,agent=node?node.status==='online':null,ssh=node?Boolean(node.ssh_configured):null;
+    const badge=side==='root'?(node?.role==='hub'?'HB':'IR'):'EX';
+    return `<button class="cyber-node ${side} ${node?'':'unresolved'}" style="top:${y.toFixed(1)}px" data-node-id="${node?.id||''}" data-endpoint-name="${esc(entry.name)}"><i>${badge}</i><span><strong>${esc(entry.name)}</strong><small>${esc(entry.host)}</small><em><b class="${agent===true?'ready':agent===false?'missing':'neutral'}">AG ${agent===true?'ON':agent===false?'OFF':'N/A'}</b><b class="${ssh===true?'ready':ssh===false?'missing':'neutral'}">SSH ${ssh===true?'READY':ssh===false?'NO':'N/A'}</b></em></span></button>`;
+  };
   const nodes=[...roots.map(([key,entry])=>nodeCard(entry,rootY[key],'root')),...leaves.map(([key,entry])=>nodeCard(entry,leafY[key],'leaf'))].join('');
-  topology.innerHTML=`<div class="grid-floor" aria-hidden="true"></div><span class="region-label iran">IRAN / HUB</span><span class="region-label global">GLOBAL EXITS</span><svg class="cyber-links" viewBox="0 0 900 420" preserveAspectRatio="none">${defs}${routes}</svg>${nodes}<div class="topology-tooltip" id="topology-tooltip"></div><div class="cyber-scan"></div>`;
+  topology.innerHTML=`<div class="grid-floor" aria-hidden="true"></div><span class="region-label iran">IRAN / HUB</span><span class="region-label global">GLOBAL EXITS</span><svg class="cyber-links" viewBox="0 0 900 ${canvasHeight}" preserveAspectRatio="none">${defs}${routes}</svg>${nodes}<div class="topology-tooltip" id="topology-tooltip"></div><div class="cyber-scan"></div>`;
   const tooltip=$('#topology-tooltip');
   $$('.route-group',topology).forEach(route=>{
-    const link=links[Number(route.dataset.route)],t=link.tunnel,rate=t.rx_bps==null&&t.tx_bps==null?'NO TRAFFIC DATA':bytesPerSecond(Number(t.rx_bps||0)+Number(t.tx_bps||0)),ports=(t.user_ports||[]).join(', ')||t.listen_port||t.target_port||'—';
-    const show=event=>{tooltip.innerHTML=`<strong>${esc(t.name)} <i class="${link.tone}">${esc(link.status)}</i></strong><span>${esc(link.leftHost)} → ${esc(link.rightHost)}</span><small>${esc(t.method||'DARK')} · ${esc(String(t.transport||'unknown').toUpperCase())} · ${esc(String(t.profile||'unknown').toUpperCase())}</small><small>SERVICE ${esc(t.service||'—')} · UPTIME ${elapsedDuration(t.service_uptime||0)}</small><small>PORTS ${esc(ports)} · SESSIONS ${Number(t.sessions||0)}</small><small>TRAFFIC ${esc(rate)} · LATENCY ${t.latency_ms==null?'—':`${Number(t.latency_ms).toFixed(1)}ms`} · LOSS ${t.packet_loss==null?'—':`${Number(t.packet_loss).toFixed(1)}%`}</small><small>HEALTH SCORE ${Number(t.health_score||0)}% · CLICK TO OPEN OPERATIONS</small>`;const rect=topology.getBoundingClientRect();tooltip.style.left=`${Math.min(event.clientX-rect.left+14,rect.width-330)}px`;tooltip.style.top=`${Math.max(event.clientY-rect.top-120,8)}px`;tooltip.classList.add('open');};
+    const link=links[Number(route.dataset.route)],t=link.tunnel;
+    const rate=link.rows.every(item=>item.rx_bps==null&&item.tx_bps==null)?'NO TRAFFIC DATA':bytesPerSecond(link.rate);
+    const ports=[...new Set(link.rows.flatMap(item=>[
+      ...(Array.isArray(item.user_ports)?item.user_ports:[]),item.listen_port,item.target_port
+    ]).filter(Boolean))].join(', ')||'—';
+    const show=event=>{
+      tooltip.innerHTML=`<strong>${esc(t.name)} <i class="${link.tone}">${esc(link.status)}</i></strong><span>${esc(link.left.host)} → ${esc(link.right.host)}</span><small>${esc(t.method||'DARK')} · ${esc(String(t.transport||'unknown').toUpperCase())} · ${esc(String(t.profile||'unknown').toUpperCase())}</small><small>SERVICE ${esc(link.rows.map(item=>item.service).filter(Boolean).join(' ↔ ')||'—')} · UPTIME ${elapsedDuration(link.uptime)}</small><small>PORTS ${esc(ports)} · SESSIONS ${link.sessions}</small><small>TRAFFIC ${esc(rate)} · LATENCY ${link.latency?`${link.latency.toFixed(1)}ms`:'—'} · LOSS ${link.loss.toFixed(1)}%</small><small>HEALTH SCORE ${link.health}% · CLICK TO OPEN OPERATIONS</small>`;
+      const rect=topology.getBoundingClientRect();tooltip.style.left=`${Math.min(event.clientX-rect.left+14,rect.width-330)}px`;tooltip.style.top=`${Math.max(event.clientY-rect.top-120,8)}px`;tooltip.classList.add('open');
+    };
     route.addEventListener('mousemove',show);route.addEventListener('mouseenter',show);route.addEventListener('mouseleave',()=>tooltip.classList.remove('open'));route.addEventListener('focus',()=>{const rect=topology.getBoundingClientRect();show({clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});});route.addEventListener('blur',()=>tooltip.classList.remove('open'));route.addEventListener('click',()=>openTunnelManager(t));route.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openTunnelManager(t);}});
   });
 }

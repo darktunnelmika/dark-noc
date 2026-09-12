@@ -39,6 +39,7 @@ jobs:
           python tests/local_hub_recovery.py
           python tests/installer_contracts.py
           python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
