@@ -1,0 +1,58 @@
+name: Fix Server CLI Placeholder Test Flake
+
+on:
+  push:
+    branches: ["fix/server-cli-placeholder-flake"]
+    paths:
+      - ".github/workflows/fix-server-cli-placeholder-flake.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Replace broad double-underscore assertion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/server_cli.py")
+          source = path.read_text(encoding="utf-8")
+          old = '    assert "__" not in site\n'
+          new = '''    for placeholder in (
+              "__HOST__",
+              "__PUBLIC_PORT__",
+              "__HUB_PORT__",
+              "__REDIRECT__",
+              "__UPLOAD_LIMIT__",
+              "__ACME_ROOT__",
+              "__CERT_DIR__",
+          ):
+              assert placeholder not in site
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("server CLI placeholder assertion anchor mismatch")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
+      - name: Prove the regression with a double-underscore temp root
+        run: |
+          mkdir -p /tmp/dark__noc-tests
+          TMPDIR=/tmp/dark__noc-tests python tests/server_cli.py
+          python -m py_compile tests/server_cli.py
+      - name: Publish test fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git restore --source=HEAD -- .github/workflows/fix-server-cli-placeholder-flake.yml
+          git add tests/server_cli.py
+          git diff --cached --check
+          git commit -m "test: validate exact Nginx placeholders without temp-path flake"
+          git push origin HEAD:fix/server-cli-placeholder-flake
