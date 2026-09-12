@@ -93,7 +93,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -rf .v294-bootstrap
-          git restore --source=HEAD -- .github/workflows/v294-hub-pulse-topology.yml
+          git restore --source=HEAD -- \
+            .github/workflows/v294-hub-pulse-topology.yml \
+            .github/workflows/release.yml
           git add -A
           git diff --cached --check
           git commit -m "fix: isolate Hub liveness and restore live topology flow"
