@@ -166,7 +166,16 @@ exit 0
     assert "listen 9443 ssl http2;" in site
     assert "proxy_pass http://127.0.0.1:19090;" in site
     assert "return 301 https://noc.example.test:9443$request_uri;" in site
-    assert "__" not in site
+    for placeholder in (
+        "__HOST__",
+        "__PUBLIC_PORT__",
+        "__HUB_PORT__",
+        "__REDIRECT__",
+        "__UPLOAD_LIMIT__",
+        "__ACME_ROOT__",
+        "__CERT_DIR__",
+    ):
+        assert placeholder not in site
 
     # A requested public port which equals the old private backend must move
     # the backend first, then update the local Agent loopback URL.
