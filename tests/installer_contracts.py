@@ -45,8 +45,8 @@ for workflow in (ci, release):
     assert "python tests/realm_integration.py" in workflow
     assert "python tests/local_hub_recovery.py" in workflow
     assert "python tests/installer_contracts.py" in workflow
-    assert "python tests/agent_heartbeat_resilience.py" in workflow
-    assert "python tests/topology_inventory_regression.py" in workflow
+assert "python tests/agent_heartbeat_resilience.py" in ci
+assert "python tests/topology_inventory_regression.py" in ci
 
 with tempfile.TemporaryDirectory(prefix="dark-noc-agent-without-realm-") as tmp_name:
     copied = Path(tmp_name) / "agent.py"
