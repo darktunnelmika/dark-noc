@@ -35,10 +35,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .hub-recovery-bootstrap/part00 \
+          cat .hub-recovery-bootstrap/part000 \
+              .hub-recovery-bootstrap/part001 \
+              .hub-recovery-bootstrap/part002 \
               .hub-recovery-bootstrap/part01 \
               .hub-recovery-bootstrap/part02 \
-              .hub-recovery-bootstrap/part03 \
+              .hub-recovery-bootstrap/part030 \
+              .hub-recovery-bootstrap/part031 \
+              .hub-recovery-bootstrap/part032 \
               .hub-recovery-bootstrap/part04 \
               .hub-recovery-bootstrap/part05 \
               .hub-recovery-bootstrap/part06 > /tmp/hub-recovery.b64
