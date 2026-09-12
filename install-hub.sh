@@ -72,7 +72,7 @@ validate_integer_setting() {
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.9.5"
+echo "  Nightfall Command v2.9.6"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
@@ -471,7 +471,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
     row = connection.execute('SELECT status,agent_version,last_seen FROM nodes WHERE id=?', (int(sys.argv[2]),)).fetchone()
 baseline = int(sys.argv[3])
 ready = bool(
-    row and row[0] == 'online' and row[1] == '2.9.5'
+    row and row[0] == 'online' and row[1] == '2.9.6'
     and int(row[2] or 0) > baseline and int(row[2] or 0) >= int(time.time()) - 120
 )
 raise SystemExit(0 if ready else 1)
@@ -483,7 +483,7 @@ PY
   sleep 2
 done
 if [[ "$LOCAL_AGENT_READY" -ne 1 ]]; then
-  echo "Local Agent started but DARK NOC did not receive a fresh v2.9.5 heartbeat."
+  echo "Local Agent started but DARK NOC did not receive a fresh v2.9.6 heartbeat."
   echo "Enrollment token reused: $LOCAL_AGENT_REUSED"
   systemctl status dark-noc-agent.service --no-pager -l || true
   journalctl -u dark-noc-agent.service -n 120 --no-pager || true

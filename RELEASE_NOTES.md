@@ -1,3 +1,31 @@
+# DARK NOC v2.9.6 — Live Tunnel Matrix Cyber Refresh
+
+This release delivers the already-committed, isolated Live tunnel matrix
+enhancement through the normal verified installer and updater.
+
+- A continuous, unfiltered base path stays visible at zero or low traffic.
+- Separate neon cores, flow segments and packet effects decorate active paths.
+- Flat horizontal routes have an explicit padded glow filter region.
+- Idle, stale and offline routes do not animate fake traffic.
+- Route/card hover, keyboard focus and status colors are clearer.
+- Motion pauses off-screen and respects reduced-motion preferences;
+  expensive effects are bounded for large route counts.
+
+Scope: only the overview's Live tunnel matrix visuals and interactions.
+The main app.js, shared styles.css, other views, APIs, tunnel configuration,
+pairing, deployment and Agent logic are unchanged. Release identifiers,
+installer exact-version handshakes, cache keys and test version expectations
+are synchronized to 2.9.6 for packaging; no runtime logic or tests are removed.
+
+## فارسی
+
+این انتشار فقط ظاهر بخش Live tunnel matrix را به‌روز می‌کند: خط اتصال
+در ترافیک کم یا صفر هم دیده می‌شود و افکت انتقال داده از خط پایه جداست.
+هدر، منوها، صفحات دیگر و منطق تونل‌ها تغییری نکرده‌اند. شماره‌های نسخه
+در Hub، Agent، نصب‌کننده و تست‌ها فقط برای هماهنگی انتشار تغییر کرده‌اند.
+
+---
+
 # DARK NOC v2.9.5 — Hub Agent Runtime & Solid Live Routes
 
 The Hub upgrade transaction no longer restores a successfully repaired local

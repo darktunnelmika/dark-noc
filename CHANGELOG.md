@@ -1,5 +1,16 @@
 # DARK NOC v2.9.5
 
+## 2.9.6 — Live tunnel matrix only
+
+- Publish isolated live-matrix.css and live-matrix.js; shared frontend
+  logic/styles remain unchanged and index.html only loads the assets.
+- Keep every connection visible independently of rate, including flat paths.
+- Add scoped neon flow, route beacons, card accents and related-route focus.
+- Stop stale/offline/idle flow and bound motion for reduced-motion/large maps.
+- Synchronize release identifiers, installer handshakes and regression
+  expectations only; no backend, Agent or installer logic changes.
+
+
 - Keeps the repaired local Hub Agent enabled and running after an upgrade, even when the pre-upgrade Agent was crashed or stopped.
 - Requires a fresh post-upgrade v2.9.5 pulse before the upgrade can succeed.
 - Makes the Hub service pull in its local Agent on service start and boot.
