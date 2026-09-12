@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Transaction trigger: binary XZ payload with native pair-code compatibility v8.
+# Transaction trigger: import-safe Realm adapter v9.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
@@ -41,6 +41,30 @@ jobs:
           xz -dc /tmp/realm-integration.py.xz > /tmp/integrate_realm_noc.py
           python -m py_compile /tmp/integrate_realm_noc.py
           python /tmp/integrate_realm_noc.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("agent/agent.py")
+          source = path.read_text(encoding="utf-8")
+          old = "from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm"
+          new = '''try:
+              from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm
+          except ModuleNotFoundError:
+              import importlib.util as _realm_importlib_util
+              _realm_adapter_path = Path(__file__).resolve().with_name("realm_plugin.py")
+              _realm_adapter_spec = _realm_importlib_util.spec_from_file_location("dark_noc_realm_plugin", _realm_adapter_path)
+              if _realm_adapter_spec is None or _realm_adapter_spec.loader is None:
+                  raise
+              _realm_adapter_module = _realm_importlib_util.module_from_spec(_realm_adapter_spec)
+              _realm_adapter_spec.loader.exec_module(_realm_adapter_module)
+              deploy_dark_realm = _realm_adapter_module.deploy
+              install_dark_realm = _realm_adapter_module.install_core
+              realm_inventory = _realm_adapter_module.inventory
+              remove_dark_realm = _realm_adapter_module.remove'''
+          if source.count(old) != 1:
+              raise SystemExit("Realm adapter import anchor mismatch")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
           rm -rf .realm-bootstrap .github/workflows/realm-integration.yml
 
       - name: Install project dependencies
