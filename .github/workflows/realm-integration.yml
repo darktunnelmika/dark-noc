@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Transaction trigger: import-safe adapters and direct-test path v11.
+# Transaction trigger: validated source push without workflow mutation v12.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
@@ -131,12 +131,13 @@ jobs:
           scripts/build-release.sh
           diff -qr "$first_build" dist
 
-      - name: Publish validated Realm integration
+      - name: Publish validated Realm source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git restore --source=HEAD -- .github/workflows/ci.yml .github/workflows/realm-integration.yml
           git add -A
           git diff --cached --check
           git commit -m "feat: integrate DARK Realm Pro into DARK NOC v2.9.0"
