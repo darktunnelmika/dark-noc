@@ -27,17 +27,18 @@ jobs:
           path = Path("tests/server_cli.py")
           source = path.read_text(encoding="utf-8")
           old = '    assert "__" not in site\n'
-          new = '''    for placeholder in (
-              "__HOST__",
-              "__PUBLIC_PORT__",
-              "__HUB_PORT__",
-              "__REDIRECT__",
-              "__UPLOAD_LIMIT__",
-              "__ACME_ROOT__",
-              "__CERT_DIR__",
-          ):
-              assert placeholder not in site
-          '''
+          new = (
+              '    for placeholder in (\n'
+              '        "__HOST__",\n'
+              '        "__PUBLIC_PORT__",\n'
+              '        "__HUB_PORT__",\n'
+              '        "__REDIRECT__",\n'
+              '        "__UPLOAD_LIMIT__",\n'
+              '        "__ACME_ROOT__",\n'
+              '        "__CERT_DIR__",\n'
+              '    ):\n'
+              '        assert placeholder not in site\n'
+          )
           if source.count(old) != 1:
               raise SystemExit("server CLI placeholder assertion anchor mismatch")
           path.write_text(source.replace(old, new), encoding="utf-8")
