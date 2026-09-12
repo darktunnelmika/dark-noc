@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           cat .realm-bootstrap/part00 .realm-bootstrap/part01 .realm-bootstrap/part02 > /tmp/realm-integration.b64
           base64 -d /tmp/realm-integration.b64 > /tmp/realm-integration.py.xz
-          echo "2adfa7d860296d83d627cafee23410cd6f17ee9dd495c04b3557eeed48351260  /tmp/realm-integration.py.xz" | sha256sum -c -
+          echo "7e5cf500b21906f1ea4eb66105fc279387c86e7e4313918d162dd529a1e14fa1  /tmp/realm-integration.py.xz" | sha256sum -c -
           xz -dc /tmp/realm-integration.py.xz > /tmp/integrate_realm_noc.py
           python -m py_compile /tmp/integrate_realm_noc.py
           python /tmp/integrate_realm_noc.py
