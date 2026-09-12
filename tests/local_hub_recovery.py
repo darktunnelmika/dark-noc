@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-local-hub-") as data_dir:
             "/api/agent/heartbeat",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "agent_version": "2.9.1",
+                "agent_version": "2.9.2",
                 "metrics": {"cpu": 1, "ram": 2, "swap": 0, "disk": 3, "load1": 0.1},
                 "services": [], "tunnels": [], "plugins": {}, "autoheal": {},
             },
@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-local-hub-") as data_dir:
             before = conn.execute(
                 "SELECT status,last_seen,agent_version,agent_token_hash FROM nodes WHERE id=?", (node_id,)
             ).fetchone()
-        assert before["status"] == "online" and before["agent_version"] == "2.9.1" and before["last_seen"]
+        assert before["status"] == "online" and before["agent_version"] == "2.9.2" and before["last_seen"]
 
         reused = client.post(
             "/api/agent/local-enroll",

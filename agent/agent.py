@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import shlex
@@ -18,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import psutil
@@ -58,9 +60,11 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.1"
+VERSION = "2.9.2"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
+LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
+LOGGER = logging.getLogger("dark-noc-agent")
 ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
 
 DARKBH_RELEASE_API = "https://api.github.com/repos/Musixal/Backhaul/releases/latest"
@@ -93,10 +97,150 @@ def load_json(path: Path, default: Any) -> Any:
 
 def save_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        json.dump(value, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def clone_json(value: Any, default: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def systemd_notify(message: str) -> bool:
+    address = os.getenv("NOTIFY_SOCKET", "")
+    if not address:
+        return False
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+            notifier.connect(address)
+            notifier.sendall(message.encode())
+        return True
+    except OSError:
+        return False
+
+
+def read_root_env_value(path: Path, key: str) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    prefix = f"{key}="
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        try:
+            parts = shlex.split(line[len(prefix):], posix=True)
+        except ValueError:
+            return ""
+        return parts[0] if len(parts) == 1 else ""
+    return ""
+
+
+def minimal_heartbeat_payload(config: dict[str, Any]) -> dict[str, Any]:
+    now = time.time()
+    try:
+        disk_percent = psutil.disk_usage("/").percent
+    except OSError:
+        disk_percent = 0.0
+    try:
+        load1 = max(0.0, float(os.getloadavg()[0]))
+    except (AttributeError, OSError):
+        load1 = 0.0
+    try:
+        uptime = max(0, int(now - psutil.boot_time()))
+    except (OSError, ValueError):
+        uptime = 0
+    metrics = {
+        "hostname": socket.gethostname(),
+        "cpu": max(0.0, float(psutil.cpu_percent(interval=None))),
+        "ram": max(0.0, float(psutil.virtual_memory().percent)),
+        "swap": max(0.0, float(psutil.swap_memory().percent)),
+        "disk": max(0.0, float(disk_percent)),
+        "load1": load1,
+        "rx_bps": 0.0,
+        "tx_bps": 0.0,
+        "uptime": uptime,
+        "connections": 0,
+        "telemetry_status": "starting",
+        "telemetry_age_seconds": 0,
+        "agent_loop_ts": int(now),
+    }
+    return {
+        "metrics": metrics,
+        "services": [],
+        "tunnels": [],
+        "plugins": {},
+        "agent_version": VERSION,
+        "autoheal": clone_json(config.get("autoheal", {}), {}),
+    }
+
+
+async def recover_local_enrollment(client: httpx.AsyncClient, hub: str, config: dict[str, Any]) -> bool:
+    parsed = urlsplit(hub)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return False
+    secret = read_root_env_value(LOCAL_HUB_ENV_PATH, "DARK_NOC_LOCAL_ENROLL_SECRET")
+    if not secret:
+        return False
+    current_token = str(config.get("agent_token") or "")
+    headers = {"X-Dark-Noc-Bootstrap": secret}
+    if current_token:
+        headers["X-Dark-Noc-Existing-Agent"] = current_token
+    response = await client.post(f"{hub}/api/agent/local-enroll", headers=headers, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    token = str(payload.get("agent_token") or "")
+    if len(token) < 8 or any(ord(char) < 33 for char in token):
+        raise RuntimeError("Local Agent recovery returned an invalid enrollment token")
+    config["agent_token"] = token
+    save_json(CONFIG_PATH, config)
+    client.headers["Authorization"] = f"Bearer {token}"
+    LOGGER.warning("Recovered local Hub Agent enrollment (reused=%s)", bool(payload.get("reused")))
+    return True
+
+
+async def collect_reports_for_payload(config: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+    reports = await _collect_tunnel_reports(monitored_tunnels(config))
+    await maybe_autoheal(config, reports, state)
+    return reports
+
+
+def collect_payload_blocking(config: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    refresh_connection_snapshot()
+    metrics = base_metrics(state.get("net", {}))
+    state["net"] = {
+        key: metrics[key]
+        for key in (
+            "bytes_recv", "bytes_sent", "disk_read_bytes", "disk_write_bytes",
+            "network_errors", "network_drops", "ts",
+        )
+    }
+    metrics["inventory"] = system_inventory(state)
+    reports = asyncio.run(collect_reports_for_payload(config, state))
+    payload = {
+        "metrics": metrics,
+        "services": service_reports(config),
+        "tunnels": reports,
+        "plugins": plugin_inventory(),
+        "agent_version": VERSION,
+        "autoheal": clone_json(config.get("autoheal", {}), {}),
+    }
+    state_updates = {
+        key: clone_json(state[key], state[key])
+        for key in ("net", "inventory", "inventory_checked_at", "restart_history", "last_restart")
+        if key in state
+    }
+    return payload, state_updates
 
 
 def run(command: list[str], timeout: int = 20) -> tuple[int, str]:
@@ -1430,7 +1574,13 @@ async def process_jobs(jobs: list[dict[str, Any]], config: dict[str, Any], clien
 
 
 async def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     config = load_json(CONFIG_PATH, {})
+    if not isinstance(config, dict):
+        raise SystemExit(f"Invalid JSON object in {CONFIG_PATH}")
     required = ["hub_url", "agent_token"]
     if any(not config.get(key) for key in required):
         raise SystemExit(f"Missing required keys in {CONFIG_PATH}: {', '.join(required)}")
@@ -1440,38 +1590,110 @@ async def main() -> None:
     verify_tls: bool | str = verify_value if isinstance(verify_value, (bool, str)) else True
     interval = min(max(int(config.get("interval_seconds", 15)), 5), 60)
     state = load_json(STATE_PATH, {})
-    timeout = httpx.Timeout(20, connect=10)
+    if not isinstance(state, dict):
+        state = {}
+    timeout = httpx.Timeout(12, connect=5)
+    latest_payload = minimal_heartbeat_payload(config)
+    latest_telemetry_at = 0.0
+    telemetry_task: asyncio.Task | None = None
+    telemetry_started_at = 0.0
+    job_task: asyncio.Task | None = None
+    last_recovery_attempt = 0.0
+    consecutive_failures = 0
+
     async with httpx.AsyncClient(headers=headers, verify=verify_tls, timeout=timeout) as client:
-        job_task: asyncio.Task | None = None
+        systemd_notify("READY=1\nSTATUS=DARK NOC Agent heartbeat loop started")
         while True:
+            loop_started = time.monotonic()
+
+            if telemetry_task is None:
+                telemetry_started_at = time.monotonic()
+                telemetry_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        collect_payload_blocking,
+                        clone_json(config, {}),
+                        clone_json(state, {}),
+                    )
+                )
+            elif telemetry_task.done():
+                completed_task = telemetry_task
+                telemetry_task = None
+                try:
+                    latest_payload, state_updates = completed_task.result()
+                    state.update(state_updates)
+                    latest_telemetry_at = time.time()
+                    state["last_telemetry_success"] = latest_telemetry_at
+                    state.pop("last_telemetry_error", None)
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"[:1000]
+                    state["last_telemetry_error"] = message
+                    LOGGER.exception("Full telemetry collection failed; liveness heartbeat continues")
+
+            heartbeat_payload = clone_json(latest_payload, minimal_heartbeat_payload(config))
+            metrics = heartbeat_payload.setdefault("metrics", {})
+            telemetry_age = int(max(0, time.time() - latest_telemetry_at)) if latest_telemetry_at else 0
+            metrics["telemetry_age_seconds"] = telemetry_age
+            metrics["telemetry_status"] = (
+                "fresh" if latest_telemetry_at and telemetry_age <= 90
+                else "collecting" if telemetry_task is not None and time.monotonic() - telemetry_started_at <= 120
+                else "stale"
+            )
+            metrics["agent_loop_ts"] = int(time.time())
+            if state.get("last_telemetry_error"):
+                metrics["telemetry_error"] = str(state["last_telemetry_error"])[:500]
+
+            heartbeat_ok = False
             try:
-                refresh_connection_snapshot()
-                metrics = base_metrics(state.get("net", {}))
-                state["net"] = {key: metrics[key] for key in ("bytes_recv", "bytes_sent", "disk_read_bytes", "disk_write_bytes", "network_errors", "network_drops", "ts")}
-                metrics["inventory"] = system_inventory(state)
-                reports = await _collect_tunnel_reports(monitored_tunnels(config))
-                await maybe_autoheal(config, reports, state)
-                payload = {"metrics": metrics, "services": service_reports(config), "tunnels": reports, "plugins": plugin_inventory(), "agent_version": VERSION, "autoheal": config.get("autoheal", {})}
-                response = await client.post(f"{hub}/api/agent/heartbeat", json=payload)
+                response = await client.post(f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10)
+                if response.status_code == 401 and time.monotonic() - last_recovery_attempt >= 30:
+                    last_recovery_attempt = time.monotonic()
+                    if await recover_local_enrollment(client, hub, config):
+                        response = await client.post(f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10)
                 response.raise_for_status()
+                heartbeat_ok = True
+                consecutive_failures = 0
+                state["last_success"] = time.time()
+                state["last_heartbeat_status"] = response.status_code
+                state.pop("last_error", None)
+            except Exception as exc:
+                consecutive_failures += 1
+                message = f"{type(exc).__name__}: {exc}"[:1000]
+                state["last_error"] = message
+                state["consecutive_heartbeat_failures"] = consecutive_failures
+                if consecutive_failures == 1 or consecutive_failures % 4 == 0:
+                    LOGGER.warning(
+                        "Heartbeat failed (%s consecutive): %s",
+                        consecutive_failures,
+                        message,
+                    )
+
+            try:
                 if job_task is None or job_task.done():
                     if job_task is not None:
                         try:
                             job_task.result()
+                            state.pop("last_job_error", None)
                         except Exception as exc:
-                            state["last_job_error"] = str(exc)[:1000]
-                    jobs_response = await client.get(f"{hub}/api/agent/jobs")
+                            state["last_job_error"] = f"{type(exc).__name__}: {exc}"[:1000]
+                            LOGGER.exception("Agent job worker failed")
+                    jobs_response = await client.get(f"{hub}/api/agent/jobs", timeout=10)
                     jobs_response.raise_for_status()
                     jobs = jobs_response.json()
                     if jobs:
                         job_task = asyncio.create_task(process_jobs(jobs, config, client, hub))
-                state["last_success"] = time.time()
-                state.pop("last_error", None)
             except Exception as exc:
-                state["last_error"] = str(exc)[:1000]
-            save_json(STATE_PATH, state)
-            await asyncio.sleep(interval)
+                state["last_job_error"] = f"{type(exc).__name__}: {exc}"[:1000]
+                LOGGER.warning("Job polling failed while heartbeat remained independent: %s", exc)
 
+            try:
+                save_json(STATE_PATH, state)
+            except Exception:
+                LOGGER.exception("Could not persist Agent state; heartbeat loop continues")
+
+            status = "Heartbeat OK" if heartbeat_ok else f"Heartbeat failures: {consecutive_failures}"
+            systemd_notify(f"WATCHDOG=1\nSTATUS={status}")
+            elapsed = time.monotonic() - loop_started
+            await asyncio.sleep(max(1.0, interval - elapsed))
 
 if __name__ == "__main__":
     asyncio.run(main())

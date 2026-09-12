@@ -1,4 +1,4 @@
-# DARK NOC Hub v2.9.1 — Nightfall Command
+# DARK NOC Hub v2.9.2 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
