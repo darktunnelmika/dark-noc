@@ -641,7 +641,10 @@ def test_installer_and_release_guards() -> None:
     assert quiesce_agent < quiesce_hub < final_snapshot < mutation_start < installer_start
     hub_success = upgrader[installer_start : upgrader.index(";;", installer_start)]
     assert 'restore_service_state dark-noc-hub.service' in hub_success
-    assert 'restore_service_state dark-noc-agent.service' in hub_success
+    assert 'restore_service_state dark-noc-agent.service' not in hub_success
+    assert 'systemctl enable dark-noc-agent.service' in hub_success
+    assert 'systemctl restart dark-noc-agent.service' in hub_success
+    assert 'POST_UPGRADE_AGENT_BASELINE' in hub_success
     assert 'restore_service_state nginx.service' in hub_success
     assert 'cp -a "$hub_key_path" "$backup_dir/master.key"' in upgrader
     assert 'cp -a "$backup_dir/master.key" "$hub_key_path"' in upgrader

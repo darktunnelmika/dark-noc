@@ -323,8 +323,48 @@ PY
     if [[ "$hub_was_present" -eq 1 ]]; then
       restore_service_state dark-noc-hub.service "$hub_was_active" "$hub_was_enabled" "$hub_was_present"
     fi
-    if [[ "$agent_was_present" -eq 1 ]]; then
-      restore_service_state dark-noc-agent.service "$agent_was_active" "$agent_was_enabled" "$agent_was_present"
+    # The local Agent is a required Hub component. A common failure mode was:
+    # old Agent is crashed/stopped -> install-hub repairs it -> upgrade restores
+    # the old stopped state. Keep the repaired Agent enabled and prove that a
+    # fresh pulse reaches the Hub before declaring the upgrade successful.
+    POST_UPGRADE_AGENT_BASELINE="$(python3 - "$hub_db_path" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(last_seen),0) FROM nodes WHERE role='hub'"
+    ).fetchone()
+print(int(row[0] or 0) if row else 0)
+PY
+)"
+    systemctl enable dark-noc-agent.service
+    systemctl restart dark-noc-agent.service
+    POST_UPGRADE_AGENT_READY=0
+    for attempt in {1..30}; do
+      if python3 - "$hub_db_path" "$POST_UPGRADE_AGENT_BASELINE" <<'PY'
+import sqlite3, sys, time
+with sqlite3.connect(sys.argv[1]) as connection:
+    row = connection.execute(
+        "SELECT status,agent_version,last_seen FROM nodes WHERE role='hub' ORDER BY id LIMIT 1"
+    ).fetchone()
+baseline = int(sys.argv[2])
+ready = bool(
+    row and row[0] == "online" and row[1] == "2.9.5"
+    and int(row[2] or 0) > baseline
+    and int(row[2] or 0) >= int(time.time()) - 90
+)
+raise SystemExit(0 if ready else 1)
+PY
+      then
+        POST_UPGRADE_AGENT_READY=1
+        break
+      fi
+      sleep 2
+    done
+    if [[ "$POST_UPGRADE_AGENT_READY" -ne 1 ]]; then
+      echo "Local Hub Agent did not deliver a fresh v2.9.5 post-upgrade pulse." >&2
+      systemctl status dark-noc-agent.service --no-pager -l || true
+      journalctl -u dark-noc-agent.service -n 160 --no-pager || true
+      exit 1
     fi
     if [[ "$nginx_was_present" -eq 1 ]]; then
       restore_service_state nginx.service "$nginx_was_active" "$nginx_was_enabled" "$nginx_was_present"
