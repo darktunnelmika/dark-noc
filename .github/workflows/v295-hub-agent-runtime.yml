@@ -66,15 +66,23 @@ jobs:
               raise SystemExit('Patch bootstrap success-path anchor mismatch')
           source = source.replace(old, new, 1)
 
-          old_backbone = r'backbone_pattern = re.compile(r"\\.cyber-route-backbone\\{[^}]+\\}")'
-          new_backbone = r'backbone_pattern = re.compile(r"\.cyber-route-backbone\{[^}]+\}")'
-          old_flow = r'flow_pattern = re.compile(r"\\.cyber-route-flow\\{[^}]+\\}")'
-          new_flow = r'flow_pattern = re.compile(r"\.cyber-route-flow\{[^}]+\}")'
-          if source.count(old_backbone) != 1 or source.count(old_flow) != 1:
-              raise SystemExit('Topology CSS regex bootstrap anchor mismatch')
-          source = source.replace(old_backbone, new_backbone, 1)
-          source = source.replace(old_flow, new_flow, 1)
-
+          css_start = source.index('styles = read("hub/static/styles.css")')
+          css_end = source.index('styles = replace_once(', css_start)
+          css_replacement = '''styles = read("hub/static/styles.css")
+          old_backbone_css = ".cyber-route-backbone{fill:none;stroke:currentColor;stroke-width:var(--route-width,1.8);stroke-linecap:round;opacity:.58;filter:url(#cyber-glow);pointer-events:none;vector-effect:non-scaling-stroke;transition:opacity .18s,stroke-width .18s}"
+          new_backbone_css = ".cyber-route-backbone{fill:none;stroke:currentColor;stroke-width:calc(var(--route-width,1.8) + .55);stroke-linecap:round;opacity:.92;filter:url(#cyber-glow);pointer-events:none;vector-effect:non-scaling-stroke;transition:opacity .18s,stroke-width .18s}"
+          styles = replace_once(
+              styles, old_backbone_css, new_backbone_css,
+              "Topology solid backbone CSS",
+          )
+          old_flow_css = ".cyber-route-flow{fill:none;stroke:currentColor;stroke-width:calc(var(--route-width,1.8) + .9);stroke-linecap:round;stroke-dasharray:13 87;stroke-dashoffset:100;opacity:.96;filter:url(#cyber-glow);pointer-events:none;vector-effect:non-scaling-stroke;animation:route-data-flow var(--flow-duration,3s) linear infinite}"
+          new_flow_css = ".cyber-route-flow{fill:none;stroke:currentColor;stroke-width:calc(var(--route-width,1.8) + 2.1);stroke-linecap:round;opacity:.34;filter:url(#cyber-glow);pointer-events:none;vector-effect:non-scaling-stroke;animation:route-energy-pulse var(--flow-duration,3s) ease-in-out infinite}"
+          styles = replace_once(
+              styles, old_flow_css, new_flow_css,
+              "Topology solid energy CSS",
+          )
+          '''
+          source = source[:css_start] + css_replacement + source[css_end:]
           patcher.write_text(source, encoding='utf-8')
           PY
           python -m py_compile .v295-bootstrap/apply_v295.py
