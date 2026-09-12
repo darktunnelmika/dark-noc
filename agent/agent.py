@@ -22,22 +22,43 @@ from typing import Any
 import httpx
 import psutil
 
+import importlib.util as _realm_importlib_util
+
+_REALM_ADAPTER_ERROR: str | None = None
 try:
-    from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm
-except ModuleNotFoundError:
-    import importlib.util as _realm_importlib_util
     _realm_adapter_path = Path(__file__).resolve().with_name("realm_plugin.py")
+    if not _realm_adapter_path.is_file():
+        raise FileNotFoundError(f"Realm adapter is missing: {_realm_adapter_path}")
     _realm_adapter_spec = _realm_importlib_util.spec_from_file_location("dark_noc_realm_plugin", _realm_adapter_path)
     if _realm_adapter_spec is None or _realm_adapter_spec.loader is None:
-        raise
+        raise ImportError(f"Could not load Realm adapter spec: {_realm_adapter_path}")
     _realm_adapter_module = _realm_importlib_util.module_from_spec(_realm_adapter_spec)
     _realm_adapter_spec.loader.exec_module(_realm_adapter_module)
     deploy_dark_realm = _realm_adapter_module.deploy
     install_dark_realm = _realm_adapter_module.install_core
     realm_inventory = _realm_adapter_module.inventory
     remove_dark_realm = _realm_adapter_module.remove
+except Exception as exc:
+    _REALM_ADAPTER_ERROR = f"{type(exc).__name__}: {exc}"[:500]
 
-VERSION = "2.9.0"
+    def _realm_adapter_unavailable(*_: Any, **__: Any) -> str:
+        raise RuntimeError(f"DARK Realm adapter is unavailable: {_REALM_ADAPTER_ERROR}")
+
+    def _realm_inventory_unavailable() -> dict[str, Any]:
+        return {
+            "installed": False,
+            "version": None,
+            "manager_version": None,
+            "adapter_ready": False,
+            "adapter_error": _REALM_ADAPTER_ERROR,
+        }
+
+    deploy_dark_realm = _realm_adapter_unavailable
+    install_dark_realm = _realm_adapter_unavailable
+    remove_dark_realm = _realm_adapter_unavailable
+    realm_inventory = _realm_inventory_unavailable
+
+VERSION = "2.9.1"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}

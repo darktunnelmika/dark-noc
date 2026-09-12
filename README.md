@@ -1,4 +1,4 @@
-# DARK NOC Hub v2.9.0 — Nightfall Command
+# DARK NOC Hub v2.9.1 — Nightfall Command
 
 **English** · [فارسی](README.fa.md) · Maintainer: **@mikakhadm**
 
@@ -52,6 +52,7 @@ interactive installer.
 - Extensible Tunnel Plugin Store with coordinated two-node deployment
 - Hybrid DARK Backhaul Pair Code mode for KHAREJ servers without SSH or an Agent
 - Native DARK Packet Pro plugin with managed IRAN-client/KHAREJ-server deployment and DPP-N1 Pair Code mode
+- Native DARK Realm Pro direct relay with managed Iran Edge/Kharej Gateway deployment, DR1 Pair Code, TCP/TLS/WS/WSS and multi-port mappings
 - TLS Vault with DNS validation, Agent-side Let's Encrypt issuance and automatic renewal
 - Automatic Backhaul core inventory/install and per-tunnel Start, Stop, Restart, Logs, Status and Test controls
 - Safe port, transport, profile and restart-schedule editing from Tunnel Manager
@@ -75,7 +76,7 @@ interactive installer.
 - Editable node credentials, encrypted SSH key input and live service controls
 - Zero-touch Node provisioning from ADD NODE using root SSH credentials, with automatic prerequisites, Agent, TLS and private token configuration
 - Automatic local Hub enrollment with its monitoring Agent enabled during Hub installation
-- Strict plugin discovery for DARK Backhaul (`backhaul@NAME.service`), DARK Ghost Pro (`ghostpro@NAME.service`) and DARK Packet Pro (`paqetpro@NAME.service`); unrelated tunnel families remain excluded
+- Strict plugin discovery for DARK Backhaul (`backhaul@NAME.service`), DARK Ghost Pro (`ghostpro@NAME.service`), DARK Packet Pro (`paqetpro@NAME.service`) and DARK Realm Pro (`dark-realm@NAME.service`); unrelated tunnel families remain excluded
 - Node IP shown beside every server name in the Live Tunnel Matrix
 - Animated tree topology pairs Iran/Hub with remote endpoints even when the remote side has no manageable SSH Node; route color, flow speed, labels and hover intelligence expose live tunnel state
 - Separate read-only Agent and SSH readiness indicators on both sides of every Backhaul path
@@ -98,7 +99,7 @@ The internal FastAPI port is selected automatically, binds only to `127.0.0.1` a
 
 Panel address, port, certificate and owner credentials are intentionally not editable in the web UI. Run `sudo darknoc` over SSH on the Hub to view the active URL/credentials, change or generate a password, change the public port, set a domain/IP, issue or renew Let's Encrypt SSL, restart services, inspect logs, create a local backup or launch a verified update. Configuration changes are validated before Nginx reload and roll back when activation fails.
 
-The Hub server is registered as a node automatically and a local Agent is installed for it. Use the separate Node archive and `install-node.sh` for every other server. Agents discover managed DARK Backhaul, DARK Ghost Pro and DARK Packet Pro instances; unrelated tunnel projects are intentionally excluded.
+The Hub server is registered as a node automatically and a local Agent is installed for it. Use the separate Node archive and `install-node.sh` for every other server. Agents discover managed DARK Backhaul, DARK Ghost Pro, DARK Packet Pro and DARK Realm Pro instances; unrelated tunnel projects are intentionally excluded.
 
 ## Agent installation
 
@@ -128,7 +129,7 @@ Choose **DARK Ghost Pro** in Tunnels to install the official GOST core and creat
 
 ### TLS Vault and domain transports
 
-Open **TLS Vault**, select the Iran Node and enter a domain whose DNS already points to that Node. The Agent performs ACME validation and keeps the private key locally. When a TLS/WSS/H2/gRPC transport is selected, tunnel creation requires a valid Vault certificate and changes the endpoint to its matching domain. DARK NOC queues renewal automatically 30 days before expiry.
+Open **TLS Vault**, select the Node that terminates TLS and enter a domain whose DNS already points to that Node. Backhaul/Ghost certificates normally belong to the Iran listener; Realm TLS/WSS certificates belong to the Kharej Gateway listener. The Agent performs ACME validation and keeps the private key locally. DARK NOC queues renewal automatically 30 days before expiry.
 
 The server nodes require outbound HTTPS access to GitHub during the initial plugin installation. The official release asset must include a matching SHA-256 digest. An already installed working Backhaul core is preserved and never replaced while creating another tunnel. TCPMUX is the recommended starting transport.
 

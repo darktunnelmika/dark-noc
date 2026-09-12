@@ -72,7 +72,7 @@ validate_integer_setting() {
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.9.0"
+echo "  Nightfall Command v2.9.1"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"
@@ -294,7 +294,13 @@ fi
 id darknoc >/dev/null 2>&1 || useradd --system --home /var/lib/dark-noc --shell /usr/sbin/nologin darknoc
 install -d -m 0750 -o darknoc -g darknoc /opt/dark-noc/hub "$DATA_DIR"
 install -d -m 0750 -o root -g darknoc /etc/dark-noc
+install -d -m 0750 -o root -g darknoc /opt/dark-noc/agent-payload
 cp -a "$SCRIPT_DIR/hub/." /opt/dark-noc/hub/
+install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc/agent-payload/agent.py
+install -m 0644 "$SCRIPT_DIR/agent/realm_plugin.py" /opt/dark-noc/agent-payload/realm_plugin.py
+install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc/agent-payload/requirements.txt
+install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /opt/dark-noc/agent-payload/dark-noc-agent.service
+python3 -m py_compile /opt/dark-noc/agent-payload/agent.py /opt/dark-noc/agent-payload/realm_plugin.py
 python3 -m venv /opt/dark-noc/venv
 /opt/dark-noc/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc/hub/requirements.txt
 
@@ -372,14 +378,55 @@ PANEL_CERT_MODE="$(bash -c 'source "$1"; printf %s "${DARK_NOC_PANEL_CERT_MODE:-
 if [[ "$PANEL_CERT_MODE" == "letsencrypt" ]]; then CERT_KIND="Let's Encrypt certificate"; else CERT_KIND="local self-signed certificate"; fi
 
 # Enroll and run a local Agent so the Hub server appears as a monitored node.
-LOCAL_AGENT_TOKEN="$(curl -fsS -X POST -H "X-Dark-Noc-Bootstrap: $LOCAL_ENROLL_SECRET" "http://127.0.0.1:$HUB_PORT/api/agent/local-enroll" | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_token"])')"
+EXISTING_LOCAL_AGENT_TOKEN="$(python3 - <<'PY'
+import json
+from pathlib import Path
+path = Path('/etc/dark-noc-agent/config.json')
+try:
+    value = json.loads(path.read_text()).get('agent_token', '')
+except (OSError, ValueError, TypeError):
+    value = ''
+if isinstance(value, str) and 8 <= len(value) <= 512 and not any(ord(char) < 33 for char in value):
+    print(value, end='')
+PY
+)"
+LOCAL_ENROLL_HEADERS=(-H "X-Dark-Noc-Bootstrap: $LOCAL_ENROLL_SECRET")
+if [[ -n "$EXISTING_LOCAL_AGENT_TOKEN" ]]; then
+  LOCAL_ENROLL_HEADERS+=(-H "X-Dark-Noc-Existing-Agent: $EXISTING_LOCAL_AGENT_TOKEN")
+fi
+LOCAL_AGENT_ENROLLMENT="$(curl -fsS -X POST "${LOCAL_ENROLL_HEADERS[@]}" "http://127.0.0.1:$HUB_PORT/api/agent/local-enroll")"
+readarray -t LOCAL_AGENT_VALUES < <(python3 - "$LOCAL_AGENT_ENROLLMENT" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+print(payload['id'])
+print(payload['agent_token'])
+print('1' if payload.get('reused') else '0')
+PY
+)
+LOCAL_AGENT_NODE_ID="${LOCAL_AGENT_VALUES[0]:-}"
+LOCAL_AGENT_TOKEN="${LOCAL_AGENT_VALUES[1]:-}"
+LOCAL_AGENT_REUSED="${LOCAL_AGENT_VALUES[2]:-0}"
+if [[ ! "$LOCAL_AGENT_NODE_ID" =~ ^[0-9]+$ || -z "$LOCAL_AGENT_TOKEN" ]]; then
+  echo "Local Agent enrollment returned an invalid response."
+  exit 1
+fi
+LOCAL_AGENT_BASELINE="$(python3 - "$DB_PATH" "$LOCAL_AGENT_NODE_ID" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    row = connection.execute('SELECT last_seen FROM nodes WHERE id=?', (int(sys.argv[2]),)).fetchone()
+print(int(row[0] or 0) if row else 0)
+PY
+)"
+
 install -d -m 0755 /opt/dark-noc-agent
-install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro
+install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /etc/dark-realm
 install -d -m 0755 /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d
-install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc-agent/agent.py
-install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc-agent/requirements.txt
+install -m 0755 /opt/dark-noc/agent-payload/agent.py /opt/dark-noc-agent/agent.py
+install -m 0644 /opt/dark-noc/agent-payload/realm_plugin.py /opt/dark-noc-agent/realm_plugin.py
+install -m 0644 /opt/dark-noc/agent-payload/requirements.txt /opt/dark-noc-agent/requirements.txt
 python3 -m venv /opt/dark-noc-agent/venv
 /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt
+/opt/dark-noc-agent/venv/bin/python -m py_compile /opt/dark-noc-agent/agent.py /opt/dark-noc-agent/realm_plugin.py
 python3 - "$HUB_PORT" "$LOCAL_AGENT_TOKEN" <<'PY'
 import json, sys
 from pathlib import Path
@@ -389,6 +436,10 @@ try:
     old = json.loads(path.read_text())
 except FileNotFoundError:
     pass
+except (OSError, ValueError, TypeError) as exc:
+    raise SystemExit(f'Existing local Agent configuration is invalid: {exc}')
+if not isinstance(old, dict):
+    raise SystemExit('Existing local Agent configuration must be a JSON object')
 old.update({
     'hub_url': f'http://127.0.0.1:{sys.argv[1]}', 'agent_token': sys.argv[2], 'verify_tls': True,
     'interval_seconds': old.get('interval_seconds', 15), 'services': old.get('services', []),
@@ -398,14 +449,46 @@ old.update({
     'autoheal': old.get('autoheal', {'enabled': False, 'cooldown_seconds': 300, 'max_restarts_per_hour': 3}),
 })
 tmp = path.with_name(path.name + '.installing')
-tmp.write_text(json.dumps(old, indent=2))
+tmp.write_text(json.dumps(old, indent=2) + '\n')
 tmp.chmod(0o600)
 tmp.replace(path)
 PY
-install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /etc/systemd/system/dark-noc-agent.service
+install -m 0644 /opt/dark-noc/agent-payload/dark-noc-agent.service /etc/systemd/system/dark-noc-agent.service
 systemctl daemon-reload
-systemctl enable --now dark-noc-agent.service
+systemctl enable dark-noc-agent.service
 systemctl restart dark-noc-agent.service
+if ! systemctl is-active --quiet dark-noc-agent.service; then
+  echo "Local Agent failed to start."
+  systemctl status dark-noc-agent.service --no-pager -l || true
+  journalctl -u dark-noc-agent.service -n 100 --no-pager || true
+  exit 1
+fi
+LOCAL_AGENT_READY=0
+for attempt in {1..30}; do
+  if python3 - "$DB_PATH" "$LOCAL_AGENT_NODE_ID" "$LOCAL_AGENT_BASELINE" <<'PY'
+import sqlite3, sys, time
+with sqlite3.connect(sys.argv[1]) as connection:
+    row = connection.execute('SELECT status,agent_version,last_seen FROM nodes WHERE id=?', (int(sys.argv[2]),)).fetchone()
+baseline = int(sys.argv[3])
+ready = bool(
+    row and row[0] == 'online' and row[1] == '2.9.1'
+    and int(row[2] or 0) > baseline and int(row[2] or 0) >= int(time.time()) - 120
+)
+raise SystemExit(0 if ready else 1)
+PY
+  then
+    LOCAL_AGENT_READY=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$LOCAL_AGENT_READY" -ne 1 ]]; then
+  echo "Local Agent started but DARK NOC did not receive a fresh v2.9.1 heartbeat."
+  echo "Enrollment token reused: $LOCAL_AGENT_REUSED"
+  systemctl status dark-noc-agent.service --no-pager -l || true
+  journalctl -u dark-noc-agent.service -n 120 --no-pager || true
+  exit 1
+fi
 curl -kfsS -H "Host: $PUBLIC_HOST" --max-time 8 "https://127.0.0.1:$PUBLIC_PORT/healthz" >/dev/null
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw delete allow "$OLD_HUB_PORT/tcp" >/dev/null 2>&1 || true

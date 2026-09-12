@@ -26,18 +26,28 @@ from typing import Any
 import asyncssh
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
+import importlib.util as _realm_support_importlib_util
+
+_REALM_SUPPORT_ERROR: str | None = None
 try:
-    from realm_support import prepare_realm_settings, realm_pair_code
-except ModuleNotFoundError:
-    import importlib.util as _realm_support_importlib_util
     _realm_support_path = Path(__file__).resolve().with_name("realm_support.py")
+    if not _realm_support_path.is_file():
+        raise FileNotFoundError(f"Realm Hub support is missing: {_realm_support_path}")
     _realm_support_spec = _realm_support_importlib_util.spec_from_file_location("dark_noc_realm_support", _realm_support_path)
     if _realm_support_spec is None or _realm_support_spec.loader is None:
-        raise
+        raise ImportError(f"Could not load Realm Hub support: {_realm_support_path}")
     _realm_support_module = _realm_support_importlib_util.module_from_spec(_realm_support_spec)
     _realm_support_spec.loader.exec_module(_realm_support_module)
     prepare_realm_settings = _realm_support_module.prepare_realm_settings
     realm_pair_code = _realm_support_module.realm_pair_code
+except Exception as exc:
+    _REALM_SUPPORT_ERROR = f"{type(exc).__name__}: {exc}"[:500]
+
+    def prepare_realm_settings(*_: Any, **__: Any) -> dict[str, Any]:
+        raise HTTPException(503, f"DARK Realm support is unavailable: {_REALM_SUPPORT_ERROR}")
+
+    def realm_pair_code(*_: Any, **__: Any) -> str:
+        raise HTTPException(503, f"DARK Realm support is unavailable: {_REALM_SUPPORT_ERROR}")
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,11 +58,12 @@ DATA_DIR = Path(os.getenv("DARK_NOC_DATA", "/var/lib/dark-noc"))
 DB_PATH = DATA_DIR / "dark-noc.db"
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
+AGENT_PAYLOAD_DIR = Path(os.getenv("DARK_NOC_AGENT_PAYLOAD", "/opt/dark-noc/agent-payload"))
 SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 120
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1076,28 +1087,56 @@ class JobResult(BaseModel):
 
 
 @app.post("/api/agent/local-enroll")
-def local_agent_enroll(request: Request, x_dark_noc_bootstrap: str | None = Header(default=None)):
+def local_agent_enroll(
+    request: Request,
+    x_dark_noc_bootstrap: str | None = Header(default=None),
+    x_dark_noc_existing_agent: str | None = Header(default=None),
+):
     expected = os.getenv("DARK_NOC_LOCAL_ENROLL_SECRET", "")
     if not expected or not x_dark_noc_bootstrap or not secrets.compare_digest(expected, x_dark_noc_bootstrap):
         raise HTTPException(403, "Local enrollment denied")
-    enrollment = secrets.token_urlsafe(36)
     now = utc_ts()
     node_name = f"{socket.gethostname()} (Hub)"[:128]
-    # The loopback address is correct for the local Agent transport, but it is
-    # misleading in the inventory and unusable as a remote SSH destination.
-    # Store the operator-facing host selected by the installer instead.
     node_host = os.getenv("DARK_NOC_PUBLIC_HOST", "").strip() or "127.0.0.1"
+    supplied_token = str(x_dark_noc_existing_agent or "").strip()
     with db() as conn:
-        row = conn.execute("SELECT id FROM nodes WHERE role='hub' ORDER BY id LIMIT 1").fetchone()
+        row = conn.execute("SELECT id,agent_token_hash FROM nodes WHERE role='hub' ORDER BY id LIMIT 1").fetchone()
+        if row and conn.execute("SELECT 1 FROM nodes WHERE name=? AND id<>?", (node_name, row["id"])).fetchone():
+            node_name = f"{socket.gethostname()} Hub-{row['id']}"[:128]
+        reused = bool(
+            row
+            and supplied_token
+            and row["agent_token_hash"]
+            and hmac.compare_digest(str(row["agent_token_hash"]), token_hash(supplied_token))
+        )
         if row:
             node_id = row["id"]
-            conn.execute("UPDATE nodes SET name=?,host=?,agent_token_hash=?,status='pending',last_seen=NULL,updated_at=? WHERE id=?", (node_name, node_host, token_hash(enrollment), now, node_id))
+            if reused:
+                enrollment = supplied_token
+                conn.execute(
+                    "UPDATE nodes SET name=?,region='NOC Hub',role='hub',host=?,updated_at=? WHERE id=?",
+                    (node_name, node_host, now, node_id),
+                )
+            else:
+                enrollment = secrets.token_urlsafe(36)
+                conn.execute(
+                    """UPDATE nodes SET name=?,region='NOC Hub',role='hub',host=?,agent_token_hash=?,
+                              status='pending',agent_version=NULL,observed_ip=NULL,plugin_inventory='{}',
+                              last_seen=NULL,updated_at=? WHERE id=?""",
+                    (node_name, node_host, token_hash(enrollment), now, node_id),
+                )
         else:
+            enrollment = secrets.token_urlsafe(36)
             if conn.execute("SELECT 1 FROM nodes WHERE name=?", (node_name,)).fetchone():
                 node_name = f"{socket.gethostname()} Hub-{secrets.token_hex(2)}"[:128]
-            cursor = conn.execute("INSERT INTO nodes(name,region,role,host,ssh_port,ssh_user,agent_token_hash,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (node_name, "NOC Hub", "hub", node_host, 22, "root", token_hash(enrollment), "pending", now, now))
+            cursor = conn.execute(
+                """INSERT INTO nodes(name,region,role,host,ssh_port,ssh_user,agent_token_hash,status,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (node_name, "NOC Hub", "hub", node_host, 22, "root", token_hash(enrollment), "pending", now, now),
+            )
             node_id = cursor.lastrowid
-    return {"id": node_id, "name": node_name, "agent_token": enrollment}
+            reused = False
+    return {"id": node_id, "name": node_name, "agent_token": enrollment, "reused": reused}
 
 
 def current_user(request: Request, dark_noc_session: str | None = Cookie(default=None)) -> sqlite3.Row:
@@ -1277,10 +1316,10 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
             if prep.exit_status != 0:
                 raise RuntimeError(f"Prerequisite installation failed (exit {prep.exit_status})")
 
-            agent_file = Path("/opt/dark-noc-agent/agent.py")
-            realm_adapter_file = Path("/opt/dark-noc-agent/realm_plugin.py")
-            requirements_file = Path("/opt/dark-noc-agent/requirements.txt")
-            service_file = Path("/etc/systemd/system/dark-noc-agent.service")
+            agent_file = AGENT_PAYLOAD_DIR / "agent.py"
+            realm_adapter_file = AGENT_PAYLOAD_DIR / "realm_plugin.py"
+            requirements_file = AGENT_PAYLOAD_DIR / "requirements.txt"
+            service_file = AGENT_PAYLOAD_DIR / "dark-noc-agent.service"
             for required in (agent_file, realm_adapter_file, requirements_file, service_file):
                 if not required.is_file():
                     raise RuntimeError(f"Hub Node payload is missing: {required}")

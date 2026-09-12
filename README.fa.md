@@ -1,4 +1,4 @@
-# DARK NOC v2.9.0 — مرکز فرمان NOC
+# DARK NOC v2.9.1 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -53,16 +53,16 @@ Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را ا�
 - Operations Cockpit هر تونل با Health Score، ترافیک، Session، Uptime، Latency/Loss، تاریخچه ۲۴ ساعته و Timeline عملیات
 - توپولوژی درختی متحرک با مسیرهای سبز/زرد/خاکستری/قرمز، نمایش جریان ترافیک، جزئیات Hover و ورود مستقیم به مدیریت تونل
 
-در نسخه فعلی افزونه‌های **DARK Backhaul**، **DARK Ghost Pro** و **DARK Packet Pro** در بخش تونل ارائه می‌شوند. Packet Pro جهت واقعی متفاوتی دارد: ایران Client و خارج Server است؛ پنل در حالت Pair Code سمت ایران را می‌سازد و کد `DPP-N1` را برای اسکریپت خارج تحویل می‌دهد.
+در نسخه فعلی افزونه‌های **DARK Backhaul**، **DARK Ghost Pro**، **DARK Packet Pro** و **DARK Realm Pro** در بخش تونل ارائه می‌شوند. Packet Pro جهت واقعی متفاوتی دارد: ایران Client و خارج Server است. Realm نیز Direct Relay بومی است و با نقش Iran Edge و Kharej Gateway، کد `DR1` و ترنسپورت‌های TCP/TLS/WS/WSS کار می‌کند.
 
-بخش **TLS Vault** دامنه را با IP نود ایران تطبیق می‌دهد، گواهی Let's Encrypt را توسط Agent روی همان سرور دریافت می‌کند و ۳۰ روز مانده به انقضا تمدید را خودکار در صف قرار می‌دهد. کلید خصوصی به مرورگر یا Pair Code ارسال نمی‌شود. هنگام انتخاب ترنسپورت TLS/WSS/H2/gRPC فقط گواهی معتبر همان نود قابل انتخاب است.
+بخش **TLS Vault** دامنه را با IP نودی که TLS را خاتمه می‌دهد تطبیق می‌دهد و گواهی Let's Encrypt را توسط Agent همان سرور دریافت می‌کند. برای Backhaul/Ghost معمولاً گواهی روی Listener ایران است؛ برای Realm TLS/WSS گواهی روی Kharej Gateway قرار می‌گیرد. تمدید ۳۰ روز مانده به انقضا خودکار است و کلید خصوصی هرگز به مرورگر یا Pair Code ارسال نمی‌شود.
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v2.9.0.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v2.9.1.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v2.9.0.tar.gz
+tar -xzf DARK-NOC-HUB-v2.9.1.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -86,10 +86,10 @@ sudo darknoc
 
 ## نصب Node
 
-فایل `DARK-NOC-NODE-v2.9.0.tar.gz` را روی Node اجرا کنید:
+فایل `DARK-NOC-NODE-v2.9.1.tar.gz` را روی Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v2.9.0.tar.gz
+tar -xzf DARK-NOC-NODE-v2.9.1.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh
