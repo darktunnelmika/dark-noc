@@ -1,3 +1,15 @@
+# DARK NOC v2.9.2 — Heartbeat Resilience
+
+This maintenance release keeps Hub and Node liveness independent from expensive telemetry collection. Full socket, service, plugin and tunnel inventory now runs in a background worker while a lightweight heartbeat continues at the configured interval.
+
+- A slow `apt`, Docker, systemd, socket or tunnel probe can no longer make an otherwise healthy server appear offline.
+- The local Hub Agent can securely re-enroll itself through loopback when its stored token no longer matches the Hub record.
+- systemd watchdog notifications restart a genuinely wedged Agent loop, and heartbeat/telemetry errors are written to journal plus the Agent state file.
+- DARK Realm Pro telemetry is accepted and retained by the Hub alongside Backhaul, Ghost Pro and Packet Pro.
+- The offline grace window is 180 seconds, while normal heartbeats remain every 15 seconds.
+
+---
+
 # DARK NOC v2.9.1 — Hub Agent Recovery
 
 This maintenance release repairs the local Hub monitoring Agent and hardens every Agent delivery path introduced with Realm integration.

@@ -60,10 +60,10 @@ KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
 AGENT_PAYLOAD_DIR = Path(os.getenv("DARK_NOC_AGENT_PAYLOAD", "/opt/dark-noc/agent-payload"))
 SESSION_TTL = 12 * 60 * 60
-NODE_STALE_AFTER = 120
+NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.1"
+VERSION = "2.9.2"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -3659,6 +3659,15 @@ def list_jobs(limit: int = 100, _: sqlite3.Row = Depends(current_user)):
     return [public_job(row) for row in rows]
 
 
+def managed_tunnel_report(method: str, service: str) -> bool:
+    return (
+        (method == "DARK Backhaul" and service.startswith("backhaul@"))
+        or (method == "DARK Ghost Pro" and service.startswith("ghostpro@"))
+        or (method == "DARK Packet Pro" and service.startswith("paqetpro@"))
+        or (method == "DARK Realm Pro" and service.startswith("dark-realm@"))
+    )
+
+
 @app.post("/api/agent/heartbeat")
 async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.Row = Depends(agent_node)):
     now = utc_ts()
@@ -3720,7 +3729,7 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             conn.execute("DELETE FROM node_services WHERE node_id=?", (node["id"],))
         for tunnel in report.tunnels:
             method, service = str(tunnel.get("method", "")), str(tunnel.get("service", ""))
-            if not ((method == "DARK Backhaul" and service.startswith("backhaul@")) or (method == "DARK Ghost Pro" and service.startswith("ghostpro@")) or (method == "DARK Packet Pro" and service.startswith("paqetpro@"))):
+            if not managed_tunnel_report(method, service):
                 continue
             name = str(tunnel.get("name", "unnamed"))[:128]
             old = conn.execute("SELECT * FROM tunnels WHERE node_id=? AND name=?", (node["id"], name)).fetchone()
@@ -3755,7 +3764,7 @@ async def agent_heartbeat(report: AgentReport, request: Request, node: sqlite3.R
             elif current == "healthy" and open_incident:
                 resolve_incident(conn, open_incident["id"], "Tunnel telemetry returned to healthy")
                 notifications.append(f"🟢 DARK NOC RECOVERED\nNode: {node['name']}\nTunnel: {name}\nStatus: HEALTHY")
-        active_names = [str(tunnel.get("name", "unnamed"))[:128] for tunnel in report.tunnels if (str(tunnel.get("method", "")) == "DARK Backhaul" and str(tunnel.get("service", "")).startswith("backhaul@")) or (str(tunnel.get("method", "")) == "DARK Ghost Pro" and str(tunnel.get("service", "")).startswith("ghostpro@")) or (str(tunnel.get("method", "")) == "DARK Packet Pro" and str(tunnel.get("service", "")).startswith("paqetpro@"))]
+        active_names = [str(tunnel.get("name", "unnamed"))[:128] for tunnel in report.tunnels if managed_tunnel_report(str(tunnel.get("method", "")), str(tunnel.get("service", "")))]
         stale_rows = conn.execute("SELECT id FROM tunnels WHERE node_id=?" + (f" AND name NOT IN ({','.join('?' for _ in active_names)})" if active_names else ""), (node["id"], *active_names)).fetchall()
         if stale_rows:
             stale_ids = [row["id"] for row in stale_rows]

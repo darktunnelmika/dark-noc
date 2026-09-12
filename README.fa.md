@@ -1,4 +1,4 @@
-# DARK NOC v2.9.1 — مرکز فرمان NOC
+# DARK NOC v2.9.2 — مرکز فرمان NOC
 
 [English](README.md) · **فارسی** · توسعه‌دهنده و پشتیبانی: **@mikakhadm**
 
@@ -59,10 +59,10 @@ Rollback می‌شود؛ روی سرور تازه، نصب تعاملی را ا�
 
 ## نصب Hub
 
-فایل `DARK-NOC-HUB-v2.9.1.tar.gz` را روی سرور مرکزی قرار دهید:
+فایل `DARK-NOC-HUB-v2.9.2.tar.gz` را روی سرور مرکزی قرار دهید:
 
 ```bash
-tar -xzf DARK-NOC-HUB-v2.9.1.tar.gz
+tar -xzf DARK-NOC-HUB-v2.9.2.tar.gz
 cd dark-noc-pro
 chmod +x *.sh
 sudo bash install-hub.sh
@@ -86,10 +86,10 @@ sudo darknoc
 
 ## نصب Node
 
-فایل `DARK-NOC-NODE-v2.9.1.tar.gz` را روی Node اجرا کنید:
+فایل `DARK-NOC-NODE-v2.9.2.tar.gz` را روی Node اجرا کنید:
 
 ```bash
-tar -xzf DARK-NOC-NODE-v2.9.1.tar.gz
+tar -xzf DARK-NOC-NODE-v2.9.2.tar.gz
 cd dark-noc-node
 chmod +x *.sh
 sudo bash install-node.sh

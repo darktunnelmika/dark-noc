@@ -2,15 +2,19 @@
 Description=DARK NOC Agent
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/dark-noc-agent
 Environment=DARK_NOC_AGENT_CONFIG=/etc/dark-noc-agent/config.json
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/dark-noc-agent/venv/bin/python /opt/dark-noc-agent/agent.py
 Restart=always
-RestartSec=5
+RestartSec=3
+NotifyAccess=main
+WatchdogSec=90s
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

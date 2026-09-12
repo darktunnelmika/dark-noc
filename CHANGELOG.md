@@ -3,6 +3,21 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.2] - 2026-09-12
+
+### Fixed
+
+- Decoupled the liveness heartbeat from expensive socket, service, plugin and tunnel telemetry collection, preventing a healthy Hub or Node from being marked offline while inventory work is slow.
+- Added automatic local Hub enrollment recovery after an Agent token mismatch, without exposing the bootstrap secret outside the root-only Hub environment.
+- Added a systemd watchdog, unbuffered structured Agent logging and failure state retention so a wedged loop is restarted and the actual cause is visible in journal/state diagnostics.
+- Increased the transient heartbeat grace window from 120 to 180 seconds while retaining prompt offline detection.
+- Restored DARK Realm Pro tunnel ingestion in Hub heartbeat processing and stale-tunnel cleanup.
+- Made Agent JSON writes use unique fsynced temporary files to avoid state/config replacement races.
+
+### Tests
+
+- Added Agent liveness, background telemetry, local re-enrollment and watchdog regression coverage to CI and release publication.
+
 ## [2.9.1] - 2026-09-12
 
 ### Fixed
