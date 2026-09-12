@@ -1,7 +1,7 @@
 [Unit]
 Description=DARK NOC Hub
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target dark-noc-agent.service
 
 [Service]
 Type=simple

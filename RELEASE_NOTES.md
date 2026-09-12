@@ -1,3 +1,16 @@
+# DARK NOC v2.9.5 — Hub Agent Runtime & Solid Live Routes
+
+The Hub upgrade transaction no longer restores a successfully repaired local
+Agent to its old stopped state. A fresh v2.9.5 pulse is required after the final
+Agent restart, and starting the Hub also pulls in its monitoring Agent.
+
+Local tunnel discovery now combines loaded systemd units, installed unit files
+and DARK-owned configuration roots, including stopped instances and legacy
+config extensions. The topology uses a solid luminous backbone with pulsing
+energy and moving packets rather than a dotted primary route.
+
+---
+
 # DARK NOC v2.9.4 — Hub Pulse & Live Route Flow
 
 This maintenance release makes Hub liveness independent from full inventory

@@ -1,3 +1,11 @@
+# DARK NOC v2.9.5
+
+- Keeps the repaired local Hub Agent enabled and running after an upgrade, even when the pre-upgrade Agent was crashed or stopped.
+- Requires a fresh post-upgrade v2.9.5 pulse before the upgrade can succeed.
+- Makes the Hub service pull in its local Agent on service start and boot.
+- Expands Hub-local tunnel discovery across loaded units, unit files, stopped instances, metadata-only directories and legacy config file names.
+- Restores a solid glowing Iran-to-Kharej route with pulsing energy and moving traffic particles; healthy routes no longer look dotted.
+
 ## 2.9.4
 
 - Added an authenticated lightweight Agent pulse endpoint so Hub and Node

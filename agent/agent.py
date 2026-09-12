@@ -60,7 +60,7 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.4"
+VERSION = "2.9.5"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
@@ -733,11 +733,20 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
     }
     candidates: set[str] = set()
     complete = True
-    code, output = run(
+    service_commands = (
         ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"],
-        timeout=15,
+        ["systemctl", "list-unit-files", "--type=service", "--no-legend", "--plain"],
     )
-    if code == 0:
+    systemd_scan_succeeded = False
+    for command in service_commands:
+        code, output = run(command, timeout=15)
+        if code != 0:
+            LOGGER.warning(
+                "systemd tunnel discovery command failed (%s): %s",
+                " ".join(command), output[-500:],
+            )
+            continue
+        systemd_scan_succeeded = True
         for line in output.splitlines():
             parts = line.split()
             if not parts:
@@ -750,30 +759,36 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
                 or REALM_SERVICE_PATTERN.fullmatch(service)
             ):
                 candidates.add(service)
-    else:
-        # Managed filesystem roots remain authoritative even if systemd's unit
-        # listing is temporarily unavailable.
-        LOGGER.warning("systemd unit listing failed during tunnel discovery: %s", output[-500:])
 
     filesystem_specs = (
-        (Path("/etc/dark-backhaul/tunnels"), "config.toml", "backhaul@"),
-        (Path("/etc/dark-ghostpro/tunnels"), "config.yaml", "ghostpro@"),
-        (Path("/etc/dark-packetpro/tunnels"), "config.yaml", "paqetpro@"),
-        (Path("/etc/dark-realm/tunnels"), "config.toml", "dark-realm@"),
+        (Path("/etc/dark-backhaul/tunnels"), ("config.toml", "config.conf", "config.ini"), "backhaul@"),
+        (Path("/etc/dark-ghostpro/tunnels"), ("config.yaml", "config.yml", "config.json"), "ghostpro@"),
+        (Path("/etc/dark-packetpro/tunnels"), ("config.yaml", "config.yml", "config.json"), "paqetpro@"),
+        (Path("/etc/dark-realm/tunnels"), ("config.toml", "config.conf"), "dark-realm@"),
     )
-    for base, config_name, prefix in filesystem_specs:
+    scanned_root = False
+    for base, config_names, prefix in filesystem_specs:
         try:
-            directories = list(base.iterdir()) if base.is_dir() else []
+            if base.is_dir():
+                scanned_root = True
+                directories = list(base.iterdir())
+            else:
+                directories = []
         except OSError:
             complete = False
             directories = []
         for directory in directories:
-            if (
+            if not (
                 directory.is_dir()
                 and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", directory.name)
-                and (directory / config_name).is_file()
             ):
+                continue
+            has_owned_config = any((directory / name).is_file() for name in config_names)
+            if has_owned_config or (directory / "meta.conf").is_file():
                 candidates.add(f"{prefix}{directory.name}.service")
+
+    if not systemd_scan_succeeded and not scanned_root:
+        complete = False
 
     if not candidates and not complete and previous_by_service:
         return [dict(item) for item in previous_by_service.values()], False
@@ -797,8 +812,16 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
             if packet else "/etc/dark-realm/tunnels"
             if realm else "/etc/dark-backhaul/tunnels"
         ) / instance
-        expected_config = tunnel_dir / ("config.yaml" if ghost or packet else "config.toml")
-        filesystem_owned = expected_config.is_file()
+        config_candidates = (
+            ("config.yaml", "config.yml", "config.json")
+            if ghost or packet
+            else ("config.toml", "config.conf", "config.ini")
+        )
+        expected_config = next(
+            (tunnel_dir / name for name in config_candidates if (tunnel_dir / name).is_file()),
+            tunnel_dir / config_candidates[0],
+        )
+        filesystem_owned = expected_config.is_file() or (tunnel_dir / "meta.conf").is_file()
         show_code, properties = run(
             ["systemctl", "show", service, "--property=ExecStart", "--property=MainPID"],
             timeout=8,

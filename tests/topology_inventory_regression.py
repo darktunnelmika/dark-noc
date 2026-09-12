@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             "/api/agent/pulse",
             headers=auth,
             json={
-                "agent_version": "2.9.4",
+                "agent_version": "2.9.5",
                 "agent_loop_ts": app.utc_ts(),
                 "telemetry_status": "collecting",
                 "telemetry_age_seconds": 0,
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             assert pulsed["status"] == "online" and int(pulsed["last_seen"] or 0) > 0
 
         full_report = {
-            "agent_version": "2.9.4",
+            "agent_version": "2.9.5",
             "metrics": {
                 "cpu": 1, "ram": 2, "swap": 0, "disk": 3, "load1": 0.1,
                 "rx_bps": 10, "tx_bps": 20, "uptime": 30, "connections": 4,
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
 
         # A liveness-only heartbeat must preserve the last authoritative inventory.
         incomplete = {
-            "agent_version": "2.9.4",
+            "agent_version": "2.9.5",
             "metrics": {
                 "cpu": 5, "ram": 6, "disk": 7, "telemetry_status": "collecting",
                 "inventory_complete": False, "inventory_snapshot_at": 0,
@@ -154,8 +154,15 @@ styles = (ROOT / "hub" / "static" / "styles.css").read_text(encoding="utf-8")
 assert "topology_side" in app_js and "pairTotals" in app_js
 assert "--topology-canvas-height" in app_js and "--topology-canvas-height" in styles
 assert "cyber-route-backbone" in app_js and "cyber-route-flow" in app_js
-assert ".cyber-route-backbone" in styles and "@keyframes route-data-flow" in styles
+assert ".cyber-route-backbone" in styles and "@keyframes route-energy-pulse" in styles
 assert "route-packet-core" in app_js and "route-packet-halo" in app_js
 assert "No matching tunnel path" in app_js
+flow_css = styles.split(".cyber-route-flow{", 1)[1].split("}", 1)[0]
+backbone_css = styles.split(".cyber-route-backbone{", 1)[1].split("}", 1)[0]
+assert "stroke-dasharray" not in flow_css
+assert "stroke-dasharray" not in backbone_css
+agent_source = (ROOT / "agent" / "agent.py").read_text(encoding="utf-8")
+assert "list-unit-files" in agent_source
+assert "config.ini" in agent_source and "config.yml" in agent_source
 
 print("Topology and authoritative inventory regression tests passed")
