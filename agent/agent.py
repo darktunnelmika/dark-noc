@@ -60,7 +60,7 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.3"
+VERSION = "2.9.4"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
@@ -751,7 +751,9 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
             ):
                 candidates.add(service)
     else:
-        complete = False
+        # Managed filesystem roots remain authoritative even if systemd's unit
+        # listing is temporarily unavailable.
+        LOGGER.warning("systemd unit listing failed during tunnel discovery: %s", output[-500:])
 
     filesystem_specs = (
         (Path("/etc/dark-backhaul/tunnels"), "config.toml", "backhaul@"),
@@ -796,23 +798,25 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
             if realm else "/etc/dark-backhaul/tunnels"
         ) / instance
         expected_config = tunnel_dir / ("config.yaml" if ghost or packet else "config.toml")
+        filesystem_owned = expected_config.is_file()
         show_code, properties = run(
             ["systemctl", "show", service, "--property=ExecStart", "--property=MainPID"],
             timeout=8,
         )
-        if show_code != 0:
+        systemd_values: dict[str, str] = {}
+        if show_code == 0:
+            for line in properties.splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    systemd_values[key] = value
+        elif not filesystem_owned:
             complete = False
             cached = previous_by_service.get(service)
             if cached:
                 discovered.append(cached)
             continue
-        systemd_values: dict[str, str] = {}
-        for line in properties.splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                systemd_values[key] = value
-        if str(expected_config) not in systemd_values.get("ExecStart", ""):
-            # A matching unit name without the DARK config path is not ours.
+        if not filesystem_owned and str(expected_config) not in systemd_values.get("ExecStart", ""):
+            # A matching loaded unit without an owned DARK config path is not ours.
             continue
 
         meta: dict[str, str] = {}
@@ -1721,6 +1725,7 @@ async def main() -> None:
     job_task: asyncio.Task | None = None
     last_recovery_attempt = 0.0
     consecutive_failures = 0
+    pulse_supported = True
 
     async with httpx.AsyncClient(headers=headers, verify=verify_tls, timeout=timeout) as client:
         systemd_notify("READY=1\nSTATUS=DARK NOC Agent heartbeat loop started")
@@ -1776,27 +1781,97 @@ async def main() -> None:
             if state.get("last_telemetry_error"):
                 metrics["telemetry_error"] = str(state["last_telemetry_error"])[:500]
 
+            pulse_ok = False
             heartbeat_ok = False
+            pulse_error: str | None = None
+            inventory_error: str | None = None
+            pulse_payload = {
+                "agent_version": VERSION,
+                "agent_loop_ts": int(metrics.get("agent_loop_ts") or time.time()),
+                "telemetry_status": str(metrics.get("telemetry_status") or "unknown")[:32],
+                "telemetry_age_seconds": max(0, int(metrics.get("telemetry_age_seconds") or 0)),
+                "inventory_error": str(state.get("last_inventory_error") or "")[:1000] or None,
+            }
+
+            if pulse_supported:
+                try:
+                    pulse_response = await client.post(
+                        f"{hub}/api/agent/pulse", json=pulse_payload, timeout=6
+                    )
+                    if pulse_response.status_code == 404:
+                        # Rolling upgrades may briefly run a new Agent against an
+                        # older Hub. Fall back to the compatible heartbeat route.
+                        pulse_supported = False
+                    else:
+                        if (
+                            pulse_response.status_code == 401
+                            and time.monotonic() - last_recovery_attempt >= 30
+                        ):
+                            last_recovery_attempt = time.monotonic()
+                            if await recover_local_enrollment(client, hub, config):
+                                pulse_response = await client.post(
+                                    f"{hub}/api/agent/pulse", json=pulse_payload, timeout=6
+                                )
+                        pulse_response.raise_for_status()
+                        pulse_ok = True
+                        state["last_pulse_success"] = time.time()
+                        state["last_pulse_status"] = pulse_response.status_code
+                        state.pop("last_pulse_error", None)
+                except Exception as exc:
+                    pulse_error = f"{type(exc).__name__}: {exc}"[:1000]
+                    state["last_pulse_error"] = pulse_error
+
             try:
-                response = await client.post(f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10)
-                if response.status_code == 401 and time.monotonic() - last_recovery_attempt >= 30:
+                response = await client.post(
+                    f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10
+                )
+                if (
+                    response.status_code == 401
+                    and time.monotonic() - last_recovery_attempt >= 30
+                ):
                     last_recovery_attempt = time.monotonic()
                     if await recover_local_enrollment(client, hub, config):
-                        response = await client.post(f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10)
+                        response = await client.post(
+                            f"{hub}/api/agent/heartbeat", json=heartbeat_payload, timeout=10
+                        )
                 response.raise_for_status()
                 heartbeat_ok = True
+                state["last_inventory_success"] = time.time()
+                state["last_heartbeat_status"] = response.status_code
+                state.pop("last_inventory_error", None)
+            except httpx.HTTPStatusError as exc:
+                body = exc.response.text[-700:] if exc.response is not None else ""
+                status_code = exc.response.status_code if exc.response is not None else 0
+                inventory_error = (f"HTTP {status_code}: {body or str(exc)}")[:1000]
+                state["last_inventory_error"] = inventory_error
+                if pulse_ok and status_code in {400, 413, 422}:
+                    # A cached report from an older schema must not poison every
+                    # future heartbeat. Keep the pulse alive and rebuild inventory.
+                    state.pop("last_payload", None)
+                    state["last_payload_quarantined_at"] = time.time()
+                    latest_payload = minimal_heartbeat_payload(config)
+                    latest_telemetry_at = 0.0
+                    LOGGER.warning(
+                        "Inventory report rejected by Hub; cached snapshot quarantined while pulse remains online: %s",
+                        inventory_error,
+                    )
+            except Exception as exc:
+                inventory_error = f"{type(exc).__name__}: {exc}"[:1000]
+                state["last_inventory_error"] = inventory_error
+
+            liveness_ok = pulse_ok or heartbeat_ok
+            if liveness_ok:
                 consecutive_failures = 0
                 state["last_success"] = time.time()
-                state["last_heartbeat_status"] = response.status_code
                 state.pop("last_error", None)
-            except Exception as exc:
+            else:
                 consecutive_failures += 1
-                message = f"{type(exc).__name__}: {exc}"[:1000]
+                message = pulse_error or inventory_error or "Agent liveness request failed"
                 state["last_error"] = message
                 state["consecutive_heartbeat_failures"] = consecutive_failures
                 if consecutive_failures == 1 or consecutive_failures % 4 == 0:
                     LOGGER.warning(
-                        "Heartbeat failed (%s consecutive): %s",
+                        "Agent liveness failed (%s consecutive): %s",
                         consecutive_failures,
                         message,
                     )
@@ -1824,7 +1899,13 @@ async def main() -> None:
             except Exception:
                 LOGGER.exception("Could not persist Agent state; heartbeat loop continues")
 
-            status = "Heartbeat OK" if heartbeat_ok else f"Heartbeat failures: {consecutive_failures}"
+            status = (
+                "Pulse OK" if pulse_ok
+                else "Heartbeat OK" if heartbeat_ok
+                else f"Liveness failures: {consecutive_failures}"
+            )
+            if liveness_ok and inventory_error:
+                status += " · inventory retrying"
             systemd_notify(f"WATCHDOG=1\nSTATUS={status}")
             elapsed = time.monotonic() - loop_started
             await asyncio.sleep(max(1.0, interval - elapsed))
