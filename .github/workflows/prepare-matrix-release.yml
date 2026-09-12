@@ -25,34 +25,37 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Prepare only version metadata and release notes
+      - name: Synchronize release identifiers without modifying application logic
         run: |
           set -Eeuo pipefail
           python - <<'PY'
           from pathlib import Path
+          import json
+          import re
           import subprocess
           base = '53518580fb8041727b13c158e7a2619025461572'
-          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == base
-          replacements = {
-              'hub/app.py': ('VERSION = "2.9.5"', 'VERSION = "2.9.6"'),
-              'agent/agent.py': ('VERSION = "2.9.5"', 'VERSION = "2.9.6"'),
-              'darknoc': ('VERSION="2.9.5"', 'VERSION="2.9.6"'),
-          }
-          for name, (old, new) in replacements.items():
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip() == base
+          old, new = '2.9.5', '2.9.6'
+          # Runtime VERSION, install/upgrade exact-version heartbeat checks,
+          # cache keys and regression expectations must agree. Only this literal
+          # is changed; no tests, assertions or runtime branches are removed.
+          candidates = subprocess.check_output([
+              'git','ls-files','-z','*.sh','hub/app.py','agent/agent.py',
+              'darknoc','hub/static/index.html','tests/*.py'
+          ]).decode().rstrip('\0').split('\0')
+          expected = set()
+          for name in candidates:
               path = Path(name)
               original = path.read_text()
-              assert original.splitlines().count(old) == 1, name
-              lines = original.splitlines(keepends=True)
-              updated = ''.join(new + line[len(old):] if line.rstrip('\r\n') == old else line for line in lines)
-              assert updated.replace(new, old, 1) == original, name
+              updated, count = re.subn(r'(?<![0-9.])2\.9\.5(?![0-9.])', new, original)
+              if not count:
+                  continue
+              assert new not in original, name
+              assert updated.replace(new, old) == original, name
               path.write_text(updated)
-          # Keep the existing API assertions; change only their expected version.
-          path = Path('tests/smoke.py')
-          original = path.read_text()
-          assert original.count('"2.9.5"') >= 2
-          updated = original.replace('"2.9.5"', '"2.9.6"')
-          assert updated.replace('"2.9.6"', '"2.9.5"') == original
-          path.write_text(updated)
+              expected.add(name)
+              print(f'Version identifiers only: {name} ({count})')
+          assert {'hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/smoke.py','tests/installer_contracts.py'}.issubset(expected), expected
           notes = '''# DARK NOC v2.9.6 — Live Tunnel Matrix Cyber Refresh
 
           This release delivers the already-committed, isolated Live tunnel matrix
@@ -68,16 +71,16 @@ jobs:
 
           Scope: only the overview's Live tunnel matrix visuals and interactions.
           The main app.js, shared styles.css, other views, APIs, tunnel configuration,
-          pairing, deployment and Agent behavior are unchanged. Hub, Agent and CLI
-          version declarations and API smoke-test version expectations are synchronized
-          for release packaging only.
+          pairing, deployment and Agent logic are unchanged. Release identifiers,
+          installer exact-version handshakes, cache keys and test version expectations
+          are synchronized to 2.9.6 for packaging; no runtime logic or tests are removed.
 
           ## فارسی
 
           این انتشار فقط ظاهر بخش Live tunnel matrix را به‌روز می‌کند: خط اتصال
           در ترافیک کم یا صفر هم دیده می‌شود و افکت انتقال داده از خط پایه جداست.
-          هدر، منوها، صفحات دیگر و منطق تونل‌ها تغییری نکرده‌اند. شماره نسخهٔ
-          Hub، Agent و ابزار darknoc فقط برای هماهنگی بستهٔ انتشار تغییر کرده است.
+          هدر، منوها، صفحات دیگر و منطق تونل‌ها تغییری نکرده‌اند. شماره‌های نسخه
+          در Hub، Agent، نصب‌کننده و تست‌ها فقط برای هماهنگی انتشار تغییر کرده‌اند.
 
           ---
 
@@ -89,24 +92,25 @@ jobs:
           entry = '''
           ## 2.9.6 — Live tunnel matrix only
 
-          - Publish isolated live-matrix.css and live-matrix.js with only two loader
-            additions to index.html; shared frontend logic/styles are unchanged.
+          - Publish isolated live-matrix.css and live-matrix.js; shared frontend
+            logic/styles remain unchanged and index.html only loads the assets.
           - Keep every connection visible independently of rate, including flat paths.
           - Add scoped neon flow, route beacons, card accents and related-route focus.
           - Stop stale/offline/idle flow and bound motion for reduced-motion/large maps.
-          - Synchronize release/version expectations only; no backend/Agent logic changes.
+          - Synchronize release identifiers, installer handshakes and regression
+            expectations only; no backend, Agent or installer logic changes.
 
           '''
           p.write_text(heading + separator + entry + remainder)
-          expected = set(replacements) | {'RELEASE_NOTES.md', 'CHANGELOG.md', 'tests/smoke.py'}
-          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          expected.update({'RELEASE_NOTES.md','CHANGELOG.md'})
+          changed = set(subprocess.check_output(['git','diff','--name-only'],text=True).splitlines())
           assert changed == expected, changed
-          for name in ['hub/static/app.js', 'hub/static/styles.css', 'hub/static/index.html', 'hub/static/live-matrix.js', 'hub/static/live-matrix.css']:
-              assert Path(name).read_bytes() == subprocess.check_output(['git', 'show', f'{base}:{name}']), name
-          print('Scope verified: version lines, smoke version expectations and release notes only.')
+          for name in ['hub/static/app.js','hub/static/styles.css','hub/static/live-matrix.js','hub/static/live-matrix.css']:
+              assert Path(name).read_bytes() == subprocess.check_output(['git','show',f'{base}:{name}']), name
+          Path('/tmp/matrix-release-allowlist.json').write_text(json.dumps(sorted(expected)))
+          print('Scope verified: release literals and release notes only; approved matrix assets intact.')
           PY
           git diff --check
-          git grep -n '2\.9\.5' -- tests || true
       - name: Install existing test dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
       - name: Run all existing CI checks and matrix syntax
@@ -140,22 +144,27 @@ jobs:
           import tarfile
           from pathlib import Path
           with tarfile.open('dist/DARK-NOC-HUB-v2.9.6.tar.gz') as archive:
-              for name in ['index.html', 'live-matrix.css', 'live-matrix.js']:
+              for name in ['index.html','live-matrix.css','live-matrix.js']:
                   packaged = archive.extractfile('dark-noc-pro/hub/static/' + name)
                   assert packaged is not None
-                  assert packaged.read() == Path('hub/static', name).read_bytes(), name
+                  assert packaged.read() == Path('hub/static',name).read_bytes(), name
           print('Reproducible Hub/Node archives, SHA256SUMS and matrix assets verified.')
           PY
-      - name: Commit verified release metadata to a new review branch
+      - name: Commit verified release identifiers to a new review branch
         run: |
           set -Eeuo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- hub/app.py agent/agent.py darknoc RELEASE_NOTES.md CHANGELOG.md tests/smoke.py
           python - <<'PY'
+          from pathlib import Path
+          import json
           import subprocess
-          changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines())
-          assert changed == {'hub/app.py','agent/agent.py','darknoc','RELEASE_NOTES.md','CHANGELOG.md','tests/smoke.py'}, changed
+          expected = json.loads(Path('/tmp/matrix-release-allowlist.json').read_text())
+          changed = set(subprocess.check_output(['git','diff','--name-only'],text=True).splitlines())
+          assert changed == set(expected), changed
+          subprocess.run(['git','add','--',*expected], check=True)
+          staged = set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert staged == set(expected), staged
           PY
           git diff --cached --check
           git commit -m 'chore(release): publish isolated Live tunnel matrix refresh as v2.9.6'
@@ -163,7 +172,7 @@ jobs:
           {
             echo '## Verified v2.9.6 candidate'
             echo "Commit: $(git rev-parse HEAD)"
-            echo 'Only version declarations, API version expectations and release notes differ from the approved Matrix commit.'
+            echo 'Only release/version literals and release notes differ from the approved Matrix commit.'
             echo 'All existing CI scripts, JS syntax, reproducible packages and packaged assets passed.'
             echo 'Candidate only: main and published releases were not changed by this preparation job.'
           } >> "$GITHUB_STEP_SUMMARY"
