@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Transaction trigger: import-safe Realm adapter v9.
+# Transaction trigger: import-safe Agent and Hub adapters v10.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
@@ -44,10 +44,10 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("agent/agent.py")
-          source = path.read_text(encoding="utf-8")
-          old = "from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm"
-          new = '''try:
+          agent_path = Path("agent/agent.py")
+          agent_source = agent_path.read_text(encoding="utf-8")
+          agent_old = "from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm"
+          agent_new = '''try:
               from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm
           except ModuleNotFoundError:
               import importlib.util as _realm_importlib_util
@@ -61,9 +61,28 @@ jobs:
               install_dark_realm = _realm_adapter_module.install_core
               realm_inventory = _realm_adapter_module.inventory
               remove_dark_realm = _realm_adapter_module.remove'''
-          if source.count(old) != 1:
-              raise SystemExit("Realm adapter import anchor mismatch")
-          path.write_text(source.replace(old, new), encoding="utf-8")
+          if agent_source.count(agent_old) != 1:
+              raise SystemExit("Realm Agent adapter import anchor mismatch")
+          agent_path.write_text(agent_source.replace(agent_old, agent_new), encoding="utf-8")
+
+          hub_path = Path("hub/app.py")
+          hub_source = hub_path.read_text(encoding="utf-8")
+          hub_old = "from realm_support import prepare_realm_settings, realm_pair_code"
+          hub_new = '''try:
+              from realm_support import prepare_realm_settings, realm_pair_code
+          except ModuleNotFoundError:
+              import importlib.util as _realm_support_importlib_util
+              _realm_support_path = Path(__file__).resolve().with_name("realm_support.py")
+              _realm_support_spec = _realm_support_importlib_util.spec_from_file_location("dark_noc_realm_support", _realm_support_path)
+              if _realm_support_spec is None or _realm_support_spec.loader is None:
+                  raise
+              _realm_support_module = _realm_support_importlib_util.module_from_spec(_realm_support_spec)
+              _realm_support_spec.loader.exec_module(_realm_support_module)
+              prepare_realm_settings = _realm_support_module.prepare_realm_settings
+              realm_pair_code = _realm_support_module.realm_pair_code'''
+          if hub_source.count(hub_old) != 1:
+              raise SystemExit("Realm Hub support import anchor mismatch")
+          hub_path.write_text(hub_source.replace(hub_old, hub_new), encoding="utf-8")
           PY
           rm -rf .realm-bootstrap .github/workflows/realm-integration.yml
 
