@@ -36,6 +36,8 @@ jobs:
           python tests/noc_features.py
           python tests/server_cli.py
           python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
