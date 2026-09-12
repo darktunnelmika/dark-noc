@@ -83,6 +83,34 @@ jobs:
           )
           '''
           source = source[:css_start] + css_replacement + source[css_end:]
+
+          topology_start = source.index('topology_test = read("tests/topology_inventory_regression.py")')
+          topology_end_marker = 'write("tests/topology_inventory_regression.py", topology_test)\n'
+          topology_end = source.index(topology_end_marker, topology_start) + len(topology_end_marker)
+          topology_replacement = """topology_test = read(\"tests/topology_inventory_regression.py\")
+          topology_test = replace_once(
+              topology_test,
+              'assert \".cyber-route-backbone\" in styles and \"@keyframes route-data-flow\" in styles',
+              'assert \".cyber-route-backbone\" in styles and \"@keyframes route-energy-pulse\" in styles',
+              \"Topology energy animation regression contract\",
+          )
+          topology_anchor = 'assert \"No matching tunnel path\" in app_js\\n'
+          topology_replacement = '''assert \"No matching tunnel path\" in app_js
+          flow_css = styles.split(\".cyber-route-flow{\", 1)[1].split(\"}\", 1)[0]
+          backbone_css = styles.split(\".cyber-route-backbone{\", 1)[1].split(\"}\", 1)[0]
+          assert \"stroke-dasharray\" not in flow_css
+          assert \"stroke-dasharray\" not in backbone_css
+          agent_source = (ROOT / \"agent\" / \"agent.py\").read_text(encoding=\"utf-8\")
+          assert \"list-unit-files\" in agent_source
+          assert \"config.ini\" in agent_source and \"config.yml\" in agent_source
+          '''
+          topology_test = replace_once(
+              topology_test, topology_anchor, topology_replacement,
+              \"Solid topology regression contract\",
+          )
+          write(\"tests/topology_inventory_regression.py\", topology_test)
+          """
+          source = source[:topology_start] + topology_replacement + source[topology_end:]
           patcher.write_text(source, encoding='utf-8')
           PY
           python -m py_compile .v295-bootstrap/apply_v295.py
