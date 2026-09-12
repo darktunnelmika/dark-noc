@@ -4,14 +4,11 @@ name: Prepare Matrix v2.9.6
 on:
   push:
     branches: [automation/prepare-matrix-v2.9.6]
-
 permissions:
   contents: write
-
 concurrency:
   group: prepare-matrix-v2.9.6
   cancel-in-progress: false
-
 jobs:
   prepare:
     runs-on: ubuntu-24.04
@@ -49,6 +46,13 @@ jobs:
               updated = ''.join(new + line[len(old):] if line.rstrip('\r\n') == old else line for line in lines)
               assert updated.replace(new, old, 1) == original, name
               path.write_text(updated)
+          # Keep the existing API assertions; change only their expected version.
+          path = Path('tests/smoke.py')
+          original = path.read_text()
+          assert original.count('"2.9.5"') >= 2
+          updated = original.replace('"2.9.5"', '"2.9.6"')
+          assert updated.replace('"2.9.6"', '"2.9.5"') == original
+          path.write_text(updated)
           notes = '''# DARK NOC v2.9.6 — Live Tunnel Matrix Cyber Refresh
 
           This release delivers the already-committed, isolated Live tunnel matrix
@@ -65,7 +69,8 @@ jobs:
           Scope: only the overview's Live tunnel matrix visuals and interactions.
           The main app.js, shared styles.css, other views, APIs, tunnel configuration,
           pairing, deployment and Agent behavior are unchanged. Hub, Agent and CLI
-          version declarations are synchronized for release packaging only.
+          version declarations and API smoke-test version expectations are synchronized
+          for release packaging only.
 
           ## فارسی
 
@@ -80,8 +85,7 @@ jobs:
           p = Path('RELEASE_NOTES.md')
           p.write_text(notes + p.read_text())
           p = Path('CHANGELOG.md')
-          original = p.read_text()
-          heading, separator, remainder = original.partition('\n')
+          heading, separator, remainder = p.read_text().partition('\n')
           entry = '''
           ## 2.9.6 — Live tunnel matrix only
 
@@ -90,19 +94,19 @@ jobs:
           - Keep every connection visible independently of rate, including flat paths.
           - Add scoped neon flow, route beacons, card accents and related-route focus.
           - Stop stale/offline/idle flow and bound motion for reduced-motion/large maps.
-          - Synchronize release version declarations only; no backend/Agent logic changes.
+          - Synchronize release/version expectations only; no backend/Agent logic changes.
 
           '''
           p.write_text(heading + separator + entry + remainder)
-          expected = set(replacements) | {'RELEASE_NOTES.md', 'CHANGELOG.md'}
+          expected = set(replacements) | {'RELEASE_NOTES.md', 'CHANGELOG.md', 'tests/smoke.py'}
           changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
           assert changed == expected, changed
-          # The approved frontend remains byte-for-byte intact during packaging.
           for name in ['hub/static/app.js', 'hub/static/styles.css', 'hub/static/index.html', 'hub/static/live-matrix.js', 'hub/static/live-matrix.css']:
               assert Path(name).read_bytes() == subprocess.check_output(['git', 'show', f'{base}:{name}']), name
-          print('Scope verified: 3 version lines and 2 release documents only.')
+          print('Scope verified: version lines, smoke version expectations and release notes only.')
           PY
           git diff --check
+          git grep -n '2\.9\.5' -- tests || true
       - name: Install existing test dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
       - name: Run all existing CI checks and matrix syntax
@@ -147,11 +151,11 @@ jobs:
           set -Eeuo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- hub/app.py agent/agent.py darknoc RELEASE_NOTES.md CHANGELOG.md
+          git add -- hub/app.py agent/agent.py darknoc RELEASE_NOTES.md CHANGELOG.md tests/smoke.py
           python - <<'PY'
           import subprocess
           changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines())
-          assert changed == {'hub/app.py','agent/agent.py','darknoc','RELEASE_NOTES.md','CHANGELOG.md'}, changed
+          assert changed == {'hub/app.py','agent/agent.py','darknoc','RELEASE_NOTES.md','CHANGELOG.md','tests/smoke.py'}, changed
           PY
           git diff --cached --check
           git commit -m 'chore(release): publish isolated Live tunnel matrix refresh as v2.9.6'
@@ -159,7 +163,7 @@ jobs:
           {
             echo '## Verified v2.9.6 candidate'
             echo "Commit: $(git rev-parse HEAD)"
-            echo 'Only version declarations and release notes differ from the approved Matrix commit.'
+            echo 'Only version declarations, API version expectations and release notes differ from the approved Matrix commit.'
             echo 'All existing CI scripts, JS syntax, reproducible packages and packaged assets passed.'
             echo 'Candidate only: main and published releases were not changed by this preparation job.'
           } >> "$GITHUB_STEP_SUMMARY"
