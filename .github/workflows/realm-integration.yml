@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Transaction trigger: import-safe Agent and Hub adapters v10.
+# Transaction trigger: import-safe adapters and direct-test path v11.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
@@ -83,6 +83,18 @@ jobs:
           if hub_source.count(hub_old) != 1:
               raise SystemExit("Realm Hub support import anchor mismatch")
           hub_path.write_text(hub_source.replace(hub_old, hub_new), encoding="utf-8")
+
+          test_path = Path("tests/realm_integration.py")
+          test_source = test_path.read_text(encoding="utf-8")
+          test_old = "from hub.realm_support import canonical_realm_mappings, prepare_realm_settings, realm_pair_code"
+          test_new = '''import sys
+          ROOT = Path(__file__).resolve().parents[1]
+          sys.path.insert(0, str(ROOT))
+
+          from hub.realm_support import canonical_realm_mappings, prepare_realm_settings, realm_pair_code'''
+          if test_source.count(test_old) != 1:
+              raise SystemExit("Realm integration test import anchor mismatch")
+          test_path.write_text(test_source.replace(test_old, test_new), encoding="utf-8")
           PY
           rm -rf .realm-bootstrap .github/workflows/realm-integration.yml
 
