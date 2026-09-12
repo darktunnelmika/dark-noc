@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Retry trigger: preserve literal backslash escapes in generated Agent source.
+# Source publication excludes workflow files; the GitHub connector updates them separately.
 jobs:
   patch-test-publish:
     runs-on: ubuntu-24.04
@@ -85,7 +85,11 @@ jobs:
           set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git restore --source=HEAD -- .github/workflows/hub-heartbeat-resilience-v2.9.2.yml .heartbeat-bootstrap
+          git restore --source=HEAD -- \
+            .github/workflows/hub-heartbeat-resilience-v2.9.2.yml \
+            .github/workflows/ci.yml \
+            .github/workflows/release.yml \
+            .heartbeat-bootstrap
           git add -A
           git diff --cached --check
           git commit -m "fix: keep Hub heartbeat alive during slow telemetry"
