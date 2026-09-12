@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
 
     with TestClient(app.app, base_url="https://testserver") as client:
         health = client.get("/healthz")
-        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.8.0"}
+        assert health.status_code == 200 and health.json() == {"status": "ok", "version": "2.9.0"}
         assert app.configured_public_hub_url() == "https://noc.example.test:9090"
         assert health.headers["x-content-type-options"] == "nosniff"
         backhaul = next(item for item in app.PLUGIN_CATALOG if item["id"] == "dark-backhaul")
@@ -82,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
         assert report.status_code == 200
 
         dashboard = client.get("/api/dashboard").json()
-        assert dashboard["version"] == "2.8.0"
+        assert dashboard["version"] == "2.9.0"
         assert dashboard["nodes"]["online"] == 1
         assert dashboard["connections"] == 42
         assert dashboard["rx_bps"] == 1000000 and dashboard["tx_bps"] == 500000
@@ -111,7 +111,10 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-test-") as data_dir:
         assert duplicate_result.status_code == 200 and duplicate_result.json()["idempotent"] is True
 
         plugins = client.get("/api/plugins")
-        assert plugins.status_code == 200 and [item["id"] for item in plugins.json()] == ["dark-backhaul", "dark-ghostpro", "dark-packetpro"]
+        assert plugins.status_code == 200 and [item["id"] for item in plugins.json()] == ["dark-backhaul", "dark-ghostpro", "dark-packetpro", "dark-realm"]
+        realm_catalog = next(item for item in plugins.json() if item["id"] == "dark-realm")
+        assert realm_catalog["roles"] == {"iran": "edge", "kharej": "gateway"}
+        assert realm_catalog["transports"] == ["tcp", "tls", "ws", "wss"]
         packet_catalog = next(item for item in plugins.json() if item["id"] == "dark-packetpro")
         assert packet_catalog["roles"] == {"iran": "client", "kharej": "server"} and packet_catalog["transports"] == ["kcp"]
         exit_node = client.post("/api/nodes", json={

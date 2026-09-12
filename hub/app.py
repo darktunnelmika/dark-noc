@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import posixpath
+import re
 import secrets
 import shlex
 import socket
@@ -25,6 +26,18 @@ from typing import Any
 import asyncssh
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
+try:
+    from realm_support import prepare_realm_settings, realm_pair_code
+except ModuleNotFoundError:
+    import importlib.util as _realm_support_importlib_util
+    _realm_support_path = Path(__file__).resolve().with_name("realm_support.py")
+    _realm_support_spec = _realm_support_importlib_util.spec_from_file_location("dark_noc_realm_support", _realm_support_path)
+    if _realm_support_spec is None or _realm_support_spec.loader is None:
+        raise
+    _realm_support_module = _realm_support_importlib_util.module_from_spec(_realm_support_spec)
+    _realm_support_spec.loader.exec_module(_realm_support_module)
+    prepare_realm_settings = _realm_support_module.prepare_realm_settings
+    realm_pair_code = _realm_support_module.realm_pair_code
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,7 +52,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 120
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -810,6 +823,14 @@ PLUGIN_CATALOG = [{
     "roles": {"iran": "client", "kharej": "server"},
     "transports": ["kcp"],
     "profiles": ["stable", "balanced", "lowping", "turbo"], "automated": True,
+}, {
+    "id": "dark-realm", "name": "DARK Realm Pro", "version": "1.0.0",
+    "publisher": "@mikakhadm", "repository": "https://github.com/darktunnelmika/dark-realm",
+    "description": "Native high-performance Realm direct relay with DR1 Pair Code, Multi-Port and Gateway TLS.",
+    "roles": {"iran": "edge", "kharej": "gateway"},
+    "transports": ["tcp", "tls", "ws", "wss"],
+    "profiles": ["stable", "balanced", "lowping", "turbo"],
+    "certificate_side": "kharej", "automated": True,
 }]
 
 
@@ -938,19 +959,28 @@ class PluginDeployBody(BaseModel):
     kharej_node_id: int = Field(gt=0)
     iran_endpoint: str = Field(min_length=1, max_length=253)
     tunnel_port: int = Field(default=3080, ge=1, le=65535)
-    user_ports: list[int] = Field(min_length=1, max_length=32)
+    user_ports: list[int] = Field(min_length=1, max_length=256)
     transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
     profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
     restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
     certificate_id: int | None = Field(default=None, gt=0)
+    target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
+    port_mappings: list[str] = Field(default_factory=list, max_length=256)
+    tls_domain: str | None = Field(default=None, max_length=253)
+    tls_insecure: bool = False
+    sni: str | None = Field(default=None, max_length=253)
+    alpn: str | None = Field(default=None, max_length=128)
+    ws_host: str | None = Field(default=None, max_length=253)
+    ws_path: str | None = Field(default=None, max_length=128)
+    ws_mask: str = Field(default="skipped", pattern=r"^(skipped|fixed|standard)$")
 
-    @field_validator("iran_endpoint")
+    @field_validator("iran_endpoint", "target_host")
     @classmethod
     def validate_endpoint(cls, value: str) -> str:
         normalized = NodeBody.validate_host(value)
         try:
             if ipaddress.ip_address(normalized).version != 4:
-                raise ValueError("DARK Backhaul automation currently requires IPv4 or a hostname")
+                raise ValueError("DARK tunnel automation currently requires IPv4 or a hostname")
         except ValueError as exc:
             if "currently requires" in str(exc):
                 raise
@@ -964,13 +994,22 @@ class PairCodeDeployBody(BaseModel):
     remote_label: str = Field(default="KHAREJ", pattern=r"^[A-Za-z0-9_.() -]{2,48}$")
     kharej_endpoint: str | None = Field(default=None, min_length=1, max_length=253)
     tunnel_port: int = Field(default=3080, ge=1, le=65535)
-    user_ports: list[int] = Field(min_length=1, max_length=32)
+    user_ports: list[int] = Field(min_length=1, max_length=256)
     transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
     profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
     restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
     certificate_id: int | None = Field(default=None, gt=0)
+    target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
+    port_mappings: list[str] = Field(default_factory=list, max_length=256)
+    tls_domain: str | None = Field(default=None, max_length=253)
+    tls_insecure: bool = False
+    sni: str | None = Field(default=None, max_length=253)
+    alpn: str | None = Field(default=None, max_length=128)
+    ws_host: str | None = Field(default=None, max_length=253)
+    ws_path: str | None = Field(default=None, max_length=128)
+    ws_mask: str = Field(default="skipped", pattern=r"^(skipped|fixed|standard)$")
 
-    @field_validator("iran_endpoint")
+    @field_validator("iran_endpoint", "target_host")
     @classmethod
     def validate_endpoint(cls, value: str) -> str:
         return PluginDeployBody.validate_endpoint(value)
@@ -986,7 +1025,7 @@ class TunnelActionBody(BaseModel):
 
 
 class TunnelReconfigureBody(BaseModel):
-    user_ports: list[int] = Field(min_length=1, max_length=32)
+    user_ports: list[int] = Field(min_length=1, max_length=256)
     transport: str = Field(pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
     profile: str = Field(pattern=r"^(stable|balanced|lowping|turbo)$")
     restart_every: str = Field(pattern=r"^(off|1h|6h|12h|24h)$")
@@ -1230,7 +1269,7 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                 "export DEBIAN_FRONTEND=noninteractive; "
                 "apt-get update -qq && apt-get install -y python3 python3-venv python3-pip ca-certificates certbot curl tar openssl iproute2 iputils-ping iptables iperf3 snmp tmux && "
                 "install -d -m 0755 /opt/dark-noc-agent && "
-                "install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro && "
+                "install -d -m 0700 /etc/dark-noc-agent /var/lib/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /etc/dark-realm && "
                 "install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /var/lib/dark-noc-acme /var/lib/dark-noc-acme/.well-known /var/lib/dark-noc-acme/.well-known/acme-challenge",
                 check=False, timeout=600,
             )
@@ -1239,9 +1278,10 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                 raise RuntimeError(f"Prerequisite installation failed (exit {prep.exit_status})")
 
             agent_file = Path("/opt/dark-noc-agent/agent.py")
+            realm_adapter_file = Path("/opt/dark-noc-agent/realm_plugin.py")
             requirements_file = Path("/opt/dark-noc-agent/requirements.txt")
             service_file = Path("/etc/systemd/system/dark-noc-agent.service")
-            for required in (agent_file, requirements_file, service_file):
+            for required in (agent_file, realm_adapter_file, requirements_file, service_file):
                 if not required.is_file():
                     raise RuntimeError(f"Hub Node payload is missing: {required}")
 
@@ -1320,6 +1360,7 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                 activated_token_hash = token_hash(enrollment)
                 payloads: list[tuple[str, bytes, int]] = [
                     ("/opt/dark-noc-agent/agent.py", agent_file.read_bytes(), 0o755),
+                    ("/opt/dark-noc-agent/realm_plugin.py", realm_adapter_file.read_bytes(), 0o644),
                     ("/opt/dark-noc-agent/requirements.txt", requirements_file.read_bytes(), 0o644),
                     ("/etc/systemd/system/dark-noc-agent.service", service_file.read_bytes(), 0o644),
                     ("/etc/dark-noc-agent/config.json", (json.dumps(config, indent=2) + "\n").encode(), 0o600),
@@ -2570,7 +2611,7 @@ def tunnel_action(tunnel_id: int, body: TunnelActionBody, request: Request, user
         if not tunnel["last_seen"] or tunnel["last_seen"] < utc_ts() - NODE_STALE_AFTER:
             raise HTTPException(409, "The tunnel Agent is offline")
         service = str(tunnel["service"] or "")
-        plugin_id = "dark-ghostpro" if service.startswith("ghostpro@") else "dark-packetpro" if service.startswith("paqetpro@") else "dark-backhaul" if service.startswith("backhaul@") else None
+        plugin_id = "dark-realm" if service.startswith("dark-realm@") else "dark-ghostpro" if service.startswith("ghostpro@") else "dark-packetpro" if service.startswith("paqetpro@") else "dark-backhaul" if service.startswith("backhaul@") else None
         if not plugin_id:
             raise HTTPException(422, "This tunnel is not managed by a DARK NOC plugin")
         kind, payload = {
@@ -2616,16 +2657,44 @@ def reconfigure_tunnel(tunnel_id: int, body: TunnelReconfigureBody, request: Req
         plugin = next((item for item in PLUGIN_CATALOG if item["id"] == settings.get("plugin_id")), None)
         if not plugin or body.transport not in plugin["transports"]:
             raise HTTPException(422, "Transport is not supported by this plugin")
-        if any(port < 1 or port > 65535 or port == int(settings["tunnel_port"]) for port in ports):
+        if any(port < 1 or port > 65535 or (settings.get("plugin_id") != "dark-realm" and port == int(settings["tunnel_port"])) for port in ports):
             raise HTTPException(422, "Invalid user port or collision with the tunnel port")
-        settings.update({"user_ports": ports, "transport": body.transport, "profile": body.profile, "restart_every": body.restart_every})
-        selected_certificate_id = body.certificate_id or settings.get("certificate_id")
-        cert = certificate_for_deployment(conn, selected_certificate_id, tunnel["node_id"], body.transport)
-        for key in ("certificate_id", "certificate_domain", "certificate_path", "certificate_key_path"):
-            settings.pop(key, None)
-        if cert:
-            settings.update(cert)
-            settings["endpoint"] = cert["certificate_domain"]
+        if settings.get("plugin_id") == "dark-realm":
+            old_maps = [str(item) for item in settings.get("port_mappings") or []]
+            rebuilt: list[str] = []
+            for index, public_port in enumerate(ports):
+                target_port = public_port
+                backbone_port = int(settings["tunnel_port"]) + index
+                if index < len(old_maps):
+                    match = re.fullmatch(r"[0-9]{1,5}>([0-9]{1,5})@([0-9]{1,5})", old_maps[index])
+                    if match:
+                        target_port, backbone_port = int(match.group(1)), int(match.group(2))
+                rebuilt.append(f"{public_port}>{target_port}@{backbone_port}")
+            settings.update({"user_ports": ports, "port_mappings": rebuilt, "maps": ",".join(rebuilt), "transport": body.transport, "profile": body.profile, "restart_every": body.restart_every})
+            selected_certificate_id = body.certificate_id or settings.get("certificate_id")
+            for key in ("certificate_id", "certificate_domain", "certificate_path", "certificate_key_path"):
+                settings.pop(key, None)
+            if managed:
+                cert = certificate_for_deployment(conn, selected_certificate_id, managed["kharej_node_id"], body.transport)
+                if cert:
+                    settings.update(cert)
+                    settings["gateway_host"] = cert["certificate_domain"]
+                    settings["endpoint"] = cert["certificate_domain"]
+                    settings["tls_domain"] = cert["certificate_domain"]
+                    settings["sni"] = cert["certificate_domain"]
+                    if body.transport == "wss":
+                        settings["ws_host"] = cert["certificate_domain"]
+            elif body.transport in {"tls", "wss"} and not settings.get("tls_domain"):
+                raise HTTPException(422, "Pair Code Realm TLS/WSS requires a Gateway domain in the original deployment")
+        else:
+            settings.update({"user_ports": ports, "transport": body.transport, "profile": body.profile, "restart_every": body.restart_every})
+            selected_certificate_id = body.certificate_id or settings.get("certificate_id")
+            cert = certificate_for_deployment(conn, selected_certificate_id, tunnel["node_id"], body.transport)
+            for key in ("certificate_id", "certificate_domain", "certificate_path", "certificate_key_path"):
+                settings.pop(key, None)
+            if cert:
+                settings.update(cert)
+                settings["endpoint"] = cert["certificate_domain"]
         token = decrypt(deployment["pair_token_enc"])
         jobs: dict[str, int] = {}
         roles = plugin["roles"]
@@ -2685,7 +2754,7 @@ def certificate_for_deployment(conn: sqlite3.Connection, certificate_id: int | N
         raise HTTPException(422, "This transport requires a valid TLS certificate")
     row = conn.execute("SELECT * FROM certificates WHERE id=? AND node_id=?", (certificate_id, node_id)).fetchone()
     if not row:
-        raise HTTPException(404, "Certificate was not found on the selected Iran node")
+        raise HTTPException(404, "Certificate was not found on the selected transport-listener node")
     if row["status"] != "valid" or not row["expires_at"] or row["expires_at"] <= utc_ts() + 86400:
         raise HTTPException(409, "Certificate is not valid or expires in less than 24 hours")
     return {"certificate_id": row["id"], "certificate_domain": row["domain"], "certificate_path": row["cert_path"], "certificate_key_path": row["key_path"]}
@@ -2759,13 +2828,16 @@ def dark_backhaul_pair_code(settings: dict[str, Any], token: str) -> str:
 
 
 def plugin_pair_code(settings: dict[str, Any], token: str) -> str:
-    if settings["plugin_id"] == "dark-backhaul":
+    plugin_id = settings["plugin_id"]
+    if plugin_id == "dark-realm":
+        return realm_pair_code(settings)
+    if plugin_id == "dark-backhaul":
         return dark_backhaul_pair_code(settings, token)
-    if settings["plugin_id"] == "dark-ghostpro":
+    if plugin_id == "dark-ghostpro":
         ports = ",".join(str(port) for port in settings["user_ports"])
         raw = "|".join(("GPC1", settings["endpoint"], str(settings["tunnel_port"]), token, settings["transport"], settings["profile"], settings["restart_every"], ports))
         return "DGP-" + base64.b64encode(raw.encode()).decode()
-    if settings["plugin_id"] == "dark-packetpro":
+    if plugin_id == "dark-packetpro":
         mode, conn, mtu = PACKET_PROFILES[settings["profile"]]
         mode_index = {"normal": 0, "fast": 1, "fast2": 2, "fast3": 3}[mode]
         ports = ",".join(f"t{port}" for port in settings["user_ports"])
@@ -2779,13 +2851,16 @@ def plugin_pair_code(settings: dict[str, Any], token: str) -> str:
 
 
 def plugin_job_payload(settings: dict[str, Any], token: str, role: str) -> dict[str, Any]:
-    """Keep server-local certificate paths off KHAREJ job payloads."""
     payload = {**settings, "token": token, "role": role}
+    if settings.get("plugin_id") == "dark-realm":
+        if role != "gateway":
+            payload.pop("certificate_path", None)
+            payload.pop("certificate_key_path", None)
+        return payload
     if role == "client":
         payload.pop("certificate_path", None)
         payload.pop("certificate_key_path", None)
     return payload
-
 
 @app.post("/api/plugins/{plugin_id}/pair-code", status_code=202)
 def deploy_plugin_pair_code(plugin_id: str, body: PairCodeDeployBody, request: Request, user: sqlite3.Row = Depends(current_user)):
@@ -2795,24 +2870,40 @@ def deploy_plugin_pair_code(plugin_id: str, body: PairCodeDeployBody, request: R
     if body.transport not in catalog["transports"]:
         raise HTTPException(422, f"Unsupported {catalog['name']} transport")
     ports = sorted(set(body.user_ports))
-    if any(port < 1 or port > 65535 or port == body.tunnel_port for port in ports):
-        raise HTTPException(422, "User ports must be unique valid ports and cannot equal the tunnel port")
+    if any(port < 1 or port > 65535 or (plugin_id != "dark-realm" and port == body.tunnel_port) for port in ports):
+        raise HTTPException(422, "User ports must be unique valid ports and cannot collide with the tunnel port")
     token = secrets.token_urlsafe(24).replace("-", "A").replace("_", "B")
-    if plugin_id == "dark-packetpro" and not body.kharej_endpoint:
-        raise HTTPException(422, "DARK Packet Pro requires the KHAREJ public IPv4")
+    if plugin_id in {"dark-packetpro", "dark-realm"} and not body.kharej_endpoint:
+        raise HTTPException(422, f"{catalog['name']} Pair Code requires the KHAREJ endpoint")
     if plugin_id == "dark-packetpro":
         try:
             if ipaddress.ip_address(body.kharej_endpoint).version != 4:
                 raise ValueError
         except ValueError:
             raise HTTPException(422, "DARK Packet Pro KHAREJ endpoint must be an IPv4 address")
-    endpoint = body.kharej_endpoint if plugin_id == "dark-packetpro" else body.iran_endpoint
-    settings = {
+    endpoint = body.kharej_endpoint if plugin_id in {"dark-packetpro", "dark-realm"} else body.iran_endpoint
+    settings: dict[str, Any] = {
         "plugin_id": plugin_id, "name": body.name, "endpoint": endpoint,
         "tunnel_port": body.tunnel_port, "user_ports": ports, "transport": body.transport,
         "profile": body.profile, "restart_every": body.restart_every,
     }
-    if plugin_id == "dark-packetpro":
+    if plugin_id == "dark-realm":
+        settings = prepare_realm_settings(
+            {
+                **settings,
+                "target_host": body.target_host,
+                "port_mappings": body.port_mappings,
+                "tls_domain": body.tls_domain,
+                "tls_insecure": body.tls_insecure,
+                "sni": body.sni,
+                "alpn": body.alpn,
+                "ws_host": body.ws_host,
+                "ws_path": body.ws_path,
+                "ws_mask": body.ws_mask,
+            },
+            gateway_host=str(body.kharej_endpoint), pair_mode=True,
+        )
+    elif plugin_id == "dark-packetpro":
         settings.update({"pair_id": secrets.token_hex(8), "pair_created": utc_ts(), "core_tag": PAQET_CORE_TAG})
     now = utc_ts()
     with db() as conn:
@@ -2821,13 +2912,14 @@ def deploy_plugin_pair_code(plugin_id: str, body: PairCodeDeployBody, request: R
             raise HTTPException(404, "Iran node was not found")
         if iran["role"] not in {"edge", "hub"}:
             raise HTTPException(422, "Select an Iran Edge or Hub node for the IRAN side")
-        cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
-        if cert:
-            settings.update(cert)
-            if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
-                raise HTTPException(422, "TLS endpoint must match the selected certificate domain")
-        elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
-            raise HTTPException(422, "Iran endpoint must match the selected Iran node host/IP")
+        if plugin_id != "dark-realm":
+            cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
+            if cert:
+                settings.update(cert)
+                if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
+                    raise HTTPException(422, "TLS endpoint must match the selected certificate domain")
+            elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
+                raise HTTPException(422, "Iran endpoint must match the selected Iran node host/IP")
         if not iran["last_seen"] or iran["last_seen"] < now - NODE_STALE_AFTER:
             raise HTTPException(409, "The Iran Agent must be online before deployment")
         managed_active = conn.execute("SELECT 1 FROM plugin_deployments WHERE name=? AND (iran_node_id=? OR kharej_node_id=?) AND lifecycle IN ('active','removing','rolling_back','rollback_failed') LIMIT 1", (body.name, iran["id"], iran["id"])).fetchone()
@@ -2861,17 +2953,17 @@ def deploy_plugin(plugin_id: str, body: PluginDeployBody, request: Request, user
     if body.iran_node_id == body.kharej_node_id:
         raise HTTPException(422, "IRAN and KHAREJ must be different nodes")
     ports = sorted(set(body.user_ports))
-    if any(port < 1 or port > 65535 or port == body.tunnel_port for port in ports):
-        raise HTTPException(422, "User ports must be unique valid ports and cannot equal the tunnel port")
+    if any(port < 1 or port > 65535 or (plugin_id != "dark-realm" and port == body.tunnel_port) for port in ports):
+        raise HTTPException(422, "User ports must be unique valid ports and cannot collide with the tunnel port")
     token = secrets.token_urlsafe(24).replace("-", "A").replace("_", "B")
-    common = {
+    common: dict[str, Any] = {
         "plugin_id": plugin_id, "name": body.name, "endpoint": body.iran_endpoint,
         "tunnel_port": body.tunnel_port, "user_ports": ports, "transport": body.transport,
         "profile": body.profile, "restart_every": body.restart_every, "token": token,
     }
     now = utc_ts()
     with db() as conn:
-        iran = conn.execute("SELECT id,name,host,role,status,last_seen FROM nodes WHERE id=?", (body.iran_node_id,)).fetchone()
+        iran = conn.execute("SELECT id,name,host,observed_ip,role,status,last_seen FROM nodes WHERE id=?", (body.iran_node_id,)).fetchone()
         kharej = conn.execute("SELECT id,name,host,observed_ip,role,status,last_seen FROM nodes WHERE id=?", (body.kharej_node_id,)).fetchone()
         if not iran or not kharej:
             raise HTTPException(404, "One or both nodes were not found")
@@ -2880,17 +2972,40 @@ def deploy_plugin(plugin_id: str, body: PluginDeployBody, request: Request, user
         if plugin_id == "dark-packetpro":
             packet_endpoint = normalize_ip(kharej["observed_ip"] or kharej["host"])
             try:
-                if ipaddress.ip_address(packet_endpoint).version != 4: raise ValueError
+                if ipaddress.ip_address(packet_endpoint).version != 4:
+                    raise ValueError
             except ValueError:
                 raise HTTPException(422, "The KHAREJ node needs a detected public IPv4 for Packet Pro")
             common["endpoint"] = packet_endpoint
-        cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
-        if cert:
-            common.update(cert)
-            if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
-                raise HTTPException(422, "TLS endpoint must match the selected certificate domain")
-        elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
-            raise HTTPException(422, "Iran endpoint must match the selected Iran node host/IP")
+        if plugin_id == "dark-realm":
+            cert = certificate_for_deployment(conn, body.certificate_id, kharej["id"], body.transport)
+            gateway_host = str(kharej["observed_ip"] or kharej["host"])
+            if cert:
+                gateway_host = cert["certificate_domain"]
+            common = prepare_realm_settings(
+                {
+                    **common,
+                    "target_host": body.target_host,
+                    "port_mappings": body.port_mappings,
+                    "tls_domain": body.tls_domain,
+                    "tls_insecure": body.tls_insecure,
+                    "sni": body.sni,
+                    "alpn": body.alpn,
+                    "ws_host": body.ws_host,
+                    "ws_path": body.ws_path,
+                    "ws_mask": body.ws_mask,
+                },
+                gateway_host=gateway_host, certificate=cert, pair_mode=False,
+            )
+            common["token"] = token
+        else:
+            cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
+            if cert:
+                common.update(cert)
+                if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
+                    raise HTTPException(422, "TLS endpoint must match the selected certificate domain")
+            elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
+                raise HTTPException(422, "Iran endpoint must match the selected Iran node host/IP")
         if not iran["last_seen"] or iran["last_seen"] < now - NODE_STALE_AFTER or not kharej["last_seen"] or kharej["last_seen"] < now - NODE_STALE_AFTER:
             raise HTTPException(409, "Both nodes must be online before deployment")
         active = conn.execute("""SELECT 1 FROM plugin_deployments d

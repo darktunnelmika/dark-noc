@@ -3,6 +3,20 @@
 All notable changes to DARK NOC are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] - 2026-09-12
+
+### Added
+
+- DARK Realm Pro v1.0.0 as a first-class DARK NOC plugin with native Realm TCP/TLS/WS/WSS configuration.
+- Managed Iran Edge and Kharej Gateway deployment, plus standalone DR1 Pair Code mode.
+- Realm Multi-Port mapping, native TOML generation, verified v2.9.6 core installation, per-tunnel systemd services and Agent telemetry.
+- Gateway-owned TLS Vault selection for Realm TLS/WSS; private keys remain only on the transport-listener Node.
+
+### Security
+
+- Realm core assets are version-pinned, verified with official GitHub SHA-256 digests and installed atomically.
+- DR1 Pair Codes carry validated metadata and corruption checksums only; no certificate key material is included.
+
 ## [2.8.0] - 2026-09-11
 
 ### Added

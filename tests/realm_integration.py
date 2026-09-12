@@ -6,6 +6,10 @@ import importlib.util
 import tempfile
 from pathlib import Path
 
+import sys
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from hub.realm_support import canonical_realm_mappings, prepare_realm_settings, realm_pair_code
 
 
