@@ -1,0 +1,98 @@
+name: DARK NOC Hub Recovery Transaction
+
+on:
+  push:
+    branches: ["fix/hub-agent-recovery-v2.9.1"]
+    paths:
+      - ".github/workflows/hub-recovery-transaction.yml"
+      - ".hub-recovery-bootstrap/part*"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore and apply verified Hub recovery patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .hub-recovery-bootstrap/part00 \
+              .hub-recovery-bootstrap/part01 \
+              .hub-recovery-bootstrap/part02 \
+              .hub-recovery-bootstrap/part03 \
+              .hub-recovery-bootstrap/part04 \
+              .hub-recovery-bootstrap/part05 \
+              .hub-recovery-bootstrap/part06 > /tmp/hub-recovery.b64
+          base64 -d /tmp/hub-recovery.b64 > /tmp/hub_recovery_v291.py
+          echo "36c0f6a34be6b08d8577b6e1e698cad57a3cafd37f972848407265fb4e5f1563  /tmp/hub_recovery_v291.py" | sha256sum -c -
+          python -m py_compile /tmp/hub_recovery_v291.py
+          python /tmp/hub_recovery_v291.py
+
+      - name: Install project dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+
+      - name: Static validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+
+      - name: Full regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+
+      - name: Reproducible release validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
+
+      - name: Publish validated source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            agent/agent.py hub/app.py install-hub.sh install-node.sh upgrade.sh darknoc \
+            tests/local_hub_recovery.py tests/installer_contracts.py tests/smoke.py tests/realm_integration.py \
+            .github/workflows/ci.yml .github/workflows/release.yml \
+            hub/static/index.html NODE-README.md README.md README.fa.md RELEASE_NOTES.md CHANGELOG.md
+          git diff --cached --check
+          git commit -m "fix: recover local Hub Agent and harden Agent delivery"
+          git push origin HEAD:fix/hub-agent-recovery-v2.9.1
