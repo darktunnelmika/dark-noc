@@ -1,0 +1,151 @@
+name: DARK Realm UFW Rollback Hardening
+
+on:
+  push:
+    branches: ["codex/dark-realm-noc-v2.9.0"]
+    paths:
+      - ".github/workflows/realm-hardening.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply transactional UFW cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("agent/realm_plugin.py")
+          source = path.read_text(encoding="utf-8")
+
+          old = '''        if code != 0:
+              raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")
+          if "Rule added" in output:
+              created.append(rule)
+      _atomic_text(directory / "ufw-created.json", json.dumps(created), 0o600)
+      return created
+
+
+          def _save_agent_config'''
+          new = '''        if code != 0:
+              _remove_ufw_rules(created)
+              raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")
+          if "Rule added" in output:
+              created.append(rule)
+      _atomic_text(directory / "ufw-created.json", json.dumps(created), 0o600)
+      return created
+
+
+          def _remove_ufw_rules(rules: list[str]) -> None:
+              if not rules or shutil.which("ufw") is None:
+                  return
+              for rule in rules:
+                  if re.fullmatch(r"[0-9]{1,5}/tcp", str(rule)):
+                      _run(["ufw", "--force", "delete", "allow", str(rule)], timeout=20)
+
+
+          def _save_agent_config'''
+          if source.count(old) != 1:
+              raise SystemExit("Realm UFW helper anchor mismatch")
+          source = source.replace(old, new)
+
+          old = '''    try:
+              config_text = render_config(payload, role)'''
+          new = '''    firewall_rules: list[str] = []
+              try:
+                  config_text = render_config(payload, role)'''
+          if source.count(old) != 1:
+              raise SystemExit("Realm deploy transaction anchor mismatch")
+          source = source.replace(old, new)
+
+          old = '''    except Exception:
+              _run(["systemctl", "disable", "--now", service], timeout=30)
+              if existed and (backup_root / "tunnel").exists():'''
+          new = '''    except Exception:
+              _run(["systemctl", "disable", "--now", service], timeout=30)
+              _remove_ufw_rules(firewall_rules)
+              if existed and (backup_root / "tunnel").exists():'''
+          if source.count(old) != 1:
+              raise SystemExit("Realm rollback cleanup anchor mismatch")
+          source = source.replace(old, new)
+
+          old = '''    if firewall_file.is_file() and shutil.which("ufw"):
+              try:
+                  for rule in json.loads(firewall_file.read_text(encoding="utf-8")):
+                      if re.fullmatch(r"[0-9]{1,5}/tcp", str(rule)):
+                          _run(["ufw", "--force", "delete", "allow", str(rule)], timeout=20)
+              except (OSError, TypeError, ValueError):
+                  pass'''
+          new = '''    if firewall_file.is_file():
+              try:
+                  _remove_ufw_rules(json.loads(firewall_file.read_text(encoding="utf-8")))
+              except (OSError, TypeError, ValueError):
+                  pass'''
+          if source.count(old) != 1:
+              raise SystemExit("Realm remove cleanup anchor mismatch")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+
+          test = Path("tests/realm_integration.py")
+          test_source = test.read_text(encoding="utf-8")
+          anchor = '''    assert 'VERSION = "2.9.0"' in agent_source
+              print("DARK Realm NOC integration tests passed")'''
+          replacement = '''    assert 'VERSION = "2.9.0"' in agent_source
+              assert "_remove_ufw_rules(firewall_rules)" in agent_source
+
+              commands = []
+              realm_agent.shutil.which = lambda command: "/usr/sbin/ufw" if command == "ufw" else None
+              realm_agent._run = lambda command, timeout=30: (commands.append(command) or (0, ""))
+              realm_agent._remove_ufw_rules(["443/tcp", "invalid", "8443/tcp"])
+              assert commands == [
+                  ["ufw", "--force", "delete", "allow", "443/tcp"],
+                  ["ufw", "--force", "delete", "allow", "8443/tcp"],
+              ]
+              print("DARK Realm NOC integration tests passed")'''
+          if test_source.count(anchor) != 1:
+              raise SystemExit("Realm rollback test anchor mismatch")
+          test.write_text(test_source.replace(anchor, replacement), encoding="utf-8")
+          PY
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Validate all tests and release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          scripts/build-release.sh
+      - name: Publish hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git restore --source=HEAD -- .github/workflows/realm-hardening.yml
+          git add agent/realm_plugin.py tests/realm_integration.py
+          git diff --cached --check
+          git commit -m "fix(realm): roll back owned UFW rules on deployment failure"
+          git push origin HEAD:codex/dark-realm-noc-v2.9.0
