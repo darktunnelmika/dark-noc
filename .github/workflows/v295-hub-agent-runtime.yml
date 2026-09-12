@@ -45,14 +45,19 @@ jobs:
           write("upgrade.sh", upgrade)
           '''
           new = '''hub_install_anchor = '    bash "$SCRIPT_DIR/install-hub.sh"\\n'
-          if upgrade.count(hub_install_anchor) != 1:
-              raise SystemExit("Hub install success-path anchor mismatch")
-          upgrade_prefix, upgrade_success = upgrade.split(hub_install_anchor, 1)
-          upgrade_success = replace_once(
-              upgrade_success, old_agent_restore, new_agent_restore,
+          agent_case_anchor = '    ;;\\n  agent)'
+          if upgrade.count(hub_install_anchor) != 1 or upgrade.count(agent_case_anchor) != 1:
+              raise SystemExit("Hub upgrade success-path boundaries mismatch")
+          upgrade_prefix, after_install = upgrade.split(hub_install_anchor, 1)
+          hub_success, upgrade_suffix = after_install.split(agent_case_anchor, 1)
+          hub_success = replace_once(
+              hub_success, old_agent_restore, new_agent_restore,
               "Hub success path Agent-state repair",
           )
-          upgrade = upgrade_prefix + hub_install_anchor + upgrade_success
+          upgrade = (
+              upgrade_prefix + hub_install_anchor + hub_success
+              + agent_case_anchor + upgrade_suffix
+          )
           write("upgrade.sh", upgrade)
           '''
           if source.count(old) != 1:
