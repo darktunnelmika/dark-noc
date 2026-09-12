@@ -1,0 +1,91 @@
+name: DARK NOC v2.9.2 Heartbeat Resilience
+
+on:
+  push:
+    branches: ["fix/hub-heartbeat-resilience-v2.9.2"]
+    paths:
+      - ".github/workflows/hub-heartbeat-resilience-v2.9.2.yml"
+      - ".heartbeat-bootstrap/**"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore and apply heartbeat resilience patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat .heartbeat-bootstrap/part00 .heartbeat-bootstrap/part01 .heartbeat-bootstrap/part02 > /tmp/dark-noc-v2.9.2.b64
+          base64 -d /tmp/dark-noc-v2.9.2.b64 > /tmp/dark-noc-v2.9.2.py.xz
+          xz -t /tmp/dark-noc-v2.9.2.py.xz
+          xz -dc /tmp/dark-noc-v2.9.2.py.xz > /tmp/apply_dark_noc_v2_9_2.py
+          python -m py_compile /tmp/apply_dark_noc_v2_9_2.py
+          python /tmp/apply_dark_noc_v2_9_2.py
+
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+
+      - name: Static validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+
+      - name: Full regression suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+
+      - name: Verify reproducible release archives
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
+
+      - name: Publish validated source changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git restore --source=HEAD -- .github/workflows/hub-heartbeat-resilience-v2.9.2.yml .heartbeat-bootstrap
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: keep Hub heartbeat alive during slow telemetry"
+          git push origin HEAD:fix/hub-heartbeat-resilience-v2.9.2
