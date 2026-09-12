@@ -50,6 +50,19 @@ jobs:
           echo "36c0f6a34be6b08d8577b6e1e698cad57a3cafd37f972848407265fb4e5f1563  /tmp/hub_recovery_v291.py" | sha256sum -c -
           python -m py_compile /tmp/hub_recovery_v291.py
           python /tmp/hub_recovery_v291.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("install-hub.sh")
+          source = path.read_text(encoding="utf-8")
+          health_check = 'curl -kfsS -H "Host: $PUBLIC_HOST" --max-time 8 "https://127.0.0.1:$PUBLIC_PORT/healthz" >/dev/null\n'
+          anchor = "if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then\n"
+          if health_check not in source:
+              if source.count(anchor) != 1:
+                  raise SystemExit("Public Hub health-check anchor mismatch")
+              source = source.replace(anchor, health_check + anchor, 1)
+              path.write_text(source, encoding="utf-8")
+          PY
 
       - name: Install project dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
