@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
 
+# Transaction trigger: corrected Realm payload v5.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
