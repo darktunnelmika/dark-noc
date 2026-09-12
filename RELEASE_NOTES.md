@@ -1,3 +1,11 @@
+# DARK NOC v2.9.0 — DARK Realm Integration
+
+DARK Realm Pro v1.0.0 is now a first-class plugin with native Realm TCP/TLS/WS/WSS semantics, managed Iran Edge and Kharej Gateway deployment, DR1 Pair Code mode, Gateway-owned TLS Vault certificates, native multi-endpoint TOML generation and Agent telemetry.
+
+The integration preserves Realm's direct-relay architecture. It does not inject Backhaul pool, channel or multiplexing controls into Realm.
+
+---
+
 # DARK NOC v2.8.0 — Operations Cockpit
 
 Maintainer: **@mikakhadm**

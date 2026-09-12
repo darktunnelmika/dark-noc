@@ -72,7 +72,7 @@ validate_integer_setting() {
 
 echo ""
 echo "  DARK NOC // HUB INSTALLER"
-echo "  Nightfall Command v2.8.0"
+echo "  Nightfall Command v2.9.0"
 echo ""
 
 SERVER_IP="$(hostname -I | awk '{print $1}')"

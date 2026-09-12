@@ -244,9 +244,9 @@ function renderTunnels() {
 }
 
 function pluginInventory(node, pluginId){return node.plugins?.[pluginId.replaceAll('-','_')];}
-function pluginMethod(pluginId){return pluginId==='dark-ghostpro'?'DARK Ghost Pro':pluginId==='dark-packetpro'?'DARK Packet Pro':'DARK Backhaul';}
-function pluginIcon(pluginId){return pluginId==='dark-ghostpro'?'DG':pluginId==='dark-packetpro'?'DP':'DB';}
-function tunnelPluginId(tunnel){return tunnel.method==='DARK Ghost Pro'?'dark-ghostpro':tunnel.method==='DARK Packet Pro'?'dark-packetpro':'dark-backhaul';}
+function pluginMethod(pluginId){return pluginId==='dark-realm'?'DARK Realm Pro':pluginId==='dark-ghostpro'?'DARK Ghost Pro':pluginId==='dark-packetpro'?'DARK Packet Pro':'DARK Backhaul';}
+function pluginIcon(pluginId){return pluginId==='dark-realm'?'DR':pluginId==='dark-ghostpro'?'DG':pluginId==='dark-packetpro'?'DP':'DB';}
+function tunnelPluginId(tunnel){return tunnel.method==='DARK Realm Pro'?'dark-realm':tunnel.method==='DARK Ghost Pro'?'dark-ghostpro':tunnel.method==='DARK Packet Pro'?'dark-packetpro':'dark-backhaul';}
 function renderPlugins() {
   const grid = $('#plugin-grid');
   const onlineNodes=state.nodes.filter(node=>node.status==='online');
@@ -267,26 +267,44 @@ function renderCertificates(){
   $('#cert-count').textContent=state.certificates.filter(c=>c.status==='valid').length;
 }
 
+function realmCertificateNodeId(){
+  const form=$('#plugin-form');
+  return state.selectedPlugin==='dark-realm'?Number(form.elements.kharej_node_id.value):Number(form.elements.iran_node_id.value);
+}
+
+function updateRealmFields(){
+  const form=$('#plugin-form'),realm=state.selectedPlugin==='dark-realm',transport=form.elements.transport.value;
+  $('#plugin-realm').hidden=!realm;
+  $('#plugin-realm-tls').hidden=!realm||!['tls','wss'].includes(transport);
+  $('#plugin-realm-ws').hidden=!realm||!['ws','wss'].includes(transport);
+  ['target_host','port_mappings'].forEach(name=>{if(form.elements[name])form.elements[name].required=realm;});
+  ['tls_domain','sni'].forEach(name=>{if(form.elements[name])form.elements[name].required=realm&&['tls','wss'].includes(transport);});
+  ['ws_host','ws_path'].forEach(name=>{if(form.elements[name])form.elements[name].required=realm&&['ws','wss'].includes(transport);});
+}
+
 function updateTLSSelector(){
-  const form=$('#plugin-form'),transport=form.elements.transport.value,required=['tls','wss','wssmux','h2','grpc','relay+tls','relay+wss','relay+h2','relay+grpc'].includes(transport),nodeId=Number(form.elements.iran_node_id.value),box=$('#plugin-tls'),select=$('#plugin-certificate');
-  box.hidden=!required;select.required=required;
-  if(!required){select.value='';return;}
+  const form=$('#plugin-form'),transport=form.elements.transport.value,realm=state.selectedPlugin==='dark-realm',pairMode=form.elements.deployment_mode.value==='pair_code',required=['tls','wss','wssmux','h2','grpc','relay+tls','relay+wss','relay+h2','relay+grpc'].includes(transport),nodeId=realmCertificateNodeId(),box=$('#plugin-tls'),select=$('#plugin-certificate');
+  updateRealmFields();
+  box.hidden=!required||realm&&pairMode;select.required=required&&!(realm&&pairMode);
+  if(!required||realm&&pairMode){select.value='';return;}
   const valid=state.certificates.filter(c=>Number(c.node_id)===nodeId&&c.status==='valid'&&Number(c.expires_at)>Date.now()/1000+86400);
   select.innerHTML='<option value="">SELECT VALID CERTIFICATE</option>'+valid.map(c=>`<option value="${Number(c.id)}">${esc(c.domain)} · ${Math.ceil((c.expires_at-Date.now()/1000)/86400)} days</option>`).join('');
-  if(valid.length===1){select.value=valid[0].id;form.elements.iran_endpoint.value=valid[0].domain;}
+  if(valid.length===1){select.value=valid[0].id;if(realm){form.elements.tls_domain.value=valid[0].domain;form.elements.sni.value=valid[0].domain;form.elements.ws_host.value=valid[0].domain;form.elements.iran_endpoint.value=valid[0].domain;}else form.elements.iran_endpoint.value=valid[0].domain;}
 }
 
 function updatePluginMode(){
-  const managed=$('#plugin-mode').value==='managed';
-  const packet=state.selectedPlugin==='dark-packetpro';
+  const form=$('#plugin-form'),managed=$('#plugin-mode').value==='managed',packet=state.selectedPlugin==='dark-packetpro',realm=state.selectedPlugin==='dark-realm';
   $('#plugin-kharej-managed').hidden=!managed; $('#plugin-kharej-pair').hidden=managed;
-  $('#plugin-kharej-node').required=managed; $('[name="remote_label"]',$('#plugin-form')).required=!managed;
-  $('#plugin-kharej-endpoint').hidden=managed||!packet; $('[name="kharej_endpoint"]',$('#plugin-form')).required=!managed&&packet;
-  $('#plugin-iran-role').textContent=packet?'Client · exposes local user ports':'Server · accepts tunnel';
-  $('#plugin-remote-help').textContent=managed?(packet?'Server · automatic install':'Client · automatic install'):'Script · paste Pair Code';
-  $('#plugin-security-title').textContent=managed?'Zero-copy pairing':'Offline-capable secure pairing';
-  $('#plugin-security-copy').textContent=managed?'DARK NOC securely applies matching configuration to both Agents.':'The Hub configures IRAN and generates a compatible code. On KHAREJ select the normal Pair Code flow and paste it.';
+  $('#plugin-kharej-node').required=managed; $('[name="remote_label"]',form).required=!managed;
+  $('#plugin-kharej-endpoint').hidden=managed||!(packet||realm); $('[name="kharej_endpoint"]',form).required=!managed&&(packet||realm);
+  $('#plugin-kharej-endpoint strong')?.remove();
+  $('#plugin-iran-role').textContent=realm?'Edge · exposes public user ports':packet?'Client · exposes local user ports':'Server · accepts tunnel';
+  $('#plugin-remote-help').textContent=managed?(realm?'Gateway · native Realm listener':packet?'Server · automatic install':'Client · automatic install'):'Script · paste Pair Code';
+  $('#plugin-security-title').textContent=realm?'Native Realm deployment':managed?'Zero-copy pairing':'Offline-capable secure pairing';
+  $('#plugin-security-copy').textContent=realm?'DARK NOC keeps Realm TOML native: Iran Edge listens on public ports, Kharej Gateway listens on backbone ports, and TLS certificates stay on the Gateway.':managed?'DARK NOC securely applies matching configuration to both Agents.':'The Hub configures IRAN and generates a compatible code. On KHAREJ select the normal Pair Code flow and paste it.';
   $('#plugin-submit').textContent=managed?'DEPLOY ON BOTH SERVERS':'CONFIGURE IRAN & GENERATE CODE';
+  $('#plugin-endpoint-label').firstChild.textContent=realm?'GATEWAY IP / DOMAIN':'IRAN PUBLIC IP / DOMAIN';
+  updateRealmFields();updateTLSSelector();
 }
 
 function renderIncidentDetail(incident) {
@@ -808,8 +826,9 @@ document.addEventListener('click', event => {
     if (!iranNodes.length) return showToast('IRAN AGENT REQUIRED','At least one online Iran Edge or Hub Agent is required.',true);
     $('#plugin-iran-node').innerHTML = iranNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
     $('#plugin-kharej-node').innerHTML = kharejNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
-    const iran = iranNodes[0];
-    $('#plugin-iran-node').value=iran.id; if(kharejNodes[0]){$('#plugin-kharej-node').value=kharejNodes[0].id;$('[name="kharej_endpoint"]',$('#plugin-form')).value=kharejNodes[0].host;} $('#plugin-endpoint').value=iran.host; updatePluginMode();updateTLSSelector();
+    const form=$('#plugin-form');form.reset();form.elements.name.value='dark-link';form.elements.tunnel_port.value='3080';form.elements.target_host.value='127.0.0.1';form.elements.ws_path.value=`/dark-${crypto.getRandomValues(new Uint32Array(2)).join('')}`;form.elements.ws_mask.value='skipped';
+    const iran = iranNodes[0],kharej=kharejNodes[0];
+    $('#plugin-iran-node').value=iran.id;if(kharej){$('#plugin-kharej-node').value=kharej.id;form.elements.kharej_endpoint.value=kharej.host;}$('#plugin-endpoint').value=state.selectedPlugin==='dark-realm'?(kharej?.host||''):iran.host;updatePluginMode();
     openModal('#plugin-modal');
   }
   if (ssh) connectSSH(ssh.dataset.nodeId);
@@ -823,7 +842,7 @@ document.addEventListener('click', event => {
   if (restartTunnel) { if(!restartTunnel.dataset.service)return showToast('NO SERVICE DEFINED','Register a systemd service for this tunnel first.',true); if(confirm(`Restart ${restartTunnel.dataset.service}?`))createJob(Number(restartTunnel.dataset.nodeId),'restart_service',restartTunnel.dataset.service,{},true).then(()=>setTimeout(refresh,3500)); }
   if (deployRetry) api(`/api/plugin-deployments/${Number(deployRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('RETRY QUEUED','Only the failed side will be deployed again.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
   if (deployRemove && confirm('Remove this managed tunnel from both servers?')) api(`/api/plugin-deployments/${Number(deployRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('REMOVAL QUEUED','The tunnel will be removed from both Agents.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));
-  if(pairReveal)api(`/api/hybrid-deployments/${Number(pairReveal.dataset.deploymentId)}/pair-code`,{method:'POST'}).then(result=>{const name=result.pair_code.startsWith('DGP-')?'DARK Ghost Pro':result.pair_code.startsWith('DPP-N1-')?'DARK Packet Pro':'DARK Backhaul';$('#output-title').textContent='DARK NOC PAIR CODE';$('#job-output').textContent=`KEEP THIS CODE SECRET\n\n${result.pair_code}\n\nOn the KHAREJ server run ${name}, select KHAREJ, choose Connect with DARK NOC Pair Code, and paste this code.`;openModal('#output-modal');}).catch(error=>showToast('PAIR CODE FAILED',error.message,true));
+  if(pairReveal)api(`/api/hybrid-deployments/${Number(pairReveal.dataset.deploymentId)}/pair-code`,{method:'POST'}).then(result=>{const name=result.pair_code.startsWith('DR1.')?'DARK Realm Pro':result.pair_code.startsWith('DGP-')?'DARK Ghost Pro':result.pair_code.startsWith('DPP-N1-')?'DARK Packet Pro':'DARK Backhaul';$('#output-title').textContent='DARK NOC PAIR CODE';$('#job-output').textContent=`KEEP THIS CODE SECRET\n\n${result.pair_code}\n\nOn the KHAREJ server run ${name}, select KHAREJ, choose Connect with DARK NOC Pair Code, and paste this code.`;openModal('#output-modal');}).catch(error=>showToast('PAIR CODE FAILED',error.message,true));
   if(pairRetry)api(`/api/hybrid-deployments/${Number(pairRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('IRAN RETRY QUEUED','Only the managed Iran side will be retried.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
   if(pairRemove&&confirm('Remove the IRAN side? You must remove the KHAREJ side manually from its script.'))api(`/api/hybrid-deployments/${Number(pairRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('IRAN REMOVAL QUEUED','Remove the foreign side manually using the matching DARK tunnel script.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));
   if (topologyNode) { const node=state.nodes.find(item=>item.name===topologyNode.dataset.node); switchView('servers'); if(node) showToast('NODE LOCATED',`${node.name} · ${node.status}`); }
@@ -851,8 +870,9 @@ document.addEventListener('click', event => {
 
 $('#plugin-mode').addEventListener('change',updatePluginMode);
 $('#plugin-form').elements.transport.addEventListener('change',updateTLSSelector);
-$('#plugin-certificate').addEventListener('change',event=>{const cert=state.certificates.find(item=>item.id===Number(event.target.value));if(cert)$('#plugin-endpoint').value=cert.domain;});
-function openCertificateModal(){const select=$('#certificate-node');select.innerHTML=state.nodes.filter(n=>n.status==='online'&&['edge','hub'].includes(n.role)).map(n=>`<option value="${Number(n.id)}">${esc(n.name)} · ${esc(n.host)}</option>`).join('');const chosen=Number($('#plugin-iran-node').value);if(chosen)select.value=chosen;openModal('#certificate-modal');}
+$('#plugin-kharej-node').addEventListener('change',event=>{if(state.selectedPlugin==='dark-realm'){const node=state.nodes.find(item=>item.id===Number(event.target.value));if(node)$('#plugin-endpoint').value=node.observed_ip||node.host;updateTLSSelector();}});
+$('#plugin-certificate').addEventListener('change',event=>{const cert=state.certificates.find(item=>item.id===Number(event.target.value));if(cert){const form=$('#plugin-form');$('#plugin-endpoint').value=cert.domain;if(state.selectedPlugin==='dark-realm'){form.elements.tls_domain.value=cert.domain;form.elements.sni.value=cert.domain;form.elements.ws_host.value=cert.domain;}}});
+function openCertificateModal(){const select=$('#certificate-node');select.innerHTML=state.nodes.filter(n=>n.status==='online').map(n=>`<option value="${Number(n.id)}">${esc(n.role.toUpperCase())} · ${esc(n.name)} · ${esc(n.host)}</option>`).join('');const chosen=realmCertificateNodeId()||Number($('#plugin-iran-node').value);if(chosen)select.value=chosen;openModal('#certificate-modal');}
 $('#add-certificate').addEventListener('click',openCertificateModal);
 $('#plugin-get-certificate').addEventListener('click',openCertificateModal);
 $('#certificate-form').addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(event.target));values.node_id=Number(values.node_id);try{const result=await api('/api/certificates',{method:'POST',body:JSON.stringify(values)});closeModal($('#certificate-modal'));event.target.reset();showToast('CERTIFICATE QUEUED',`DNS matched. Job #${result.job_id} is requesting Let's Encrypt.`);await refresh();}catch(error){showToast('CERTIFICATE FAILED',error.message,true);}});
@@ -860,18 +880,21 @@ $('#tunnel-edit-form').addEventListener('submit',async event=>{event.preventDefa
 $('#tunnel-delete').addEventListener('click',async()=>{if(!state.selectedTunnel||!confirm(`Permanently remove ${state.selectedTunnel.method||'DARK'} tunnel “${state.selectedTunnel.name}”?`))return;try{const result=await api(`/api/tunnels/${state.selectedTunnel.id}`,{method:'DELETE'});closeModal($('#tunnel-manage-modal'));showToast('REMOVAL QUEUED',result.foreign_action_required?'Iran removal queued; remove KHAREJ manually.':'Managed tunnel removal queued.');await refresh();}catch(error){showToast('TUNNEL REMOVAL FAILED',error.message,true);}});
 $('#plugin-form').addEventListener('submit',async event=>{
   event.preventDefault();
-  const values=Object.fromEntries(new FormData(event.target));
-  const pairMode=values.deployment_mode==='pair_code'; delete values.deployment_mode;
-  values.iran_node_id=Number(values.iran_node_id); values.tunnel_port=Number(values.tunnel_port);
+  const form=event.target,values=Object.fromEntries(new FormData(form));
+  const pairMode=values.deployment_mode==='pair_code',realm=state.selectedPlugin==='dark-realm';delete values.deployment_mode;
+  values.iran_node_id=Number(values.iran_node_id);values.tunnel_port=Number(values.tunnel_port);
   if(values.certificate_id)values.certificate_id=Number(values.certificate_id);else delete values.certificate_id;
-  values.user_ports=String(values.user_ports).split(/[ ,]+/).filter(Boolean).map(Number);
-  if(pairMode)delete values.kharej_node_id;else{values.kharej_node_id=Number(values.kharej_node_id);delete values.remote_label;if(!values.kharej_node_id)return showToast('KHAREJ AGENT REQUIRED','Select an online Global Exit Agent or use Pair Code mode.',true);if(values.iran_node_id===values.kharej_node_id)return showToast('INVALID NODE PAIR','Iran and Kharej must be different servers.',true);}
+  values.port_mappings=realm?String(values.port_mappings||'').split(/[ ,]+/).filter(Boolean):[];
+  values.user_ports=(realm&&values.port_mappings.length?values.port_mappings.map(item=>Number(item.split('>')[0])):String(values.user_ports).split(/[ ,]+/).filter(Boolean).map(Number));
+  values.tls_insecure=form.elements.tls_insecure?.checked||false;
+  if(!realm){for(const key of ['target_host','port_mappings','tls_domain','tls_insecure','sni','alpn','ws_host','ws_path','ws_mask'])delete values[key];}
+  if(pairMode){delete values.kharej_node_id;if(realm&&!values.kharej_endpoint)return showToast('GATEWAY REQUIRED','Enter the Kharej Realm Gateway IP or domain.',true);}else{values.kharej_node_id=Number(values.kharej_node_id);delete values.remote_label;if(!values.kharej_node_id)return showToast('KHAREJ AGENT REQUIRED','Select an online Global Exit Agent or use Pair Code mode.',true);if(values.iran_node_id===values.kharej_node_id)return showToast('INVALID NODE PAIR','Iran and Kharej must be different servers.',true);}
   try{
-    const pluginId=state.selectedPlugin||'dark-backhaul', plugin=state.plugins.find(item=>item.id===pluginId);
+    const pluginId=state.selectedPlugin||'dark-backhaul',plugin=state.plugins.find(item=>item.id===pluginId);
     const deployment=await api(pairMode?`/api/plugins/${pluginId}/pair-code`:`/api/plugins/${pluginId}/deploy`,{method:'POST',body:JSON.stringify(values)});
     closeModal($('#plugin-modal'));
     if(pairMode){$('#output-title').textContent='PAIR CODE READY';$('#job-output').textContent=`IRAN installation queued as job #${deployment.iran_job_id}.\nWait for IRAN to become READY, then on the foreign server:\n\n1. Run the ${plugin?.name||pluginId} script\n2. Select KHAREJ\n3. Choose Connect with DARK NOC Pair Code\n4. Paste this secret code:\n\n${deployment.pair_code}`;openModal('#output-modal');showToast('PAIR CODE CREATED','IRAN is being configured; copy the code for KHAREJ.');}else showToast('DUAL DEPLOYMENT QUEUED',`Deployment #${deployment.deployment_id} is running on both Agents.`);
-    event.target.reset(); updatePluginMode(); await refresh();
+    event.target.reset();updatePluginMode();await refresh();
   }catch(error){showToast('PLUGIN DEPLOYMENT FAILED',error.message,true);}
 });
 

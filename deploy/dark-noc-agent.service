@@ -16,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/dark-noc-agent /etc/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /var/lib/dark-noc-acme /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /etc/systemd/system -/etc/ufw /usr/local/bin
+ReadWritePaths=/var/lib/dark-noc-agent /etc/dark-noc-agent /etc/dark-backhaul /etc/dark-ghostpro /etc/dark-packetpro /etc/dark-realm /var/lib/dark-noc-acme /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /etc/nginx/conf.d /etc/systemd/system -/etc/ufw /usr/local/bin
 
 [Install]
 WantedBy=multi-user.target

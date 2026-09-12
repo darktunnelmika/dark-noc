@@ -22,7 +22,22 @@ from typing import Any
 import httpx
 import psutil
 
-VERSION = "2.8.0"
+try:
+    from realm_plugin import deploy as deploy_dark_realm, install_core as install_dark_realm, inventory as realm_inventory, remove as remove_dark_realm
+except ModuleNotFoundError:
+    import importlib.util as _realm_importlib_util
+    _realm_adapter_path = Path(__file__).resolve().with_name("realm_plugin.py")
+    _realm_adapter_spec = _realm_importlib_util.spec_from_file_location("dark_noc_realm_plugin", _realm_adapter_path)
+    if _realm_adapter_spec is None or _realm_adapter_spec.loader is None:
+        raise
+    _realm_adapter_module = _realm_importlib_util.module_from_spec(_realm_adapter_spec)
+    _realm_adapter_spec.loader.exec_module(_realm_adapter_module)
+    deploy_dark_realm = _realm_adapter_module.deploy
+    install_dark_realm = _realm_adapter_module.install_core
+    realm_inventory = _realm_adapter_module.inventory
+    remove_dark_realm = _realm_adapter_module.remove
+
+VERSION = "2.9.0"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
@@ -441,8 +456,20 @@ async def tunnel_report(
     role = str(tunnel.get("role", ""))
     if method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro"} and not role:
         role = "server" if tunnel.get("listen_port") else "client"
-    if method == "DARK Packet Pro":
-        user_ports = [int(port) for port in tunnel.get("user_ports", []) if str(port).isdigit()]
+    user_ports = [int(port) for port in tunnel.get("user_ports", []) if str(port).isdigit()]
+    backbone_ports = [int(port) for port in tunnel.get("backbone_ports", []) if str(port).isdigit()]
+    target_ports = [int(port) for port in tunnel.get("target_ports", []) if str(port).isdigit()]
+    if method == "DARK Realm Pro":
+        listening_ports = user_ports if role == "edge" else backbone_ports
+        listeners_ok = bool(listening_ports) and all(_port_is_listening(port) for port in listening_ports)
+        probe_ok, latency = await tcp_probe(target_host, target_port, timeout=2.5) if target_port else (False, None)
+        sessions = sum(port_sessions(port) for port in listening_ports)
+        peer_ips = [target_host] if role == "edge" and target_host not in {"", "127.0.0.1", "localhost", "::1"} else []
+        if role == "gateway" and backbone_ports:
+            peer_ips = socket_peer_ips(backbone_ports[0])
+        path_status = "healthy" if listeners_ok and probe_ok else "degraded" if listeners_ok or probe_ok else "down"
+        packet_loss = 0 if probe_ok else 100
+    elif method == "DARK Packet Pro":
         sessions = sum(port_sessions(port) for port in user_ports) if role == "client" else port_sessions(target_port)
         peer_ips = [target_host] if role == "client" and target_host not in {"", "127.0.0.1", "localhost", "::1"} else socket_peer_ips(target_port)
         path_status, latency, packet_loss = ("healthy" if service_ok else "down"), None, (0 if service_ok else 100)
@@ -450,7 +477,6 @@ async def tunnel_report(
         listening, sessions = socket_state(target_port)
         peer_ips = socket_peer_ips(target_port)
         connected = listening and sessions > 0
-        user_ports = [int(port) for port in tunnel.get("user_ports", []) if str(port).isdigit()]
         if user_ports:
             sessions = sum(port_sessions(port) for port in user_ports)
         path_status, latency, packet_loss = ("healthy" if connected else "down"), None, (0 if connected else 100)
@@ -469,9 +495,10 @@ async def tunnel_report(
         sessions = 0
         peer_ips = []
     status = path_status if service_ok else "down"
-    user_ports = [int(port) for port in tunnel.get("user_ports", []) if str(port).isdigit()]
     traffic_ports = {
-        port for port in [target_port, int(tunnel.get("listen_port") or 0), *user_ports] if port
+        port
+        for port in [target_port, int(tunnel.get("listen_port") or 0), *user_ports, *backbone_ports, *target_ports]
+        if port
     }
     traffic_key = f"{service}|{tunnel.get('name', '')}|{role}"
     rx_bps, tx_bps = tunnel_traffic_bps(traffic_key, traffic_ports, socket_bytes or [])
@@ -490,6 +517,10 @@ async def tunnel_report(
         "target_host": target_host,
         "target_port": target_port,
         "user_ports": user_ports,
+        "backbone_ports": backbone_ports,
+        "target_ports": target_ports,
+        "port_mappings": tunnel.get("port_mappings", []),
+        "tls_domain": tunnel.get("tls_domain", ""),
         "transport": tunnel.get("transport"),
         "profile": tunnel.get("profile"),
         "restart_every": tunnel.get("restart_every"),
@@ -508,11 +539,12 @@ async def _collect_tunnel_reports(tunnels: list[dict[str, Any]]) -> list[dict[st
 DARK_BACKHAUL_SERVICE_PATTERN = re.compile(r"^backhaul@[A-Za-z0-9_-]{1,64}\.service$")
 GHOSTPRO_SERVICE_PATTERN = re.compile(r"^ghostpro@[A-Za-z0-9_-]{1,64}\.service$")
 PACKETPRO_SERVICE_PATTERN = re.compile(r"^paqetpro@[A-Za-z0-9_-]{1,64}\.service$")
+REALM_SERVICE_PATTERN = re.compile(r"^dark-realm@[A-Za-z0-9_-]{1,64}\.service$")
 _DISCOVERY_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 
 
 def discover_tunnels() -> list[dict[str, Any]]:
-    """Discover managed DARK Backhaul, Ghost Pro and Packet Pro instances."""
+    """Discover managed DARK Backhaul, Ghost Pro, Packet Pro and Realm Pro instances."""
     global _DISCOVERY_CACHE
     if time.time() - _DISCOVERY_CACHE[0] < 60:
         return [dict(item) for item in _DISCOVERY_CACHE[1]]
@@ -525,7 +557,7 @@ def discover_tunnels() -> list[dict[str, Any]]:
         if not parts:
             continue
         service = parts[0]
-        if DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service) or GHOSTPRO_SERVICE_PATTERN.fullmatch(service) or PACKETPRO_SERVICE_PATTERN.fullmatch(service):
+        if DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service) or GHOSTPRO_SERVICE_PATTERN.fullmatch(service) or PACKETPRO_SERVICE_PATTERN.fullmatch(service) or REALM_SERVICE_PATTERN.fullmatch(service):
             services.append(service)
     try:
         connections = connections_snapshot()
@@ -535,9 +567,10 @@ def discover_tunnels() -> list[dict[str, Any]]:
     for service in sorted(set(services))[:128]:
         ghost = bool(GHOSTPRO_SERVICE_PATTERN.fullmatch(service))
         packet = bool(PACKETPRO_SERVICE_PATTERN.fullmatch(service))
-        prefix = "ghostpro@" if ghost else "paqetpro@" if packet else "backhaul@"
+        realm = bool(REALM_SERVICE_PATTERN.fullmatch(service))
+        prefix = "ghostpro@" if ghost else "paqetpro@" if packet else "dark-realm@" if realm else "backhaul@"
         instance = service.removeprefix(prefix).removesuffix(".service")
-        tunnel_dir = Path("/etc/dark-ghostpro/tunnels" if ghost else "/etc/dark-packetpro/tunnels" if packet else "/etc/dark-backhaul/tunnels") / instance
+        tunnel_dir = Path("/etc/dark-ghostpro/tunnels" if ghost else "/etc/dark-packetpro/tunnels" if packet else "/etc/dark-realm/tunnels" if realm else "/etc/dark-backhaul/tunnels") / instance
         expected_config = tunnel_dir / ("config.yaml" if ghost or packet else "config.toml")
         _, exec_start = run(["systemctl", "show", service, "--property=ExecStart", "--value"], timeout=8)
         if str(expected_config) not in exec_start:
@@ -564,25 +597,40 @@ def discover_tunnels() -> list[dict[str, Any]]:
         owned = [conn for conn in connections if conn.pid in pids]
         listeners = sorted({conn.laddr.port for conn in owned if conn.status == psutil.CONN_LISTEN and conn.laddr})
         remotes = [conn.raddr for conn in owned if conn.status == psutil.CONN_ESTABLISHED and conn.raddr]
-        method = "DARK Ghost Pro" if ghost else "DARK Packet Pro" if packet else "DARK Backhaul"
+        method = "DARK Ghost Pro" if ghost else "DARK Packet Pro" if packet else "DARK Realm Pro" if realm else "DARK Backhaul"
         configured_role = meta.get("ROLE", "")
         configured_port = int(meta.get("PORT", "0")) if meta.get("PORT", "").isdigit() else 0
-        listen_port = configured_port if configured_role == "server" else None
         remote = remotes[0] if remotes else None
-        role = configured_role if configured_role in {"server", "client"} else ("server" if listeners else "client")
-        target_host = "127.0.0.1" if role == "server" else (meta.get("PEER_IP") or (remote.ip if remote else "127.0.0.1"))
-        target_port = configured_port or (remote.port if remote else 0)
         user_ports: list[int] = []
-        try:
-            user_ports = [int(line.split()[0]) for line in (tunnel_dir / "ports.list").read_text().splitlines() if line.split() and line.split()[0].isdigit()]
-        except OSError:
-            pass
+        backbone_ports: list[int] = []
+        target_ports: list[int] = []
+        port_mappings: list[str] = []
+        if realm:
+            for item in meta.get("MAPS", "").split(","):
+                match = re.fullmatch(r"([0-9]{1,5})>([0-9]{1,5})@([0-9]{1,5})", item.strip())
+                if match:
+                    public, target, backbone = map(int, match.groups())
+                    user_ports.append(public); target_ports.append(target); backbone_ports.append(backbone); port_mappings.append(item.strip())
+            role = configured_role if configured_role in {"edge", "gateway"} else ("gateway" if listeners and backbone_ports and listeners[0] in backbone_ports else "edge")
+            listen_port = (user_ports[0] if role == "edge" and user_ports else backbone_ports[0] if backbone_ports else None)
+            target_host = meta.get("GATEWAY_HOST", "127.0.0.1") if role == "edge" else meta.get("TARGET_HOST", "127.0.0.1")
+            target_port = (backbone_ports[0] if role == "edge" and backbone_ports else target_ports[0] if target_ports else 0)
+        else:
+            listen_port = configured_port if configured_role == "server" else None
+            role = configured_role if configured_role in {"server", "client"} else ("server" if listeners else "client")
+            target_host = "127.0.0.1" if role == "server" else (meta.get("PEER_IP") or (remote.ip if remote else "127.0.0.1"))
+            target_port = configured_port or (remote.port if remote else 0)
+            try:
+                user_ports = [int(line.split()[0]) for line in (tunnel_dir / "ports.list").read_text().splitlines() if line.split() and line.split()[0].isdigit()]
+            except OSError:
+                pass
         discovered.append({
             "name": instance, "method": method, "role": role,
             "service": service, "listen_port": listen_port, "target_host": target_host,
             "target_port": target_port, "user_ports": user_ports,
+            "backbone_ports": backbone_ports, "target_ports": target_ports, "port_mappings": port_mappings,
             "transport": meta.get("TRANSPORT", "unknown"), "profile": meta.get("PROFILE", "unknown"),
-            "restart_every": meta.get("RESTART_EVERY", "off"), "auto_discovered": True,
+            "restart_every": meta.get("SCHEDULE", meta.get("RESTART_EVERY", "off")), "tls_domain": meta.get("TLS_DOMAIN", ""), "auto_discovered": True,
         })
     _DISCOVERY_CACHE = (time.time(), discovered)
     return [dict(item) for item in discovered]
@@ -591,8 +639,8 @@ def discover_tunnels() -> list[dict[str, Any]]:
 def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
     explicit = [
         item for item in config.get("tunnels", [])
-        if str(item.get("method", "")) in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro"}
-        and (DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or GHOSTPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or PACKETPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))))
+        if str(item.get("method", "")) in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}
+        and (DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or GHOSTPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or PACKETPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or REALM_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))))
     ]
     if not config.get("auto_discovery", True):
         return explicit
@@ -635,6 +683,7 @@ def plugin_inventory() -> dict[str, Any]:
         "dark_backhaul": {"installed": installed, "version": version, "instances": sum(item["method"] == "DARK Backhaul" for item in tunnels)},
         "dark_ghostpro": {"installed": gost_installed, "version": gost_version, "instances": sum(item["method"] == "DARK Ghost Pro" for item in tunnels)},
         "dark_packetpro": {"installed": paqet_installed, "version": paqet_version, "instances": sum(item["method"] == "DARK Packet Pro" for item in tunnels)},
+        "dark_realm": {**realm_inventory(), "instances": sum(item["method"] == "DARK Realm Pro" for item in tunnels)},
     }
 
 
@@ -650,6 +699,9 @@ def restart_allowed(service: str, config: dict[str, Any]) -> bool:
     if PACKETPRO_SERVICE_PATTERN.fullmatch(service):
         name = service.removeprefix("paqetpro@").removesuffix(".service")
         return (Path("/etc/dark-packetpro/tunnels") / name / "config.yaml").is_file()
+    if REALM_SERVICE_PATTERN.fullmatch(service):
+        name = service.removeprefix("dark-realm@").removesuffix(".service")
+        return (Path("/etc/dark-realm/tunnels") / name / "config.toml").is_file()
     return False
 
 
@@ -1247,6 +1299,7 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
         return ("completed" if code == 0 else "failed"), output
     if kind == "plugin_deploy":
         try:
+            if payload.get("plugin_id") == "dark-realm": return "completed", deploy_dark_realm(payload, config, CONFIG_PATH)
             if payload.get("plugin_id") == "dark-ghostpro": return "completed", _deploy_dark_ghost(payload, config)
             if payload.get("plugin_id") == "dark-packetpro": return "completed", _deploy_dark_packet(payload, config)
             return "completed", _deploy_dark_backhaul(payload, config)
@@ -1254,6 +1307,7 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
             return "failed", f"Plugin deployment failed: {exc}"
     if kind == "plugin_install":
         try:
+            if payload.get("plugin_id") == "dark-realm": return "completed", f"DARK Realm Pro core ready: {install_dark_realm()}"
             if payload.get("plugin_id") == "dark-ghostpro": return "completed", f"DARK Ghost Pro core ready: {_install_gost_core()}"
             if payload.get("plugin_id") == "dark-packetpro": return "completed", f"DARK Packet Pro core ready: {_install_paqet_core()}"
             return "completed", f"DARK Backhaul core ready: {_install_darkbh_core()}"
@@ -1261,6 +1315,7 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
             return "failed", f"Plugin installation failed: {exc}"
     if kind == "plugin_remove":
         try:
+            if payload.get("plugin_id") == "dark-realm": return "completed", remove_dark_realm(payload, config, CONFIG_PATH)
             if payload.get("plugin_id") == "dark-ghostpro": return "completed", _remove_dark_ghost(payload, config)
             if payload.get("plugin_id") == "dark-packetpro": return "completed", _remove_dark_packet(payload, config)
             return "completed", _remove_dark_backhaul(payload, config)
@@ -1271,7 +1326,7 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", name) or action not in {"start", "stop", "restart"}:
             return "failed", "Invalid tunnel control request"
         plugin_id = str(payload.get("plugin_id", "dark-backhaul"))
-        service = f"ghostpro@{name}.service" if plugin_id == "dark-ghostpro" else f"paqetpro@{name}.service" if plugin_id == "dark-packetpro" else f"backhaul@{name}.service"
+        service = f"dark-realm@{name}.service" if plugin_id == "dark-realm" else f"ghostpro@{name}.service" if plugin_id == "dark-ghostpro" else f"paqetpro@{name}.service" if plugin_id == "dark-packetpro" else f"backhaul@{name}.service"
         if not restart_allowed(service, config):
             return "failed", "Tunnel is not managed by DARK NOC"
         code, output = run(["systemctl", action, service], timeout=30)
