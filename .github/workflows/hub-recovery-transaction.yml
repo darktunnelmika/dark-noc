@@ -130,7 +130,6 @@ jobs:
           git add \
             agent/agent.py hub/app.py install-hub.sh install-node.sh upgrade.sh darknoc \
             tests/local_hub_recovery.py tests/installer_contracts.py tests/smoke.py tests/realm_integration.py \
-            .github/workflows/ci.yml .github/workflows/release.yml \
             hub/static/index.html NODE-README.md README.md README.fa.md RELEASE_NOTES.md CHANGELOG.md
           git diff --cached --check
           git commit -m "fix: recover local Hub Agent and harden Agent delivery"
