@@ -5,11 +5,12 @@ on:
     branches: ["codex/dark-realm-noc-v2.9.0"]
     paths:
       - ".github/workflows/realm-integration.yml"
+      - ".realm-bootstrap/small*"
 
 permissions:
   contents: write
 
-# Transaction trigger: SHA-verified small payload chunks v6.
+# Transaction trigger: smoke-test anchors corrected v7.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
