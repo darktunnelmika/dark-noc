@@ -63,7 +63,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.3"
+VERSION = "2.9.4"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1046,6 +1046,14 @@ class TunnelReconfigureBody(BaseModel):
 class CertificateBody(BaseModel):
     node_id: int = Field(gt=0)
     domain: str = Field(min_length=4, max_length=253, pattern=r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
+
+
+class AgentPulse(BaseModel):
+    agent_version: str = Field(default="unknown", min_length=1, max_length=64)
+    agent_loop_ts: int | None = Field(default=None, ge=0)
+    telemetry_status: str = Field(default="unknown", max_length=32)
+    telemetry_age_seconds: int | None = Field(default=None, ge=0)
+    inventory_error: str | None = Field(default=None, max_length=1000)
 
 
 class AgentReport(BaseModel):
@@ -3730,6 +3738,39 @@ def managed_tunnel_report(method: str, service: str) -> bool:
         or (method == "DARK Packet Pro" and service.startswith("paqetpro@"))
         or (method == "DARK Realm Pro" and service.startswith("dark-realm@"))
     )
+
+
+
+@app.post("/api/agent/pulse")
+async def agent_pulse(report: AgentPulse, request: Request, node: sqlite3.Row = Depends(agent_node)):
+    # Refresh liveness without parsing or mutating heavy inventory. A malformed,
+    # oversized or temporarily stale report can never make a live Node offline.
+    now = utc_ts()
+    observed_ip = request.client.host if request.client else None
+    if observed_ip in {"127.0.0.1", "::1"} and node["role"] == "hub":
+        observed_ip = node["host"]
+    with db() as conn:
+        conn.execute(
+            "UPDATE nodes SET status='online',agent_version=?,observed_ip=?,last_seen=?,updated_at=? WHERE id=?",
+            (report.agent_version, observed_ip, now, now, node["id"]),
+        )
+        recovered = conn.execute(
+            "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')",
+            (node["id"],),
+        ).fetchall()
+        for incident in recovered:
+            resolve_incident(conn, incident["id"], "Agent liveness pulse recovered")
+    stale_clients: list[WebSocket] = []
+    for live_socket in list(LIVE_CLIENTS):
+        try:
+            await live_socket.send_json(
+                {"type": "telemetry", "node_id": node["id"], "server_time": now, "pulse": True}
+            )
+        except Exception:
+            stale_clients.append(live_socket)
+    for live_socket in stale_clients:
+        LIVE_CLIENTS.discard(live_socket)
+    return {"ok": True, "server_time": now}
 
 
 def agent_inventory_flags(metrics: dict[str, Any]) -> tuple[bool, bool]:

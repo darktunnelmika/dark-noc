@@ -1,3 +1,17 @@
+# DARK NOC v2.9.4 — Hub Pulse & Live Route Flow
+
+This maintenance release makes Hub liveness independent from full inventory
+validation. Every Agent sends a small authenticated pulse first; malformed,
+oversized or schema-incompatible telemetry can no longer mark a running Hub
+offline. Rejected cached reports are quarantined and rebuilt automatically.
+
+Tunnel discovery now trusts valid DARK configuration directories even when a
+stopped template instance cannot be queried through systemd. The cyber topology
+keeps the corrected role/pairing model from v2.9.3 while restoring a solid
+glowing route, animated throughput flow and moving data comets.
+
+---
+
 # DARK NOC v2.9.3 — Topology & Inventory Integrity
 
 This maintenance release restores Hub-local tunnel visibility and makes the cyber topology deterministic. Lightweight liveness heartbeats can no longer erase the last complete tunnel, service or plugin inventory. Agent discovery now includes stopped/disabled managed tunnel directories, preserves the last good payload across restarts and marks incomplete discovery snapshots as non-authoritative.

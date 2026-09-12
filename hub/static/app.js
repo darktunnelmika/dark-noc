@@ -528,7 +528,7 @@ function renderLiveTopology() {
   });
   const roots=[...rootMap.entries()],leaves=[...leafMap.entries()];
   const laneCount=Math.max(roots.length,leaves.length,1);
-  const canvasHeight=Math.max(414,80+laneCount*104);
+  const canvasHeight=Math.max(414,72+laneCount*92);
   topology.style.setProperty('--topology-canvas-height',`${canvasHeight}px`);
   const yAt=(index,total)=>total===1?canvasHeight/2:58+(index*((canvasHeight-116)/(total-1)));
   const rootY=Object.fromEntries(roots.map(([key],index)=>[key,yAt(index,roots.length)]));
@@ -536,15 +536,19 @@ function renderLiveTopology() {
   const pairTotals=new Map();
   links.forEach(link=>{const key=`${link.rootKey}|${link.leafKey}`;pairTotals.set(key,(pairTotals.get(key)||0)+1);});
   const pairIndexes=new Map();
-  const defs=`<defs><filter id="cyber-glow"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><marker id="route-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>`;
+  const defs=`<defs><filter id="cyber-glow"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><filter id="packet-glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><marker id="route-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>`;
   const routes=links.map((link,index)=>{
     const y1=rootY[link.rootKey],y2=leafY[link.leafKey],pairKey=`${link.rootKey}|${link.leafKey}`;
     const ordinal=pairIndexes.get(pairKey)||0,total=pairTotals.get(pairKey)||1;pairIndexes.set(pairKey,ordinal+1);
     const offset=(ordinal-(total-1)/2)*24;
     const width=Math.min(4,1.6+Math.log10(link.rate+1)/4),path=`M165 ${y1} C330 ${y1+offset},570 ${y2+offset},735 ${y2}`;
-    const duration=Math.max(1.4,7-Math.log10(link.rate+1));
-    const packets=link.tone==='online'?`<circle class="route-packet" r="3"><animateMotion dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle><circle class="route-packet" r="2" opacity=".65"><animateMotion begin="-${(duration/2).toFixed(1)}s" dur="${duration.toFixed(1)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle>`:'';
-    return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="${path}"/><path id="route-${index}" class="cyber-route" style="--route-width:${width.toFixed(2)}" d="${path}"/>${packets}<text class="route-label" x="450" y="${((y1+y2)/2+offset-7).toFixed(1)}" text-anchor="middle">${esc(link.tunnel.name)} · ${esc(String(link.tunnel.transport||link.tunnel.method).toUpperCase())}</text></g>`;
+    const duration=Math.max(1.25,6.2-Math.log10(link.rate+1));
+    const packetCount=link.tone==='online'?(link.rate>10000000?4:link.rate>1000000?3:2):link.tone==='degraded'?1:0;
+    const packets=Array.from({length:packetCount},(_,packetIndex)=>{
+      const begin=-(duration/Math.max(packetCount,1))*packetIndex;
+      return `<circle class="route-packet-halo" r="7"><animateMotion begin="${begin.toFixed(2)}s" dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle><circle class="route-packet-core" r="3.2"><animateMotion begin="${begin.toFixed(2)}s" dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#route-${index}"/></animateMotion></circle>`;
+    }).join('');
+    return `<g class="route-group ${link.tone}" data-route="${index}" tabindex="0"><path class="route-hit" d="${path}"/><path id="route-${index}" class="cyber-route-backbone" style="--route-width:${width.toFixed(2)}" d="${path}" marker-end="url(#route-arrow)"/><path class="cyber-route-flow" pathLength="100" style="--route-width:${width.toFixed(2)};--flow-duration:${duration.toFixed(2)}s" d="${path}"/>${packets}<text class="route-label" x="450" y="${((y1+y2)/2+offset-7).toFixed(1)}" text-anchor="middle">${esc(link.tunnel.name)} · ${esc(String(link.tunnel.transport||link.tunnel.method).toUpperCase())}</text></g>`;
   }).join('');
   const nodeCard=(entry,y,side)=>{
     const node=entry.node,agent=node?node.status==='online':null,ssh=node?Boolean(node.ssh_configured):null;

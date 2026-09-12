@@ -19,10 +19,10 @@ def load_agent():
 
 
 agent = load_agent()
-assert agent.VERSION == "2.9.3"
+assert agent.VERSION == "2.9.4"
 
 payload = agent.minimal_heartbeat_payload({"autoheal": {"enabled": False}})
-assert payload["agent_version"] == "2.9.3"
+assert payload["agent_version"] == "2.9.4"
 assert payload["metrics"]["telemetry_status"] == "starting"
 assert payload["metrics"]["uptime"] >= 0
 
@@ -90,6 +90,7 @@ hub = (ROOT / "hub" / "app.py").read_text(encoding="utf-8")
 assert "WatchdogSec=90s" in service and "NotifyAccess=main" in service
 assert "asyncio.to_thread(" in source and "collect_payload_blocking" in source
 assert "recover_local_enrollment" in source and "WATCHDOG=1" in source
+assert "/api/agent/pulse" in source and "last_payload_quarantined_at" in source
 assert "NODE_STALE_AFTER = 180" in hub
 assert 'method == "DARK Realm Pro"' in hub
 

@@ -1,4 +1,4 @@
-# DARK NOC Node v2.9.3
+# DARK NOC Node v2.9.4
 
 Maintainer: **@mikakhadm**
 

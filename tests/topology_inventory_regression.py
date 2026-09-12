@@ -30,8 +30,23 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
         token = enrolled.json()["agent_token"]
         auth = {"Authorization": f"Bearer {token}"}
 
+        pulse = client.post(
+            "/api/agent/pulse",
+            headers=auth,
+            json={
+                "agent_version": "2.9.4",
+                "agent_loop_ts": app.utc_ts(),
+                "telemetry_status": "collecting",
+                "telemetry_age_seconds": 0,
+            },
+        )
+        assert pulse.status_code == 200
+        with app.db() as conn:
+            pulsed = conn.execute("SELECT status,last_seen FROM nodes WHERE id=?", (hub_id,)).fetchone()
+            assert pulsed["status"] == "online" and int(pulsed["last_seen"] or 0) > 0
+
         full_report = {
-            "agent_version": "2.9.3",
+            "agent_version": "2.9.4",
             "metrics": {
                 "cpu": 1, "ram": 2, "swap": 0, "disk": 3, "load1": 0.1,
                 "rx_bps": 10, "tx_bps": 20, "uptime": 30, "connections": 4,
@@ -57,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
 
         # A liveness-only heartbeat must preserve the last authoritative inventory.
         incomplete = {
-            "agent_version": "2.9.3",
+            "agent_version": "2.9.4",
             "metrics": {
                 "cpu": 5, "ram": 6, "disk": 7, "telemetry_status": "collecting",
                 "inventory_complete": False, "inventory_snapshot_at": 0,
@@ -138,6 +153,9 @@ app_js = (ROOT / "hub" / "static" / "app.js").read_text(encoding="utf-8")
 styles = (ROOT / "hub" / "static" / "styles.css").read_text(encoding="utf-8")
 assert "topology_side" in app_js and "pairTotals" in app_js
 assert "--topology-canvas-height" in app_js and "--topology-canvas-height" in styles
+assert "cyber-route-backbone" in app_js and "cyber-route-flow" in app_js
+assert ".cyber-route-backbone" in styles and "@keyframes route-data-flow" in styles
+assert "route-packet-core" in app_js and "route-packet-halo" in app_js
 assert "No matching tunnel path" in app_js
 
 print("Topology and authoritative inventory regression tests passed")

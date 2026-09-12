@@ -23,12 +23,12 @@ ci = text(".github/workflows/ci.yml")
 release = text(".github/workflows/release.yml")
 index = text("hub/static/index.html")
 
-assert 'VERSION = "2.9.3"' in hub
-assert 'VERSION = "2.9.3"' in agent
-assert 'VERSION="2.9.3"' in cli
-assert "Nightfall Command v2.9.3" in installer
-assert "Zero-touch Node v2.9.3" in node_installer
-assert "app.js?v=2.9.3" in index
+assert 'VERSION = "2.9.4"' in hub
+assert 'VERSION = "2.9.4"' in agent
+assert 'VERSION="2.9.4"' in cli
+assert "Nightfall Command v2.9.4" in installer
+assert "Zero-touch Node v2.9.4" in node_installer
+assert "app.js?v=2.9.4" in index
 assert "WatchdogSec=90s" in text("deploy/dark-noc-agent.service")
 assert "NotifyAccess=main" in text("deploy/dark-noc-agent.service")
 assert 'AGENT_PAYLOAD_DIR = Path(' in hub
@@ -37,7 +37,7 @@ assert "/opt/dark-noc/agent-payload/realm_plugin.py" in installer
 assert "/opt/dark-noc-agent/realm_plugin.py" in installer
 assert "X-Dark-Noc-Existing-Agent" in installer
 assert "LOCAL_AGENT_BASELINE" in installer
-assert "fresh v2.9.3 heartbeat" in installer
+assert "fresh v2.9.4 heartbeat" in installer
 assert "/etc/dark-realm" in installer and "/etc/dark-realm" in node_installer and "/etc/dark-realm" in upgrader
 assert 'install -m 0644 "$SCRIPT_DIR/agent/realm_plugin.py" /opt/dark-noc-agent/realm_plugin.py' in upgrader
 assert "had_realm_adapter=0" in upgrader and "had_agent_payload=0" in upgrader

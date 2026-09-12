@@ -1,3 +1,15 @@
+## 2.9.4
+
+- Added an authenticated lightweight Agent pulse endpoint so Hub and Node
+  liveness no longer depends on full telemetry acceptance.
+- Quarantine incompatible cached inventory and rebuild it while liveness stays
+  online.
+- Discover filesystem-owned DARK tunnels even when their stopped systemd
+  instance cannot be inspected.
+- Restored solid glowing topology routes with animated data flow and moving
+  packet comets.
+- Added permanent pulse, inventory and topology visual regression coverage.
+
 # v2.9.3 — Topology & Inventory Integrity
 
 - Preserves Hub and Node tunnel/service/plugin inventory during lightweight or incomplete heartbeats.
