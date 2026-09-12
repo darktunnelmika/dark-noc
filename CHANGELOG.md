@@ -1,5 +1,13 @@
 # DARK NOC v2.9.5
 
+## 2.9.7 — Smooth Live Matrix Refresh
+
+- Keep the existing matrix visuals unchanged.
+- Reuse stable SVG/routes across telemetry refreshes and update live attributes in place.
+- Move WebSocket telemetry to a lightweight dashboard/nodes/tunnels refresh path.
+- Bound full dashboard refreshes to 30-second cadence while telemetry is active.
+
+
 ## 2.9.6 — Live tunnel matrix only
 
 - Publish isolated live-matrix.css and live-matrix.js; shared frontend

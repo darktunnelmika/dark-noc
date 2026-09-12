@@ -1,3 +1,19 @@
+# DARK NOC v2.9.7 — Smooth Live Matrix Refresh
+
+This maintenance release keeps the current Live tunnel matrix design intact while removing full SVG rebuilds on normal telemetry updates.
+
+- Stable topology structure is rendered once and updated in place.
+- Traffic, status, width, speed and Agent/SSH badges update without replacing the matrix DOM.
+- Route hover/click handlers read the latest live link state instead of stale closures.
+- WebSocket telemetry uses a lightweight three-endpoint refresh; the heavier full dashboard refresh is bounded to at most once every 30 seconds.
+- No visual redesign of the matrix, cards, header or other pages.
+
+## فارسی
+
+ظاهر فعلی Live tunnel matrix بدون تغییر حفظ شده است. رفرش تله‌متری دیگر کل SVG را از نو نمی‌سازد؛ وضعیت و ترافیک مسیرها به‌صورت درجا به‌روزرسانی می‌شوند تا تیک زدن، پرش و بار اضافه کمتر شود.
+
+---
+
 # DARK NOC v2.9.6 — Live Tunnel Matrix Cyber Refresh
 
 This release delivers the already-committed, isolated Live tunnel matrix
