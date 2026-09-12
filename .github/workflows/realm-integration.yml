@@ -9,7 +9,7 @@ on:
 permissions:
   contents: write
 
-# Transaction trigger: corrected Realm payload v5.
+# Transaction trigger: SHA-verified small payload chunks v6.
 jobs:
   integrate:
     runs-on: ubuntu-24.04
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .realm-bootstrap/part00 .realm-bootstrap/part01 .realm-bootstrap/part02 > /tmp/realm-integration.b64
+          cat .realm-bootstrap/small[0-9][0-9] > /tmp/realm-integration.b64
           base64 -d /tmp/realm-integration.b64 > /tmp/realm-integration.py.xz
           xz -t /tmp/realm-integration.py.xz
           xz -dc /tmp/realm-integration.py.xz > /tmp/integrate_realm_noc.py
