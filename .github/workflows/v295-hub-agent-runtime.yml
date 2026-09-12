@@ -111,6 +111,25 @@ jobs:
           write(\"tests/topology_inventory_regression.py\", topology_test)
           """
           source = source[:topology_start] + topology_replacement + source[topology_end:]
+
+          file_ops_insert = '''file_ops = read("tests/file_ops.py")
+          file_ops = replace_once(
+              file_ops,
+              "    assert 'restore_service_state dark-noc-agent.service' in hub_success\\n",
+              "    assert 'restore_service_state dark-noc-agent.service' not in hub_success\\n"
+              "    assert 'systemctl enable dark-noc-agent.service' in hub_success\\n"
+              "    assert 'systemctl restart dark-noc-agent.service' in hub_success\\n"
+              "    assert 'POST_UPGRADE_AGENT_BASELINE' in hub_success\\n",
+              "Hub Agent successful-upgrade state contract",
+          )
+          write("tests/file_ops.py", file_ops)
+
+          '''
+          changelog_marker = 'changelog = read("CHANGELOG.md")\n'
+          if source.count(changelog_marker) != 1:
+              raise SystemExit('Changelog insertion anchor mismatch')
+          source = source.replace(changelog_marker, file_ops_insert + changelog_marker, 1)
+
           patcher.write_text(source, encoding='utf-8')
           PY
           python -m py_compile .v295-bootstrap/apply_v295.py
