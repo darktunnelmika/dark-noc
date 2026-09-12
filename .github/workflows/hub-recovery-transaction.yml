@@ -55,13 +55,35 @@ jobs:
 
           path = Path("install-hub.sh")
           source = path.read_text(encoding="utf-8")
+
           health_check = 'curl -kfsS -H "Host: $PUBLIC_HOST" --max-time 8 "https://127.0.0.1:$PUBLIC_PORT/healthz" >/dev/null\n'
-          anchor = "if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then\n"
+          firewall_anchor = "if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then\n"
           if health_check not in source:
-              if source.count(anchor) != 1:
+              if source.count(firewall_anchor) != 1:
                   raise SystemExit("Public Hub health-check anchor mismatch")
-              source = source.replace(anchor, health_check + anchor, 1)
-              path.write_text(source, encoding="utf-8")
+              source = source.replace(firewall_anchor, health_check + firewall_anchor, 1)
+
+          config_old = '''old = {}
+          if path.exists():
+              try:
+                  old = json.loads(path.read_text())
+              except (OSError, ValueError, TypeError) as exc:
+                  raise SystemExit(f'Existing local Agent configuration is invalid: {exc}')
+          if not isinstance(old, dict):
+          '''
+          config_new = '''old = {}
+          try:
+              old = json.loads(path.read_text())
+          except FileNotFoundError:
+              pass
+          except (OSError, ValueError, TypeError) as exc:
+              raise SystemExit(f'Existing local Agent configuration is invalid: {exc}')
+          if not isinstance(old, dict):
+          '''
+          if source.count(config_old) != 1:
+              raise SystemExit("Local Agent configuration preservation anchor mismatch")
+          source = source.replace(config_old, config_new, 1)
+          path.write_text(source, encoding="utf-8")
           PY
 
       - name: Install project dependencies
