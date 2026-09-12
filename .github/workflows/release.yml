@@ -170,6 +170,9 @@ jobs:
           python tests/file_ops.py
           python tests/noc_features.py
           python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
 
       - name: Build reproducible packages
         if: steps.version.outputs.publish == 'true'
