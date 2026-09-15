@@ -30,6 +30,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_25.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('hub/node_tunnel_service.py')
+          text = path.read_text()
+          old = '''        token = decrypt(deployment["pair_token_enc"])
+        if not token:
+            raise NodeTunnelServiceError(409, "This deployment has no recoverable pair token")
+        jobs: dict[str, int] = {}
+'''
+          new = '''        token = decrypt(deployment["pair_token_enc"])
+        jobs: dict[str, int] = {}
+'''
+          assert old in text
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
@@ -82,4 +97,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add hub/node_tunnel_service.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py RELEASE_NOTES.md CHANGELOG.md
           git commit -m 'refactor: extract Node Tunnel mutation service for v2.9.25'
-          git push origin HEAD:refs/heads/release/v2.9.25-node-tunnel-service
+          git push --force origin HEAD:refs/heads/release/v2.9.25-node-tunnel-service
