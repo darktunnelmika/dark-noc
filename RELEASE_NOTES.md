@@ -1,3 +1,18 @@
+# DARK NOC v2.9.36 — Backend Final Audit & Maintenance Runtime Cleanup
+
+- Extract maintenance scheduling, retention/rollup work, scheduled Monitor/Fleet queueing, certificate renewal scheduling and FastAPI lifespan cleanup into `hub/maintenance_runtime.py`.
+- Keep thin compatibility wrappers in `hub/app.py` so existing tests/internal callers and runtime overrides remain stable.
+- Remove route-only FastAPI imports and obsolete lifespan imports from `hub/app.py`.
+- Enforce the final composition boundary: no API/WebSocket route decorators remain in `hub/app.py`; only global middleware and static mounting stay there.
+- Add a permanent maintenance/runtime composition regression contract and final backend ownership audit.
+- Preserve transaction scopes, lease semantics, retention windows, Agent behavior, API contracts and all frontend/Live Matrix visuals.
+
+## فارسی
+
+Audit نهایی بک‌اند انجام شد؛ maintenance/lifecycle و retention scheduling به `maintenance_runtime.py` منتقل شدند، importهای اضافی پاک شدند و `app.py` حالا فقط composition، middleware و helperهای مشترک را نگه می‌دارد؛ رفتار پنل و Agent تغییر نکرده است.
+
+---
+
 # DARK NOC v2.9.35 — Agent Control Plane & Live Router Split
 
 - Extract local Agent enrollment, liveness pulse, full heartbeat and Agent job poll/result/lease routes into `hub/agent_control_router.py`.

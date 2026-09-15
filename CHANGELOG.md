@@ -1,3 +1,8 @@
+## v2.9.36
+
+- Final backend composition audit and maintenance/lifespan runtime extraction.
+- Removed route-only imports and locked the no-routes-in-app boundary with regression coverage.
+
 ## v2.9.35
 - Split Agent Control Plane HTTP routes and the Live telemetry WebSocket into dedicated APIRouter modules while preserving shared state-machine ownership.
 

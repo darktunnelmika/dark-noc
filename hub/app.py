@@ -48,8 +48,8 @@ except Exception as exc:
 
     def realm_pair_code(*_: Any, **__: Any) -> str:
         raise HTTPException(503, f"DARK Realm support is unavailable: {_REALM_SUPPORT_ERROR}")
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 _RUNTIME_CONFIG_PATH = Path(__file__).resolve().with_name('runtime_config.py')
@@ -170,6 +170,20 @@ for _certificate_fleet_service_name in [
 ]:
     globals()[_certificate_fleet_service_name] = getattr(_certificate_fleet_service_module, _certificate_fleet_service_name)
 del _certificate_fleet_service_name
+
+_MAINTENANCE_RUNTIME_PATH = Path(__file__).resolve().with_name('maintenance_runtime.py')
+_maintenance_runtime_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_maintenance_runtime', _MAINTENANCE_RUNTIME_PATH)
+if _maintenance_runtime_spec is None or _maintenance_runtime_spec.loader is None:
+    raise ImportError(f'Could not load maintenance runtime: {_MAINTENANCE_RUNTIME_PATH}')
+_maintenance_runtime_module = _realm_support_importlib_util.module_from_spec(_maintenance_runtime_spec)
+_maintenance_runtime_spec.loader.exec_module(_maintenance_runtime_module)
+_maintenance_acquire_hub_lease = _maintenance_runtime_module.acquire_hub_lease
+_maintenance_queue_due_monitors = _maintenance_runtime_module.queue_due_monitors
+_maintenance_queue_due_fleet_operations = _maintenance_runtime_module.queue_due_fleet_operations
+_maintenance_rollup_previous_hour = _maintenance_runtime_module.rollup_previous_hour
+_maintenance_run_cycle = _maintenance_runtime_module.run_maintenance_cycle
+_maintenance_loop_runner = _maintenance_runtime_module.maintenance_loop
+_build_maintenance_lifespan = _maintenance_runtime_module.build_lifespan
 
 _MONITORING_ROUTER_PATH = Path(__file__).resolve().with_name('monitoring_router.py')
 _monitoring_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_monitoring_router', _MONITORING_ROUTER_PATH)
@@ -299,7 +313,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.35"
+VERSION = "2.9.36"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -557,178 +571,50 @@ def resolve_incident(
 
 
 def acquire_hub_lease(name: str, now: int | None = None) -> bool:
-    current = now or utc_ts()
-    expiry = current + HUB_LEASE_SECONDS
-    with db() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            """INSERT INTO hub_leases(name,holder,expires_at,updated_at) VALUES(?,?,?,?)
-               ON CONFLICT(name) DO UPDATE SET holder=excluded.holder,expires_at=excluded.expires_at,updated_at=excluded.updated_at
-               WHERE hub_leases.holder=excluded.holder OR hub_leases.expires_at<?""",
-            (name, HUB_INSTANCE_ID, expiry, current, current),
-        )
-        row = conn.execute("SELECT holder,expires_at FROM hub_leases WHERE name=?", (name,)).fetchone()
-    return bool(row and row["holder"] == HUB_INSTANCE_ID and int(row["expires_at"]) >= expiry)
+    return _maintenance_acquire_hub_lease(
+        db=db, utc_ts=utc_ts, hub_lease_seconds=HUB_LEASE_SECONDS,
+        hub_instance_id=HUB_INSTANCE_ID, name=name, now=now,
+    )
 
 
 def queue_due_monitors(conn: sqlite3.Connection, now: int, online_cutoff: int) -> None:
-    due = conn.execute(
-        """SELECT monitors.* FROM monitors JOIN nodes ON nodes.id=monitors.node_id
-           WHERE monitors.enabled=1 AND monitors.next_run_at<=? AND nodes.last_seen>=?
-           ORDER BY monitors.next_run_at,monitors.id LIMIT 100""",
-        (now, online_cutoff),
-    ).fetchall()
-    for monitor in due:
-        active = conn.execute(
-            "SELECT 1 FROM jobs WHERE id=? AND status IN ('queued','running')",
-            (monitor["job_id"],),
-        ).fetchone() if monitor["job_id"] else None
-        if active:
-            continue
-        payload = {
-            "monitor_id": monitor["id"], "kind": monitor["kind"], "target": monitor["target"],
-            "port": monitor["port"], "timeout_seconds": monitor["timeout_seconds"],
-            "expected_status": monitor["expected_status"], "snmp_oid": monitor["snmp_oid"],
-        }
-        try:
-            if monitor["kind"] == "snmp":
-                payload["snmp_community"] = decrypt(monitor["secret_enc"])
-        except Exception:
-            LOGGER.exception("Could not decrypt synthetic monitor secret for monitor %s", monitor["id"])
-            failure_streak = int(monitor["failure_streak"] or 0) + 1
-            detail = json.dumps({"error": "Encrypted monitor secret cannot be read; edit and save the monitor again"})
-            conn.execute(
-                """UPDATE monitors SET status='down',detail=?,failure_streak=?,last_run_at=?,next_run_at=?,updated_at=?
-                   WHERE id=?""",
-                (detail, failure_streak, now, now + int(monitor["interval_seconds"]), now, monitor["id"]),
-            )
-            conn.execute(
-                "INSERT INTO monitor_results(monitor_id,ts,status,detail) VALUES(?,?,'down',?)",
-                (monitor["id"], now, detail),
-            )
-            title = f"Monitor {monitor['name']} is down"
-            active_incident = conn.execute(
-                "SELECT 1 FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
-                (monitor["node_id"], title),
-            ).fetchone()
-            if failure_streak >= 2 and not active_incident:
-                create_incident(
-                    conn, node_id=monitor["node_id"], tunnel_id=None, severity="critical", title=title,
-                    detail={"monitor_id": monitor["id"], "reason": "encrypted_secret_unreadable"}, opened_at=now,
-                )
-            continue
-        job_id = conn.execute(
-            "INSERT INTO jobs(node_id,kind,payload,created_at) VALUES(?,?,?,?)",
-            (monitor["node_id"], "monitor_run", json.dumps(payload), now),
-        ).lastrowid
-        conn.execute(
-            "UPDATE monitors SET job_id=?,next_run_at=?,updated_at=? WHERE id=?",
-            (job_id, now + int(monitor["interval_seconds"]), now, monitor["id"]),
-        )
+    _maintenance_queue_due_monitors(
+        conn, now, online_cutoff, decrypt=decrypt, logger=LOGGER, create_incident=create_incident,
+    )
 
 
 def queue_due_fleet_operations(conn: sqlite3.Connection, now: int) -> None:
-    operations = conn.execute(
-        "SELECT * FROM fleet_operations WHERE status='scheduled' AND scheduled_at<=? ORDER BY scheduled_at,id LIMIT 20",
-        (now,),
-    ).fetchall()
-    for operation in operations:
-        payload = json.loads(operation["payload"] or "{}")
-        items = conn.execute(
-            "SELECT * FROM fleet_operation_items WHERE operation_id=? ORDER BY id",
-            (operation["id"],),
-        ).fetchall()
-        for item in items:
-            if item["job_id"]:
-                continue
-            job_id = conn.execute(
-                "INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)",
-                (item["node_id"], operation["kind"], json.dumps(payload), operation["created_by"], now),
-            ).lastrowid
-            conn.execute(
-                "UPDATE fleet_operation_items SET job_id=?,status='queued' WHERE id=?",
-                (job_id, item["id"]),
-            )
-        conn.execute("UPDATE fleet_operations SET status='running',started_at=? WHERE id=?", (now, operation["id"]))
+    _maintenance_queue_due_fleet_operations(conn, now)
 
 
 def rollup_previous_hour(conn: sqlite3.Connection, now: int) -> None:
-    bucket = ((now // 3600) - 1) * 3600
-    if bucket < 0:
-        return
-    conn.execute(
-        """INSERT INTO metric_rollups(node_id,bucket,samples,cpu_avg,ram_avg,disk_max,load_avg,rx_avg,tx_avg,connections_max)
-           SELECT node_id,?,COUNT(*),AVG(cpu),AVG(ram),MAX(disk),AVG(load1),AVG(rx_bps),AVG(tx_bps),MAX(connections)
-           FROM metrics WHERE ts>=? AND ts<? GROUP BY node_id
-           ON CONFLICT(node_id,bucket) DO UPDATE SET
-             samples=excluded.samples,cpu_avg=excluded.cpu_avg,ram_avg=excluded.ram_avg,
-             disk_max=excluded.disk_max,load_avg=excluded.load_avg,rx_avg=excluded.rx_avg,
-             tx_avg=excluded.tx_avg,connections_max=excluded.connections_max""",
-        (bucket, bucket, bucket + 3600),
+    _maintenance_rollup_previous_hour(conn, now)
+
+
+def run_maintenance_cycle() -> None:
+    _maintenance_run_cycle(
+        db=db, utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER,
+        metric_raw_retention_days=METRIC_RAW_RETENTION_DAYS,
+        metric_rollup_retention_days=METRIC_ROLLUP_RETENTION_DAYS,
+        tunnel_sample_retention_days=TUNNEL_SAMPLE_RETENTION_DAYS,
+        monitor_result_retention_days=MONITOR_RESULT_RETENTION_DAYS,
+        create_incident=create_incident, resolve_incident=resolve_incident,
+        rollup_previous_hour=rollup_previous_hour, queue_due_monitors=queue_due_monitors,
+        queue_due_fleet_operations=queue_due_fleet_operations,
     )
 
 
 async def maintenance_loop() -> None:
-    while True:
-        try:
-            if not acquire_hub_lease("maintenance"):
-                await asyncio.sleep(15)
-                continue
-            cutoff = utc_ts() - NODE_STALE_AFTER
-            with db() as conn:
-                stale_nodes = conn.execute("SELECT id,name FROM nodes WHERE last_seen IS NOT NULL AND last_seen < ?", (cutoff,)).fetchall()
-                for stale in stale_nodes:
-                    title = f"Node {stale['name']} is offline"
-                    if not conn.execute("SELECT 1 FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')", (stale["id"], title)).fetchone():
-                        create_incident(conn, node_id=stale["id"], tunnel_id=None, severity="critical", title=title, detail={"reason": "heartbeat_timeout"})
-                online_nodes = conn.execute("SELECT id FROM nodes WHERE last_seen>=?", (cutoff,)).fetchall()
-                for online in online_nodes:
-                    active = conn.execute("SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title LIKE 'Node % is offline' AND status IN ('open','acknowledged')", (online["id"],)).fetchall()
-                    for incident in active:
-                        resolve_incident(conn, incident["id"], "Agent heartbeat recovered")
-                conn.execute("UPDATE nodes SET status='offline' WHERE last_seen IS NOT NULL AND last_seen < ?", (cutoff,))
-                conn.execute("DELETE FROM sessions WHERE expires_at < ?", (utc_ts(),))
-                rollup_previous_hour(conn, utc_ts())
-                conn.execute("DELETE FROM metrics WHERE ts < ?", (utc_ts() - METRIC_RAW_RETENTION_DAYS * 86400,))
-                conn.execute("DELETE FROM metric_rollups WHERE bucket < ?", (utc_ts() - METRIC_ROLLUP_RETENTION_DAYS * 86400,))
-                conn.execute("DELETE FROM tunnel_samples WHERE ts < ?", (utc_ts() - TUNNEL_SAMPLE_RETENTION_DAYS * 86400,))
-                conn.execute("DELETE FROM monitor_results WHERE ts < ?", (utc_ts() - MONITOR_RESULT_RETENTION_DAYS * 86400,))
-                conn.execute("UPDATE jobs SET status='queued',started_at=NULL WHERE status='running' AND started_at<?", (utc_ts() - 5 * 60,))
-                conn.execute("DELETE FROM jobs WHERE finished_at IS NOT NULL AND finished_at<?", (utc_ts() - 90 * 86400,))
-                conn.execute("DELETE FROM audit_logs WHERE created_at<?", (utc_ts() - 180 * 86400,))
-                conn.execute("UPDATE certificates SET status='expired',updated_at=? WHERE expires_at IS NOT NULL AND expires_at<=?", (utc_ts(), utc_ts()))
-                conn.execute("UPDATE certificates SET status='expiring',updated_at=? WHERE status='valid' AND expires_at BETWEEN ? AND ?", (utc_ts(), utc_ts(), utc_ts() + 14 * 86400))
-                renewable = conn.execute("SELECT c.* FROM certificates c JOIN nodes n ON n.id=c.node_id WHERE c.status IN ('valid','expiring') AND c.expires_at BETWEEN ? AND ? AND n.last_seen>=?", (utc_ts(), utc_ts() + 30 * 86400, cutoff)).fetchall()
-                for cert in renewable:
-                    pending = conn.execute("SELECT 1 FROM jobs WHERE id=? AND status IN ('queued','running')", (cert["job_id"],)).fetchone() if cert["job_id"] else None
-                    if pending: continue
-                    job_id = conn.execute("INSERT INTO jobs(node_id,kind,payload,created_at) VALUES(?,?,?,?)", (cert["node_id"], "certificate_issue", json.dumps({"certificate_id": cert["id"], "domain": cert["domain"], "renew": True}), utc_ts())).lastrowid
-                    conn.execute("UPDATE certificates SET status='renewing',job_id=?,updated_at=? WHERE id=?", (job_id, utc_ts(), cert["id"]))
-                queue_due_monitors(conn, utc_ts(), cutoff)
-                queue_due_fleet_operations(conn, utc_ts())
-        except Exception:
-            LOGGER.exception("maintenance loop failed")
-        await asyncio.sleep(30)
+    await _maintenance_loop_runner(
+        acquire_hub_lease=acquire_hub_lease, run_cycle=run_maintenance_cycle, logger=LOGGER,
+    )
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    bootstrap()
-    app.state.fernet = Fernet(KEY_PATH.read_bytes())
-    task = asyncio.create_task(maintenance_loop())
-    try:
-        yield
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        try:
-            with db() as conn:
-                conn.execute("DELETE FROM hub_leases WHERE holder=?", (HUB_INSTANCE_ID,))
-        except Exception:
-            LOGGER.exception("Could not release Hub controller leases")
+lifespan = _build_maintenance_lifespan(
+    bootstrap=lambda: bootstrap(), fernet_cls=Fernet, key_path=KEY_PATH,
+    maintenance_loop=lambda: maintenance_loop(), db=lambda: db(),
+    hub_instance_id=HUB_INSTANCE_ID, logger=LOGGER,
+)
 
 
 app = FastAPI(title="DARK NOC Hub", version=VERSION, lifespan=lifespan)
@@ -822,45 +708,8 @@ PLUGIN_CATALOG = [{
     "certificate_side": "kharej", "automated": True,
 }]
 
-
-
-
-
-
 class NodeUpdateBody(NodeBody):
     pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def current_user(request: Request, dark_noc_session: str | None = Cookie(default=None)) -> sqlite3.Row:
