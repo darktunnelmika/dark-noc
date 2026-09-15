@@ -30,6 +30,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_32.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/file_ops.py')
+          text = path.read_text()
+          old = 'assert \'Account changes are server-only\' in (ROOT / "hub" / "app.py").read_text(encoding="utf-8")'
+          new = 'assert \'Account changes are server-only\' in (ROOT / "hub" / "auth_router.py").read_text(encoding="utf-8")'
+          if old not in text:
+              raise SystemExit('file_ops Auth ownership guard anchor not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
