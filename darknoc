@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="2.9.26"
+VERSION="2.9.27"
 ENV_FILE="${DARK_NOC_ENV_FILE:-/etc/dark-noc/hub.env}"
 NGINX_SITE="${DARK_NOC_NGINX_SITE:-/etc/nginx/sites-available/dark-noc}"
 NGINX_LINK="${DARK_NOC_NGINX_LINK:-/etc/nginx/sites-enabled/dark-noc}"

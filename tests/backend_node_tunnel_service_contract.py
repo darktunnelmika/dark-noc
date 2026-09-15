@@ -7,7 +7,7 @@ service = (root / "hub/node_tunnel_service.py").read_text()
 
 assert "with_name('node_tunnel_service.py')" in app
 assert "_node_tunnel_service_spec.loader.exec_module" in app
-assert 'VERSION = "2.9.26"' in app
+assert 'VERSION = "2.9.27"' in app
 
 for marker in [
     "def create_node_mutation(",

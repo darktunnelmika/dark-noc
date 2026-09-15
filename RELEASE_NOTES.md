@@ -1,3 +1,16 @@
+# DARK NOC v2.9.27 — Monitor & Incident Mutation Service Layer
+
+- Continue the backend write/service layer by extracting Monitor create/update/delete/run transactions and Incident note/action mutations from `hub/app.py` into `hub/monitor_incident_service.py`.
+- Keep FastAPI route declarations, audit logging, API response shaping and telemetry-driven Incident automation in `hub/app.py`.
+- Preserve transaction boundaries, HTTP status/details, Synthetic Monitoring behavior, Incident lifecycle behavior, Agent behavior and frontend visuals.
+- Add permanent Monitor/Incident mutation-service regression coverage.
+
+## فارسی
+
+عملیات نوشتنی Monitoring و Incident از `hub/app.py` به `hub/monitor_incident_service.py` منتقل شدند؛ Routeها، Audit، رفتار Agent و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.26 — Plugin Deployment Service Layer
 
 - Continue the backend write/service layer by extracting Managed and Pair-Code plugin deployment creation plus deployment recovery/retry/remove transactions from `hub/app.py` into `hub/plugin_deployment_service.py`.
