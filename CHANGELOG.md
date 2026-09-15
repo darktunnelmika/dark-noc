@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.10 — Topology module extraction
+
+- Extract topology modeling from app.js into topology.js.
+- Preserve current matrix visuals and interactions.
+- Add topology module-boundary regression coverage.
+
+
 ## 2.9.9 — Frontend core modularization
 
 - Extract stable frontend helpers into core.js.

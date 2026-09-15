@@ -1,3 +1,16 @@
+# DARK NOC v2.9.10 — Topology Module Extraction
+
+- Extract topology grouping, side inference, endpoint resolution and health aggregation from app.js into topology.js.
+- Keep the current Live tunnel matrix rendering and visual behavior unchanged.
+- Add a permanent topology module-boundary regression test.
+- No API, Agent, tunnel configuration or database behavior changes beyond version synchronization.
+
+## فارسی
+
+مرحله دوم ماژولار کردن فرانت‌اند انجام شد: منطق مدل‌سازی توپولوژی از app.js به topology.js منتقل شد، بدون تغییر ظاهر یا رفتار Live tunnel matrix.
+
+---
+
 # DARK NOC v2.9.9 — Frontend Core Modularization
 
 - First safe modularization step: extract stable, dependency-free frontend helpers from app.js into core.js.
