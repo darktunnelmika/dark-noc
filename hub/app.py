@@ -101,6 +101,16 @@ for _repository_name in ['find_node_endpoint_conflict', 'fetch_node_inventory', 
     globals()[_repository_name] = getattr(_node_tunnel_repository_module, _repository_name)
 del _repository_name
 
+_MONITOR_INCIDENT_REPOSITORY_PATH = Path(__file__).resolve().with_name('monitor_incident_repository.py')
+_monitor_incident_repository_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_monitor_incident_repository', _MONITOR_INCIDENT_REPOSITORY_PATH)
+if _monitor_incident_repository_spec is None or _monitor_incident_repository_spec.loader is None:
+    raise ImportError(f'Could not load Monitor/Incident repository: {_MONITOR_INCIDENT_REPOSITORY_PATH}')
+_monitor_incident_repository_module = _realm_support_importlib_util.module_from_spec(_monitor_incident_repository_spec)
+_monitor_incident_repository_spec.loader.exec_module(_monitor_incident_repository_module)
+for _monitor_incident_repository_name in ['fetch_monitor_inventory', 'fetch_monitor_result_rows', 'fetch_incident_inventory', 'fetch_incident_detail_rows']:
+    globals()[_monitor_incident_repository_name] = getattr(_monitor_incident_repository_module, _monitor_incident_repository_name)
+del _monitor_incident_repository_name
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -109,7 +119,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.23"
+VERSION = "2.9.24"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2860,14 +2870,7 @@ def remove_plugin_deployment(deployment_id: int, request: Request, user: sqlite3
 
 @app.get("/api/monitors")
 def list_monitors(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT monitors.*,nodes.name node_name,nodes.role node_role,nodes.host node_host,
-                      nodes.last_seen node_last_seen
-               FROM monitors JOIN nodes ON nodes.id=monitors.node_id
-               ORDER BY CASE monitors.status WHEN 'down' THEN 0 WHEN 'degraded' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
-                        monitors.name COLLATE NOCASE"""
-        ).fetchall()
+    rows = fetch_monitor_inventory(db)
     return [public_monitor(row) for row in rows]
 
 
@@ -2980,13 +2983,9 @@ def run_monitor_now(monitor_id: int, request: Request, user: sqlite3.Row = Depen
 @app.get("/api/monitors/{monitor_id}/results")
 def monitor_results(monitor_id: int, limit: int = 200, _: sqlite3.Row = Depends(current_user)):
     limit = min(max(limit, 1), 2000)
-    with db() as conn:
-        if not conn.execute("SELECT 1 FROM monitors WHERE id=?", (monitor_id,)).fetchone():
-            raise HTTPException(404, "Monitor not found")
-        rows = conn.execute(
-            "SELECT ts,status,latency_ms,detail FROM monitor_results WHERE monitor_id=? ORDER BY ts DESC LIMIT ?",
-            (monitor_id, limit),
-        ).fetchall()
+    exists, rows = fetch_monitor_result_rows(db, monitor_id, limit)
+    if not exists:
+        raise HTTPException(404, "Monitor not found")
     result = []
     for row in rows:
         item = dict(row)
@@ -3161,15 +3160,7 @@ def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Ro
 
 @app.get("/api/incidents")
 def list_incidents(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT incidents.*,nodes.name node_name,tunnels.name tunnel_name,
-                      (SELECT COUNT(*) FROM incident_events WHERE incident_id=incidents.id) event_count
-               FROM incidents
-               LEFT JOIN nodes ON nodes.id=incidents.node_id
-               LEFT JOIN tunnels ON tunnels.id=incidents.tunnel_id
-               ORDER BY incidents.status='open' DESC,incidents.status='acknowledged' DESC,incidents.opened_at DESC LIMIT 500"""
-        ).fetchall()
+    rows = fetch_incident_inventory(db)
     now = utc_ts()
     result = []
     for row in rows:
@@ -3181,21 +3172,9 @@ def list_incidents(_: sqlite3.Row = Depends(current_user)):
 
 @app.get("/api/incidents/{incident_id}")
 def incident_detail(incident_id: int, _: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        row = conn.execute(
-            """SELECT incidents.*,nodes.name node_name,tunnels.name tunnel_name
-               FROM incidents LEFT JOIN nodes ON nodes.id=incidents.node_id
-               LEFT JOIN tunnels ON tunnels.id=incidents.tunnel_id WHERE incidents.id=?""",
-            (incident_id,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Incident not found")
-        events = conn.execute(
-            """SELECT incident_events.*,users.username actor
-               FROM incident_events LEFT JOIN users ON users.id=incident_events.actor_id
-               WHERE incident_id=? ORDER BY created_at,id""",
-            (incident_id,),
-        ).fetchall()
+    row, events = fetch_incident_detail_rows(db, incident_id)
+    if not row:
+        raise HTTPException(404, "Incident not found")
     item = dict(row)
     item["downtime_seconds"] = max(0, int(item.get("resolved_at") or utc_ts()) - int(item["opened_at"]))
     item["events"] = [dict(event) for event in events]

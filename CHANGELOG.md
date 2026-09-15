@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.24 — Monitor and Incident repository query layer
+
+- Extract Monitor inventory/history and Incident list/detail reads into hub/monitor_incident_repository.py.
+- Preserve all mutation transactions and API response shaping in hub/app.py.
+- Add repository-boundary regression coverage.
+
+
 ## 2.9.23 — Node and Tunnel repository query layer
 
 - Extract Node/Tunnel inventory and operations read queries into hub/node_tunnel_repository.py.
