@@ -1,3 +1,6 @@
+## v2.9.33
+- Split SSH File Transfer/File Manager and interactive SSH terminal route ownership into dedicated backend routers.
+
 ## v2.9.32
 - Split Authentication, Dashboard and System health/index FastAPI route registration into dedicated APIRouter modules.
 

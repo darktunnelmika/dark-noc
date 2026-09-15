@@ -1,3 +1,18 @@
+# DARK NOC v2.9.33 — Backend Router Split: SSH & File Transfer
+
+- Extract all SSH File Transfer and File Manager HTTP routes into `hub/ssh_file_router.py`.
+- Extract the interactive `/ws/ssh/{node_id}` terminal into `hub/ssh_terminal_router.py`.
+- Preserve multipart upload authentication, streaming download behavior, disconnect-aware semaphores, timeouts, SFTP atomic overwrite/rollback, checksum/editor limits, host-key pinning and persistent tmux sessions.
+- Preserve runtime/test overrides for SSH limits, chunking, transfer semaphore and keepalive settings through dynamic lookup.
+- Keep SSH/SFTP helper primitives, upload middleware, Agent control plane and Live telemetry WebSocket in `hub/app.py`.
+- Add permanent SSH router-boundary regression coverage.
+
+## فارسی
+
+Routeهای SSH File Manager، Upload/Relay/Download و WebSocket ترمینال SSH به Routerهای مستقل منتقل شدند؛ محدودیت‌ها، rollback اتمیک، قطع Client، Session، host-key pinning و ظاهر پنل بدون تغییر رفتاری باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.32 — Backend Router Split: Auth, Dashboard & System
 
 - Continue backend route modularization by extracting Authentication routes into `hub/auth_router.py`.
