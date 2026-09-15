@@ -39,5 +39,5 @@ assert "provision_node_for_fleet" in functions["create_fleet_operation"]
 assert "orchestrate_agent_upgrade" in functions["create_fleet_operation"]
 assert 'if row["kind"] == "certificate_issue":' in app
 assert "def queue_due_fleet_operations(" in app
-assert 'VERSION = "2.9.28"' in app
+assert 'VERSION = "2.9.29"' in app
 print("Certificate/Fleet service boundary passed")

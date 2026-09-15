@@ -1,3 +1,6 @@
+## v2.9.29
+- Backend architecture audit and first FastAPI router split for Monitoring and Incidents.
+
 # DARK NOC v2.9.5
 
 ## 2.9.28 — Certificate and Fleet Operations service layer
