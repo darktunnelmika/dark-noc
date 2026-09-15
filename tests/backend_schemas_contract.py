@@ -8,5 +8,5 @@ assert '.model_rebuild()' in schemas
 assert "with_name('schemas.py')" in app
 assert '_schemas_spec.loader.exec_module' in app
 assert 'from pydantic import BaseModel, Field, field_validator' not in app
-assert 'VERSION = \"2.9.39\"' in app
+assert 'VERSION = \"2.9.40\"' in app
 print('Backend schemas module boundary passed')

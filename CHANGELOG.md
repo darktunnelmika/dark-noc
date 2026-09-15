@@ -1,3 +1,8 @@
+## v2.9.40
+- Dependency hardening: pin `asyncssh==2.24.0` (from 2.19.0).
+- Add permanent AsyncSSH API/key/SFTP compatibility coverage.
+- Preserve SSH terminal, file transfer, provisioning, API and frontend behavior.
+
 ## v2.9.39
 - Dependency hardening: pin `cryptography==50.0.1` (from 44.0.0).
 - Add permanent Fernet round-trip/tamper-rejection dependency coverage.
