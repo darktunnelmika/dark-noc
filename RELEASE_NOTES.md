@@ -1,3 +1,17 @@
+# DARK NOC v2.9.22 — Database Bootstrap & Migrations Module
+
+- Continue database-layer modularization by extracting Hub database bootstrap, migrations and startup recovery into `hub/database_bootstrap.py`.
+- Preserve the existing SQLite schema, `ALTER TABLE` migration behavior, interrupted provisioning/fleet recovery and initial owner creation.
+- Keep `hub/app.py` with a compatibility `bootstrap()` wrapper and unchanged lifespan behavior.
+- Preserve API routes, feature query flows, Agent behavior and frontend visuals.
+- Add permanent database-bootstrap ownership regression coverage.
+
+## فارسی
+
+Bootstrap دیتابیس، Migrationها و Recoveryهای زمان شروع از `hub/app.py` به `hub/database_bootstrap.py` منتقل شدند؛ رفتار فعلی دیتابیس، API و پنل بدون تغییر باقی مانده است.
+
+---
+
 # DARK NOC v2.9.21 — Backend Database Core Module
 
 - Start database-layer modularization by extracting SQLite data path, connection policy and schema DDL from hub/app.py into hub/database.py.

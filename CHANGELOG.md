@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.22 — Database bootstrap and migrations module
+
+- Extract database bootstrap, ALTER TABLE migrations and startup recovery into hub/database_bootstrap.py.
+- Preserve initialization and recovery behavior through a thin app.py compatibility wrapper.
+- Add backend bootstrap ownership regression coverage.
+
+
 ## 2.9.21 — Backend database core module
 
 - Extract SQLite path, connection policy and schema DDL into hub/database.py.
