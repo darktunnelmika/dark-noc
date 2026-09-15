@@ -1,3 +1,8 @@
+## v2.9.41
+- Dependency hardening: pin `psutil==7.2.2` in Hub and Agent (from 6.1.1).
+- Add permanent Agent telemetry/socket/process compatibility coverage.
+- No API, tunnel, frontend or Live Matrix behavior changes.
+
 ## v2.9.40
 - Dependency hardening: pin `asyncssh==2.24.0` (from 2.19.0).
 - Add permanent AsyncSSH API/key/SFTP compatibility coverage.
