@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.11 — SSH terminal module extraction
+
+- Extract browser SSH terminal runtime into ssh-terminal.js.
+- Preserve reconnect, panes, snippets, replay and xterm behavior.
+- Add permanent module-boundary CI coverage.
+
+
 ## 2.9.10 — Topology module extraction
 
 - Extract topology modeling from app.js into topology.js.
