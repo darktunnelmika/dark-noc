@@ -75,6 +75,7 @@ jobs:
           python tests/backend_database_contract.py
           python tests/backend_bootstrap_contract.py
           python tests/backend_node_tunnel_repository_contract.py
+          python tests/backend_monitor_incident_repository_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh

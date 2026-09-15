@@ -1,3 +1,16 @@
+# DARK NOC v2.9.24 — Monitor & Incident Repository Query Layer
+
+- Continue the backend repository/query layer by extracting Synthetic Monitor inventory/history reads and Incident list/detail/timeline reads from `hub/app.py` into `hub/monitor_incident_repository.py`.
+- Keep Monitor/Incident mutation transactions, API response shaping and HTTP error behavior in `hub/app.py` to preserve behavior.
+- Preserve SQLite semantics, Agent behavior and frontend visuals.
+- Add permanent Monitor/Incident repository-boundary regression coverage.
+
+## فارسی
+
+Queryهای خواندنی Monitoring و Incident از `hub/app.py` به `hub/monitor_incident_repository.py` منتقل شدند؛ عملیات Create/Edit/Delete/Action و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.23 — Node & Tunnel Repository Query Layer
 
 - Start the backend repository/query layer by extracting Node inventory, SSH endpoint-conflict lookup, Tunnel inventory and Tunnel Operations read queries from `hub/app.py` into `hub/node_tunnel_repository.py`.

@@ -23,12 +23,12 @@ ci = text(".github/workflows/ci.yml")
 release = text(".github/workflows/release.yml")
 index = text("hub/static/index.html")
 
-assert 'VERSION = "2.9.23"' in hub
-assert 'VERSION = "2.9.23"' in agent
-assert 'VERSION="2.9.23"' in cli
-assert "Nightfall Command v2.9.23" in installer
-assert "Zero-touch Node v2.9.23" in node_installer
-assert "app.js?v=2.9.23" in index
+assert 'VERSION = "2.9.24"' in hub
+assert 'VERSION = "2.9.24"' in agent
+assert 'VERSION="2.9.24"' in cli
+assert "Nightfall Command v2.9.24" in installer
+assert "Zero-touch Node v2.9.24" in node_installer
+assert "app.js?v=2.9.24" in index
 assert "WatchdogSec=90s" in text("deploy/dark-noc-agent.service")
 assert "NotifyAccess=main" in text("deploy/dark-noc-agent.service")
 assert 'AGENT_PAYLOAD_DIR = Path(' in hub
@@ -37,7 +37,7 @@ assert "/opt/dark-noc/agent-payload/realm_plugin.py" in installer
 assert "/opt/dark-noc-agent/realm_plugin.py" in installer
 assert "X-Dark-Noc-Existing-Agent" in installer
 assert "LOCAL_AGENT_BASELINE" in installer
-assert "fresh v2.9.23 heartbeat" in installer
+assert "fresh v2.9.24 heartbeat" in installer
 assert "/etc/dark-realm" in installer and "/etc/dark-realm" in node_installer and "/etc/dark-realm" in upgrader
 assert 'install -m 0644 "$SCRIPT_DIR/agent/realm_plugin.py" /opt/dark-noc-agent/realm_plugin.py' in upgrader
 assert "had_realm_adapter=0" in upgrader and "had_agent_payload=0" in upgrader
@@ -54,7 +54,7 @@ hub_upgrade_success = upgrader.split('bash "$SCRIPT_DIR/install-hub.sh"', 1)[1].
 assert "POST_UPGRADE_AGENT_BASELINE" in hub_upgrade_success
 assert "systemctl enable dark-noc-agent.service" in hub_upgrade_success
 assert "systemctl restart dark-noc-agent.service" in hub_upgrade_success
-assert "fresh v2.9.23 post-upgrade pulse" in hub_upgrade_success
+assert "fresh v2.9.24 post-upgrade pulse" in hub_upgrade_success
 assert 'restore_service_state dark-noc-agent.service "$agent_was_active"' not in hub_upgrade_success
 assert "Wants=network-online.target dark-noc-agent.service" in text("deploy/dark-noc-hub.service")
 
