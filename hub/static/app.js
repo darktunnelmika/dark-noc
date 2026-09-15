@@ -37,6 +37,7 @@ function switchView(name) {
   $('#sidebar').classList.remove('open');
   scrollTo({ top: 0, behavior: 'smooth' });
   renderCachedView(name);
+  refreshActiveView(name);
 }
 
 function showToast(title, message, error = false) {
@@ -432,4 +433,6 @@ document.addEventListener('keydown',event=>{
 
 function updateClock(){ $('#clock').textContent=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Tehran',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date()); }
 ensureTerminal('terminal-iran');ensureTerminal('terminal-germany');$('.terminal-card').classList.add('active-terminal');renderSnippets();
-updateClock(); setInterval(updateClock,1000); setInterval(refresh,15000); boot();
+updateClock(); setInterval(updateClock,1000); setInterval(()=>refreshActiveView(),15000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&$('#login-gate').classList.contains('hidden'))refreshActiveView(activeViewName(),{force:true});});
+boot();
