@@ -19,15 +19,16 @@ for path in ['/api/auth/login', '/api/auth/logout', '/api/auth/me', '/api/auth/a
     assert path in auth, path
 for path in ['/api/dashboard', '/api/dashboard/traffic']:
     assert path in dashboard, path
-for path in ['/healthz', '/readyz', '"/"']:
+for path in ['/healthz', '/readyz', '"/"', '/api/system/status']:
     assert path in system, path
 assert 'login_rate_check(client_ip)' in auth
 assert 'login_rate_record(client_ip, False)' in auth
 assert 'response.set_cookie("dark_noc_session"' in auth
 assert 'SSH_UPLOAD_LIMIT' in dashboard and 'open_incidents' in dashboard
 assert 'Hub is not ready' in system and 'FileResponse(STATIC_DIR / "index.html")' in system
+assert 'Depends(current_user)' in system and 'metric_raw_retention_days' in system
 assert 'app.mount("/static"' in app
 assert '@app.websocket("/ws/live")' in app
 assert 'def agent_heartbeat' in app and 'def agent_job_result' in app
-assert 'VERSION = "2.9.33"' in app
+assert 'VERSION = "2.9.34"' in app
 print('Auth/Dashboard/System router boundary passed')

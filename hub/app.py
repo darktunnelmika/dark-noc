@@ -267,6 +267,14 @@ _ssh_terminal_router_module = _realm_support_importlib_util.module_from_spec(_ss
 _ssh_terminal_router_spec.loader.exec_module(_ssh_terminal_router_module)
 register_ssh_terminal_router = _ssh_terminal_router_module.register_ssh_terminal_router
 
+_JOBS_ROUTER_PATH = Path(__file__).resolve().with_name('jobs_router.py')
+_jobs_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_jobs_router', _JOBS_ROUTER_PATH)
+if _jobs_router_spec is None or _jobs_router_spec.loader is None:
+    raise ImportError(f'Could not load Jobs router: {_JOBS_ROUTER_PATH}')
+_jobs_router_module = _realm_support_importlib_util.module_from_spec(_jobs_router_spec)
+_jobs_router_spec.loader.exec_module(_jobs_router_module)
+register_jobs_router = _jobs_router_module.register_jobs_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -275,7 +283,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.33"
+VERSION = "2.9.34"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1532,7 +1540,11 @@ register_dashboard_router(
 
 register_system_router(
     app,
-    db=db, version=VERSION, key_path=KEY_PATH, static_dir=STATIC_DIR, hub_instance_id=HUB_INSTANCE_ID,
+    db=db, current_user=current_user, version=VERSION, key_path=KEY_PATH, static_dir=STATIC_DIR,
+    hub_instance_id=HUB_INSTANCE_ID, metric_raw_retention_days=METRIC_RAW_RETENTION_DAYS,
+    metric_rollup_retention_days=METRIC_ROLLUP_RETENTION_DAYS,
+    tunnel_sample_retention_days=TUNNEL_SAMPLE_RETENTION_DAYS,
+    monitor_result_retention_days=MONITOR_RESULT_RETENTION_DAYS,
 )
 
 
@@ -1848,21 +1860,12 @@ register_incidents_router(
 )
 
 
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: int, _: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Job not found")
-    return public_job(row)
-
-
-@app.get("/api/jobs")
-def list_jobs(limit: int = 100, _: sqlite3.Row = Depends(current_user)):
-    limit = min(max(limit, 1), 500)
-    with db() as conn:
-        rows = conn.execute("SELECT jobs.*,nodes.name node_name FROM jobs JOIN nodes ON nodes.id=jobs.node_id ORDER BY jobs.id DESC LIMIT ?", (limit,)).fetchall()
-    return [public_job(row) for row in rows]
+_jobs_router, _job_handlers = register_jobs_router(
+    app, current_user=current_user, db=db, public_job=public_job,
+)
+for _job_handler_name, _job_handler in _job_handlers.items():
+    globals()[_job_handler_name] = _job_handler
+del _job_handler_name, _job_handler, _job_handlers
 
 
 def managed_tunnel_report(method: str, service: str) -> bool:
@@ -2267,31 +2270,6 @@ async def live_updates(websocket: WebSocket):
         pass
     finally:
         LIVE_CLIENTS.discard(websocket)
-
-
-@app.get("/api/system/status")
-def system_status(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        leader = conn.execute("SELECT holder,expires_at,updated_at FROM hub_leases WHERE name='maintenance'").fetchone()
-        counts = {
-            "nodes": conn.execute("SELECT COUNT(*) count FROM nodes").fetchone()["count"],
-            "monitors": conn.execute("SELECT COUNT(*) count FROM monitors").fetchone()["count"],
-            "queued_jobs": conn.execute("SELECT COUNT(*) count FROM jobs WHERE status='queued'").fetchone()["count"],
-            "metric_samples": conn.execute("SELECT COUNT(*) count FROM metrics").fetchone()["count"],
-            "rollup_samples": conn.execute("SELECT COUNT(*) count FROM metric_rollups").fetchone()["count"],
-            "tunnel_samples": conn.execute("SELECT COUNT(*) count FROM tunnel_samples").fetchone()["count"],
-        }
-    return {
-        "version": VERSION, "instance": HUB_INSTANCE_ID,
-        "maintenance_leader": dict(leader) if leader else None,
-        "retention": {
-            "raw_metrics_days": METRIC_RAW_RETENTION_DAYS,
-            "rollups_days": METRIC_ROLLUP_RETENTION_DAYS,
-            "tunnel_samples_days": TUNNEL_SAMPLE_RETENTION_DAYS,
-            "monitor_results_days": MONITOR_RESULT_RETENTION_DAYS,
-        },
-        "counts": counts,
-    }
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
