@@ -1,0 +1,250 @@
+name: Prepare v2.9.17 Action Router modularization
+
+on:
+  push:
+    branches: [automation/v2.9.17-action-router]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Split delegated action router
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app=Path('hub/static/app.js')
+          text=app.read_text()
+          start=text.index("document.addEventListener('click', event => {")
+          end=text.index("\n});\n\n$('#plugin-mode')", start)+len("\n});")
+          old=text[start:end]
+          for marker in ['pluginDeploy','manageTunnel','incidentAck','autohealNode','certRenew','terminalClose']:
+              assert marker in old, marker
+          dispatcher="""document.addEventListener('click', event => {
+            if (handleNodeActions(event)) return;
+            if (handlePluginActions(event)) return;
+            if (handleTunnelActions(event)) return;
+            handleOpsActions(event);
+          });"""
+          app.write_text(text[:start]+dispatcher+text[end:])
+
+          node_actions=r'''// DARK NOC delegated Node action handlers. Classic-script globals are intentional.
+          function handleNodeActions(event) {
+            const takeControl=event.target.closest('#take-control');
+            const ssh=event.target.closest('.server-ssh');
+            const diagnostics=event.target.closest('.node-diagnostics');
+            const logs=event.target.closest('.node-logs');
+            const deleteNode=event.target.closest('.node-delete');
+            const topologyNode=event.target.closest('.node[data-node]');
+            const cyberNode=event.target.closest('.cyber-node');
+            const editNode=event.target.closest('.node-edit');
+            const resetPin=event.target.closest('.node-pin');
+            const serviceRestart=event.target.closest('.service-chip');
+            const autohealNode=event.target.closest('.node-autoheal');
+            const provisionRetry=event.target.closest('.node-provision-retry');
+            const syncAgent=event.target.closest('.node-agent-sync');
+            const provisionLog=event.target.closest('.node-provision-log');
+            if(takeControl){const node=state.nodes.find(item=>item.id===Number(takeControl.dataset.nodeId))||state.nodes.find(item=>item.status!=='online')||state.nodes[0];if(node)connectSSH(node.id);else showToast('NO NODE AVAILABLE','Add a server first.',true);return true;}
+            if(ssh){connectSSH(ssh.dataset.nodeId);return true;}
+            if(diagnostics){createJob(Number(diagnostics.dataset.nodeId),'diagnostics',null,{},true).catch(error=>showToast('COMMAND FAILED',error.message,true));return true;}
+            if(logs){createJob(Number(logs.dataset.nodeId),'logs',null,{},true).catch(error=>showToast('LOG REQUEST FAILED',error.message,true));return true;}
+            if(deleteNode){if(confirm(`Delete node “${deleteNode.dataset.nodeName}” and its telemetry from DARK NOC?`))api(`/api/nodes/${Number(deleteNode.dataset.nodeId)}`,{method:'DELETE'}).then(()=>{showToast('NODE DELETED',`${deleteNode.dataset.nodeName} was removed from the Hub.`);refresh();}).catch(error=>showToast('DELETE FAILED',error.message,true));return true;}
+            if(topologyNode){const node=state.nodes.find(item=>item.name===topologyNode.dataset.node);switchView('servers');if(node)showToast('NODE LOCATED',`${node.name} · ${node.status}`);return true;}
+            if(cyberNode){const node=state.nodes.find(item=>item.id===Number(cyberNode.dataset.nodeId));const related=node?state.tunnels.filter(item=>Number(item.node_id)===node.id||Number(item.peer_node_id)===node.id):[];$('#output-title').textContent=node?`${node.name} · NODE INTELLIGENCE`:cyberNode.dataset.endpointName;$('#job-output').textContent=node?`ROLE: ${node.role}\nHOST: ${node.host}\nOBSERVED IP: ${node.observed_ip||'—'}\nAGENT: ${node.status}\nSSH: ${node.ssh_configured?'READY':'NO ACCESS'}\nLAST SEEN: ${relativeTime(node.last_seen)}\n\nDARK BACKHAUL PATHS:\n${related.map(item=>`• ${item.name} · ${String(item.status).toUpperCase()} · ${item.sessions||0} sessions`).join('\n')||'None'}`:'This endpoint is visible from a live Backhaul TCP peer but is not enrolled as a manageable Node.';openModal('#output-modal');return true;}
+            if(editNode){const node=state.nodes.find(item=>item.id===Number(editNode.dataset.nodeId));if(node)openNodeEditor(node);return true;}
+            if(resetPin){if(confirm('Forget the pinned SSH fingerprint? Only do this after verifying the server key changed.'))api(`/api/nodes/${Number(resetPin.dataset.nodeId)}/ssh-fingerprint`,{method:'DELETE'}).then(()=>showToast('SSH PIN RESET','The next SSH connection will pin the presented host key.')).catch(error=>showToast('PIN RESET FAILED',error.message,true));return true;}
+            if(serviceRestart){if(confirm(`Restart ${serviceRestart.dataset.serviceName}?`))createJob(Number(serviceRestart.dataset.serviceNode),'restart_service',serviceRestart.dataset.serviceName,{},true).then(()=>setTimeout(refresh,2500)).catch(error=>showToast('SERVICE RESTART FAILED',error.message,true));return true;}
+            if(autohealNode){const node=state.nodes.find(item=>item.id===Number(autohealNode.dataset.nodeId));if(node){const enabled=!Boolean(node.autoheal_enabled);if(confirm(`${enabled?'Enable':'Disable'} Auto-Heal on ${node.name}?`))createJob(node.id,'configure_autoheal',null,{enabled,cooldown_seconds:Number(node.autoheal_cooldown||300),max_restarts_per_hour:Number(node.autoheal_max_restarts||3)},true).then(()=>setTimeout(refresh,3000)).catch(error=>showToast('AUTO-HEAL UPDATE FAILED',error.message,true));}return true;}
+            if(provisionRetry){api(`/api/nodes/${Number(provisionRetry.dataset.nodeId)}/provision`,{method:'POST'}).then(()=>{showToast('INSTALLATION RETRIED','The Hub is reconnecting and installing the Agent.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));return true;}
+            if(syncAgent){const node=state.nodes.find(item=>item.id===Number(syncAgent.dataset.nodeId));if(node&&confirm(`Redeploy and synchronize the DARK NOC Agent on “${node.name}”?\n\nManaged configuration and tunnels will be preserved.`))api(`/api/nodes/${node.id}/provision`,{method:'POST'}).then(()=>{showToast('AGENT SYNC STARTED',`${node.name} is receiving the matching Agent build; managed configuration and tunnels are preserved.`);refresh();}).catch(error=>showToast('AGENT SYNC FAILED',error.message,true));return true;}
+            if(provisionLog){const node=state.nodes.find(item=>item.id===Number(provisionLog.dataset.nodeId));if(node){$('#output-title').textContent=`${node.name} · installation ${String(node.provision_status||'unknown').toUpperCase()}`;$('#job-output').textContent=node.provision_output||'Installation is running; refresh in a few seconds.';openModal('#output-modal');}return true;}
+            return false;
+          }
+          '''
+
+          plugin_actions=r'''// DARK NOC delegated Plugin/deployment action handlers. Classic-script globals are intentional.
+          function handlePluginActions(event) {
+            const createTunnel=event.target.closest('[data-create-tunnel]');
+            const installMissing=event.target.closest('.plugin-install-missing');
+            const pluginDeploy=event.target.closest('.plugin-deploy');
+            const deployRetry=event.target.closest('.deploy-retry');
+            const deployRemove=event.target.closest('.deploy-remove');
+            const pairRetry=event.target.closest('.pair-retry');
+            const pairRemove=event.target.closest('.pair-remove');
+            const pairReveal=event.target.closest('.pair-reveal');
+            if(createTunnel){const trigger=$('.plugin-deploy');if(trigger)trigger.click();return true;}
+            if(installMissing){const pluginId=installMissing.dataset.pluginId,plugin=state.plugins.find(p=>p.id===pluginId),missing=state.nodes.filter(node=>node.status==='online'&&!pluginInventory(node,pluginId)?.installed);Promise.all(missing.map(node=>api(`/api/nodes/${node.id}/plugins/${pluginId}/install`,{method:'POST'}))).then(()=>showToast('CORE INSTALL QUEUED',`${missing.length} Agent${missing.length===1?'':'s'} will install ${plugin?.name||pluginId}.`)).catch(error=>showToast('INSTALL FAILED',error.message,true));return true;}
+            if(pluginDeploy){
+              state.selectedPlugin=pluginDeploy.dataset.pluginId;
+              const plugin=state.plugins.find(item=>item.id===state.selectedPlugin);
+              $('#plugin-title').textContent=`Deploy ${plugin?.name||state.selectedPlugin}`;
+              const transport=$('#plugin-form').elements.transport;
+              transport.innerHTML=(plugin?.transports||[]).map((item,index)=>`<option value="${esc(item)}">${esc(item.toUpperCase())}${index===0?' · Recommended':''}</option>`).join('');
+              const online=state.nodes.filter(node=>node.status==='online');
+              const iranNodes=online.filter(node=>['edge','hub'].includes(node.role)),kharejNodes=online.filter(node=>node.role==='exit');
+              if(!iranNodes.length){showToast('IRAN AGENT REQUIRED','At least one online Iran Edge or Hub Agent is required.',true);return true;}
+              $('#plugin-iran-node').innerHTML=iranNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
+              $('#plugin-kharej-node').innerHTML=kharejNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
+              const form=$('#plugin-form');form.reset();form.elements.name.value='dark-link';form.elements.tunnel_port.value='3080';form.elements.target_host.value='127.0.0.1';form.elements.ws_path.value=`/dark-${crypto.getRandomValues(new Uint32Array(2)).join('')}`;form.elements.ws_mask.value='skipped';
+              const iran=iranNodes[0],kharej=kharejNodes[0];
+              $('#plugin-iran-node').value=iran.id;if(kharej){$('#plugin-kharej-node').value=kharej.id;form.elements.kharej_endpoint.value=kharej.host;}$('#plugin-endpoint').value=state.selectedPlugin==='dark-realm'?(kharej?.host||''):iran.host;updatePluginMode();openModal('#plugin-modal');return true;
+            }
+            if(deployRetry){api(`/api/plugin-deployments/${Number(deployRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('RETRY QUEUED','Only the failed side will be deployed again.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));return true;}
+            if(deployRemove){if(confirm('Remove this managed tunnel from both servers?'))api(`/api/plugin-deployments/${Number(deployRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('REMOVAL QUEUED','The tunnel will be removed from both Agents.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));return true;}
+            if(pairReveal){api(`/api/hybrid-deployments/${Number(pairReveal.dataset.deploymentId)}/pair-code`,{method:'POST'}).then(result=>{const name=result.pair_code.startsWith('DR1.')?'DARK Realm Pro':result.pair_code.startsWith('DGP-')?'DARK Ghost Pro':result.pair_code.startsWith('DPP-N1-')?'DARK Packet Pro':'DARK Backhaul';$('#output-title').textContent='DARK NOC PAIR CODE';$('#job-output').textContent=`KEEP THIS CODE SECRET\n\n${result.pair_code}\n\nOn the KHAREJ server run ${name}, select KHAREJ, choose Connect with DARK NOC Pair Code, and paste this code.`;openModal('#output-modal');}).catch(error=>showToast('PAIR CODE FAILED',error.message,true));return true;}
+            if(pairRetry){api(`/api/hybrid-deployments/${Number(pairRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('IRAN RETRY QUEUED','Only the managed Iran side will be retried.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));return true;}
+            if(pairRemove){if(confirm('Remove the IRAN side? You must remove the KHAREJ side manually from its script.'))api(`/api/hybrid-deployments/${Number(pairRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('IRAN REMOVAL QUEUED','Remove the foreign side manually using the matching DARK tunnel script.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));return true;}
+            return false;
+          }
+          '''
+
+          tunnel_actions=r'''// DARK NOC delegated Tunnel action handlers. Classic-script globals are intentional.
+          function handleTunnelActions(event) {
+            const manageTunnel=event.target.closest('.tunnel-manage');
+            const tunnelSSH=event.target.closest('[data-tunnel-ssh-node]');
+            const tunnelAction=event.target.closest('[data-tunnel-action]');
+            const restartTunnel=event.target.closest('.tunnel-restart');
+            if(manageTunnel){const tunnel=state.tunnels.find(item=>item.id===Number(manageTunnel.dataset.tunnelId));if(tunnel)openTunnelManager(tunnel);return true;}
+            if(tunnelSSH){const nodeId=Number(tunnelSSH.dataset.tunnelSshNode);closeModal($('#tunnel-manage-modal'));connectSSH(nodeId);return true;}
+            if(tunnelAction&&state.selectedTunnel){const action=tunnelAction.dataset.tunnelAction;if(action==='stop'&&!confirm(`Stop ${state.selectedTunnel.name}?`))return true;api(`/api/tunnels/${state.selectedTunnel.id}/action`,{method:'POST',body:JSON.stringify({action})}).then(result=>{showToast('TUNNEL JOB QUEUED',`${action.toUpperCase()} sent to ${state.selectedTunnel.node_name}.`);if(['logs','status','test'].includes(action))waitForJob(result.job_id);setTimeout(refresh,2500);}).catch(error=>showToast('TUNNEL ACTION FAILED',error.message,true));return true;}
+            if(restartTunnel){if(!restartTunnel.dataset.service){showToast('NO SERVICE DEFINED','Register a systemd service for this tunnel first.',true);return true;}if(confirm(`Restart ${restartTunnel.dataset.service}?`))createJob(Number(restartTunnel.dataset.nodeId),'restart_service',restartTunnel.dataset.service,{},true).then(()=>setTimeout(refresh,3500));return true;}
+            return false;
+          }
+          '''
+
+          ops_actions=r'''// DARK NOC delegated cross-feature action handlers. Classic-script globals are intentional.
+          function handleOpsActions(event) {
+            const jump=event.target.closest('[data-jump]');
+            const terminalClose=event.target.closest('.terminal-close');
+            const incidentAck=event.target.closest('.incident-ack');
+            const incidentResolve=event.target.closest('.incident-resolve');
+            const incidentReopen=event.target.closest('.incident-reopen');
+            const incidentSelect=event.target.closest('[data-incident-select]');
+            const monitorRun=event.target.closest('.monitor-run');
+            const monitorHistory=event.target.closest('.monitor-history');
+            const monitorEdit=event.target.closest('.monitor-edit');
+            const monitorDelete=event.target.closest('.monitor-delete');
+            const fleetOutput=event.target.closest('[data-fleet-output]');
+            const fleetCancel=event.target.closest('.fleet-cancel');
+            const fileRow=event.target.closest('[data-file-index]');
+            const certRenew=event.target.closest('.cert-renew');
+            if(jump){switchView(jump.dataset.jump);const modal=jump.closest('.modal-backdrop');if(modal)closeModal(modal);return true;}
+            if(terminalClose){const card=terminalClose.closest('.terminal-card'),slot=$('.terminal-screen',card)?.id;if(slot){closeSocket(slot);if($$('.terminal-card').length>1){state.terminals.get(slot)?.terminal.dispose();state.terminals.delete(slot);card.remove();selectTerminalCard($('.terminal-card'));activeTerminal()?.fitAddon.fit();}else{state.terminals.get(slot)?.terminal.reset();$('.terminal-server strong',card).textContent='NO SESSION';$('.terminal-server small',card).textContent='Select a server and connect';$('.ssh-online',card).textContent='● IDLE';}}return true;}
+            if(incidentSelect){loadIncidentDetail(Number(incidentSelect.dataset.incidentSelect));return true;}
+            if(incidentAck){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentAck.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'acknowledge',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));return true;}
+            if(incidentResolve){if(confirm('Resolve this incident and record the operator findings?')){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentResolve.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'resolve',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null,resolution:form?.elements.resolution.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));}return true;}
+            if(incidentReopen){if(confirm('Reopen this incident?'))api(`/api/incidents/${Number(incidentReopen.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'reopen'})}).then(refresh).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));return true;}
+            if(monitorRun){api(`/api/monitors/${Number(monitorRun.dataset.monitorId)}/run`,{method:'POST'}).then(result=>{showToast('MONITOR QUEUED',`Job #${result.job_id} is running from its assigned Agent.`);setTimeout(refresh,1800);}).catch(error=>showToast('MONITOR FAILED',error.message,true));return true;}
+            if(monitorHistory){const monitor=state.monitors.find(item=>item.id===Number(monitorHistory.dataset.monitorId));api(`/api/monitors/${Number(monitorHistory.dataset.monitorId)}/results?limit=200`).then(results=>{$('#output-title').textContent=`${monitor?.name||'MONITOR'} · LAST ${results.length} CHECKS`;$('#job-output').textContent=results.map(result=>`${new Date(result.ts*1000).toLocaleString('en-GB')}  ${String(result.status).toUpperCase().padEnd(4)}  ${result.latency_ms==null?'—':`${Number(result.latency_ms).toFixed(1)} ms`}\n${JSON.stringify(result.detail||{})}`).join('\n\n')||'No results yet.';openModal('#output-modal');}).catch(error=>showToast('HISTORY FAILED',error.message,true));return true;}
+            if(monitorEdit){const monitor=state.monitors.find(item=>item.id===Number(monitorEdit.dataset.monitorId));if(monitor)openMonitorEditor(monitor);return true;}
+            if(monitorDelete){if(confirm(`Delete monitor “${monitorDelete.dataset.monitorName}” and its result history?`))api(`/api/monitors/${Number(monitorDelete.dataset.monitorId)}`,{method:'DELETE'}).then(()=>{showToast('MONITOR DELETED',monitorDelete.dataset.monitorName);refresh();}).catch(error=>showToast('DELETE FAILED',error.message,true));return true;}
+            if(fleetOutput){const operation=state.fleetOperations.find(item=>item.id===Number(fleetOutput.dataset.operationId)),item=operation?.items?.find(entry=>entry.id===Number(fleetOutput.dataset.fleetOutput));$('#output-title').textContent=`FLEET OUTPUT · ${item?.node_name||'NODE'}`;$('#job-output').textContent=item?.output||'No output yet.';openModal('#output-modal');return true;}
+            if(fleetCancel){if(confirm('Cancel this scheduled fleet operation?'))api(`/api/fleet/operations/${Number(fleetCancel.dataset.operationId)}`,{method:'DELETE'}).then(refresh).catch(error=>showToast('CANCEL FAILED',error.message,true));return true;}
+            if(fileRow){const entry=state.files.entries[Number(fileRow.dataset.fileIndex)];if(entry){fileSelection(entry);fileRow.classList.add('selected');}return true;}
+            if(certRenew){api(`/api/certificates/${Number(certRenew.dataset.certId)}/renew`,{method:'POST'}).then(result=>{showToast('RENEWAL QUEUED',`Certificate job #${result.job_id} queued.`);refresh();}).catch(error=>showToast('RENEWAL FAILED',error.message,true));return true;}
+            return false;
+          }
+          '''
+
+          for name,content in [('node-actions.js',node_actions),('plugin-actions.js',plugin_actions),('tunnel-actions.js',tunnel_actions),('ops-actions.js',ops_actions)]:
+              Path('hub/static/'+name).write_text(content)
+
+          index=Path('hub/static/index.html')
+          html=index.read_text()
+          needle='  <script src="/static/tunnel-operations.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.16"></script>'
+          assert needle in html
+          replacement='  <script src="/static/tunnel-operations.js?v=1.0.0"></script>\n  <script src="/static/node-actions.js?v=1.0.0"></script>\n  <script src="/static/plugin-actions.js?v=1.0.0"></script>\n  <script src="/static/tunnel-actions.js?v=1.0.0"></script>\n  <script src="/static/ops-actions.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.17"></script>'
+          index.write_text(html.replace(needle,replacement,1))
+
+          contract="""from pathlib import Path
+          root=Path(__file__).resolve().parents[1]
+          app=(root/'hub/static/app.js').read_text()
+          index=(root/'hub/static/index.html').read_text()
+          modules={name:(root/'hub/static'/name).read_text() for name in ['node-actions.js','plugin-actions.js','tunnel-actions.js','ops-actions.js']}
+          assert "handleNodeActions(event)" in app and "handlePluginActions(event)" in app and "handleTunnelActions(event)" in app and "handleOpsActions(event)" in app
+          router=app[app.index("document.addEventListener('click'"):app.index("$('#plugin-mode')")]
+          for marker in ['pluginDeploy','incidentAck','autohealNode','certRenew','terminalClose']:
+              assert marker not in router
+          assert 'function handleNodeActions(event)' in modules['node-actions.js']
+          assert 'function handlePluginActions(event)' in modules['plugin-actions.js']
+          assert 'function handleTunnelActions(event)' in modules['tunnel-actions.js']
+          assert 'function handleOpsActions(event)' in modules['ops-actions.js']
+          order=['tunnel-operations.js','node-actions.js','plugin-actions.js','tunnel-actions.js','ops-actions.js','app.js']
+          positions=[index.index(item) for item in order]
+          assert positions==sorted(positions)
+          print('Delegated action router module boundary passed')
+          """
+          Path('tests/action_router_module_contract.py').write_text(contract)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.16' in value: p.write_text(value.replace('2.9.16','2.9.17'))
+
+          notes='# DARK NOC v2.9.17 — Delegated Action Router Split\n\n- Architecture review found the monolithic document click dispatcher to be the largest remaining frontend regression hotspot.\n- Split delegated Node, Plugin/Deployment, Tunnel and cross-feature actions into dedicated handler modules.\n- Keep the central dispatcher intentionally tiny and preserve action ordering/behavior.\n- No visual changes to Live Matrix, Incident, Monitoring, Fleet, SSH, File Manager or Tunnel cockpit.\n- Add permanent module-boundary regression coverage.\n\n## فارسی\n\nروتر بزرگ کلیک پنل به هندلرهای جدا برای Node، Plugin، Tunnel و عملیات عمومی تقسیم شد؛ ظاهر و رفتار فعلی پنل تغییر نکرده است.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md');p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md');old=p.read_text();first,sep,rest=old.partition('\n');p.write_text(first+sep+'\n## 2.9.17 — Delegated action router split\n\n- Split the monolithic delegated click router into Node, Plugin, Tunnel and cross-feature action handlers.\n- Keep central routing minimal and behavior-compatible.\n- Add permanent module-boundary regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          for js in hub/static/core.js hub/static/topology.js hub/static/ssh-terminal.js hub/static/file-transfer.js hub/static/fleet-operations.js hub/static/monitoring.js hub/static/incident-management.js hub/static/tunnel-operations.js hub/static/node-actions.js hub/static/plugin-actions.js hub/static/tunnel-actions.js hub/static/ops-actions.js hub/static/app.js hub/static/live-matrix.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.17.tar.gz > /tmp/darknoc-hub-files
+          for file in node-actions.js plugin-actions.js tunnel-actions.js ops-actions.js; do grep -q "$file" /tmp/darknoc-hub-files; done
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/*.js hub/static/index.html tests/action_router_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: split delegated action router for v2.9.17'
+          git push origin HEAD:refs/heads/release/v2.9.17-action-router
