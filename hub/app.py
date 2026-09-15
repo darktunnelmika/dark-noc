@@ -203,6 +203,30 @@ _tunnels_router_module = _realm_support_importlib_util.module_from_spec(_tunnels
 _tunnels_router_spec.loader.exec_module(_tunnels_router_module)
 register_tunnels_router = _tunnels_router_module.register_tunnels_router
 
+_PLUGIN_DEPLOYMENTS_ROUTER_PATH = Path(__file__).resolve().with_name('plugin_deployments_router.py')
+_plugin_deployments_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_plugin_deployments_router', _PLUGIN_DEPLOYMENTS_ROUTER_PATH)
+if _plugin_deployments_router_spec is None or _plugin_deployments_router_spec.loader is None:
+    raise ImportError(f'Could not load Plugin Deployments router: {_PLUGIN_DEPLOYMENTS_ROUTER_PATH}')
+_plugin_deployments_router_module = _realm_support_importlib_util.module_from_spec(_plugin_deployments_router_spec)
+_plugin_deployments_router_spec.loader.exec_module(_plugin_deployments_router_module)
+register_plugin_deployments_router = _plugin_deployments_router_module.register_plugin_deployments_router
+
+_CERTIFICATES_ROUTER_PATH = Path(__file__).resolve().with_name('certificates_router.py')
+_certificates_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_certificates_router', _CERTIFICATES_ROUTER_PATH)
+if _certificates_router_spec is None or _certificates_router_spec.loader is None:
+    raise ImportError(f'Could not load Certificates router: {_CERTIFICATES_ROUTER_PATH}')
+_certificates_router_module = _realm_support_importlib_util.module_from_spec(_certificates_router_spec)
+_certificates_router_spec.loader.exec_module(_certificates_router_module)
+register_certificates_router = _certificates_router_module.register_certificates_router
+
+_FLEET_ROUTER_PATH = Path(__file__).resolve().with_name('fleet_router.py')
+_fleet_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_fleet_router', _FLEET_ROUTER_PATH)
+if _fleet_router_spec is None or _fleet_router_spec.loader is None:
+    raise ImportError(f'Could not load Fleet router: {_FLEET_ROUTER_PATH}')
+_fleet_router_module = _realm_support_importlib_util.module_from_spec(_fleet_router_spec)
+_fleet_router_spec.loader.exec_module(_fleet_router_module)
+register_fleet_router = _fleet_router_module.register_fleet_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -211,7 +235,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.30"
+VERSION = "2.9.31"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2019,11 +2043,6 @@ def tunnel_health_score(item: dict[str, Any]) -> int:
     return min(max(score, 0), 100)
 
 
-@app.get("/api/plugins")
-def list_plugins(_: sqlite3.Row = Depends(current_user)):
-    return PLUGIN_CATALOG
-
-
 def transport_requires_certificate(transport: str) -> bool:
     return transport.casefold() in {"tls", "wss", "wssmux", "h2", "http2", "grpc", "relay+tls", "relay+wss", "relay+h2", "relay+grpc"}
 
@@ -2039,48 +2058,6 @@ def certificate_for_deployment(conn: sqlite3.Connection, certificate_id: int | N
     if row["status"] != "valid" or not row["expires_at"] or row["expires_at"] <= utc_ts() + 86400:
         raise HTTPException(409, "Certificate is not valid or expires in less than 24 hours")
     return {"certificate_id": row["id"], "certificate_domain": row["domain"], "certificate_path": row["cert_path"], "certificate_key_path": row["key_path"]}
-
-
-@app.get("/api/certificates")
-def list_certificates(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute("SELECT c.*,n.name node_name,n.host node_host FROM certificates c JOIN nodes n ON n.id=c.node_id ORDER BY c.domain").fetchall()
-    return [{key: row[key] for key in row.keys() if key not in {"key_path"}} for row in rows]
-
-
-@app.post("/api/certificates", status_code=202)
-def issue_certificate(body: CertificateBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        mutation = issue_certificate_mutation(
-            db, body, user["id"], utc_ts=utc_ts,
-            node_stale_after=NODE_STALE_AFTER, normalize_ip=normalize_ip,
-        )
-    except CertificateFleetServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(
-        user["id"], "certificate_issue", mutation["domain"], mutation["node_name"],
-        request.client.host if request.client else None,
-    )
-    return {
-        "certificate_id": mutation["certificate_id"],
-        "job_id": mutation["job_id"],
-        "status": "pending",
-    }
-
-
-@app.post("/api/certificates/{certificate_id}/renew", status_code=202)
-def renew_certificate(certificate_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        cert, job_id = renew_certificate_mutation(
-            db, certificate_id, user["id"], utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER,
-        )
-    except CertificateFleetServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(
-        user["id"], "certificate_renew", cert["domain"], str(cert["node_id"]),
-        request.client.host if request.client else None,
-    )
-    return {"job_id": job_id, "status": "renewing"}
 
 
 PAIR_TRANSPORT_INDEX = {"tcp": 1, "tcpmux": 2, "ws": 3, "wsmux": 4, "wss": 5, "wssmux": 6, "udp": 7}
@@ -2137,6 +2114,37 @@ def plugin_job_payload(settings: dict[str, Any], token: str, role: str) -> dict[
         payload.pop("certificate_key_path", None)
     return payload
 
+register_plugin_deployments_router(
+    app,
+    current_user=current_user, db=db, PLUGIN_CATALOG=PLUGIN_CATALOG, PairCodeDeployBody=PairCodeDeployBody,
+    PluginDeployBody=PluginDeployBody, deploy_pair_code_mutation=deploy_pair_code_mutation,
+    deploy_managed_mutation=deploy_managed_mutation, recover_pair_code_mutation=recover_pair_code_mutation,
+    retry_hybrid_mutation=retry_hybrid_mutation, remove_hybrid_mutation=remove_hybrid_mutation,
+    retry_managed_mutation=retry_managed_mutation, remove_managed_mutation=remove_managed_mutation,
+    PluginDeploymentServiceError=PluginDeploymentServiceError, utc_ts=utc_ts,
+    prepare_realm_settings=prepare_realm_settings, certificate_for_deployment=certificate_for_deployment,
+    plugin_pair_code=plugin_pair_code, plugin_job_payload=plugin_job_payload, encrypt=encrypt, token_hash=token_hash,
+    normalize_ip=normalize_ip, decrypt=decrypt, audit=audit, node_stale_after=NODE_STALE_AFTER, paqet_core_tag=PAQET_CORE_TAG,
+)
+
+register_certificates_router(
+    app,
+    current_user=current_user, db=db, CertificateBody=CertificateBody, issue_certificate_mutation=issue_certificate_mutation,
+    renew_certificate_mutation=renew_certificate_mutation, CertificateFleetServiceError=CertificateFleetServiceError,
+    utc_ts=utc_ts, normalize_ip=normalize_ip, audit=audit, node_stale_after=NODE_STALE_AFTER,
+)
+
+register_fleet_router(
+    app,
+    current_user=current_user, db=db, FleetOperationBody=FleetOperationBody,
+    create_fleet_operation_mutation=create_fleet_operation_mutation,
+    cancel_fleet_operation_mutation=cancel_fleet_operation_mutation,
+    CertificateFleetServiceError=CertificateFleetServiceError, utc_ts=utc_ts, audit=audit, version=VERSION,
+    get_queue_due_fleet_operations=lambda: queue_due_fleet_operations,
+    get_provision_node_for_fleet=lambda: provision_node_for_fleet,
+    get_orchestrate_agent_upgrade=lambda: orchestrate_agent_upgrade,
+)
+
 register_nodes_router(
     app,
     current_user=current_user, db=db, NodeBody=NodeBody, NodeUpdateBody=NodeUpdateBody, JobBody=JobBody,
@@ -2164,154 +2172,6 @@ register_tunnels_router(
 )
 
 
-@app.post("/api/plugins/{plugin_id}/pair-code", status_code=202)
-def deploy_plugin_pair_code(plugin_id: str, body: PairCodeDeployBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        mutation = deploy_pair_code_mutation(
-            db, plugin_id, body, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            node_stale_after=NODE_STALE_AFTER, paqet_core_tag=PAQET_CORE_TAG, utc_ts=utc_ts,
-            prepare_realm_settings=prepare_realm_settings,
-            certificate_for_deployment=certificate_for_deployment,
-            plugin_pair_code=plugin_pair_code, plugin_job_payload=plugin_job_payload,
-            encrypt=encrypt, token_hash=token_hash,
-        )
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_pair_create", body.name, f"{mutation['iran_name']} -> pair-code:{body.remote_label}", request.client.host if request.client else None)
-    return {
-        "deployment_id": mutation["deployment_id"], "mode": "pair_code", "status": "queued",
-        "iran_job_id": mutation["iran_job_id"], "pair_code": mutation["pair_code"],
-        "instructions": ["Wait until the IRAN side shows READY.", f"Run {mutation['catalog_name']} on the foreign server.", "Select KHAREJ, then choose Connect with DARK NOC Pair Code.", "Paste the Pair Code exactly as shown."],
-    }
-
-
-@app.post("/api/plugins/{plugin_id}/deploy", status_code=202)
-def deploy_plugin(plugin_id: str, body: PluginDeployBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        mutation = deploy_managed_mutation(
-            db, plugin_id, body, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            node_stale_after=NODE_STALE_AFTER, utc_ts=utc_ts, normalize_ip=normalize_ip,
-            prepare_realm_settings=prepare_realm_settings,
-            certificate_for_deployment=certificate_for_deployment,
-            plugin_job_payload=plugin_job_payload, encrypt=encrypt,
-        )
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_deploy", body.name, f"{plugin_id}: {mutation['iran_name']} -> {mutation['kharej_name']}", request.client.host if request.client else None)
-    return {"deployment_id": mutation["deployment_id"], "status": "queued", "jobs": mutation["jobs"]}
-
-
-@app.get("/api/plugin-deployments")
-def list_plugin_deployments(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute("""
-          SELECT d.*, i.name iran_node, k.name kharej_node,
-                 ji.status iran_status, ji.output iran_output,
-                 jk.status kharej_status, jk.output kharej_output
-          FROM plugin_deployments d
-          JOIN nodes i ON i.id=d.iran_node_id JOIN nodes k ON k.id=d.kharej_node_id
-          LEFT JOIN jobs ji ON ji.id=d.iran_job_id LEFT JOIN jobs jk ON jk.id=d.kharej_job_id
-          ORDER BY d.id DESC LIMIT 100
-        """).fetchall()
-        hybrid_rows = conn.execute("""
-          SELECT d.*,i.name iran_node,j.status iran_status,j.output iran_output
-          FROM hybrid_deployments d JOIN nodes i ON i.id=d.iran_node_id
-          LEFT JOIN jobs j ON j.id=d.iran_job_id ORDER BY d.id DESC LIMIT 100
-        """).fetchall()
-    result = []
-    for row in rows:
-        item = dict(row)
-        item.pop("pair_token_enc", None)
-        statuses = {item.get("iran_status"), item.get("kharej_status")}
-        lifecycle = item.get("lifecycle")
-        if lifecycle in {"rolling_back", "rolled_back", "rollback_failed"}:
-            item["status"] = lifecycle
-        elif "failed" in statuses:
-            item["status"] = "failed"
-        elif statuses == {"completed"}:
-            item["status"] = "removed" if lifecycle == "removing" else "completed"
-        else:
-            item["status"] = "running" if "running" in statuses or "completed" in statuses else "queued"
-        item["settings"] = json.loads(item["settings"])
-        item["mode"] = "managed"
-        result.append(item)
-    for row in hybrid_rows:
-        item = dict(row)
-        item.pop("pair_token_enc", None)
-        iran_status = item.get("iran_status") or "queued"
-        lifecycle = item.get("lifecycle")
-        if lifecycle == "removing" and iran_status == "completed":
-            status = "removed"
-        elif iran_status == "failed":
-            status = "failed"
-        elif iran_status == "completed":
-            status = "awaiting_pair"
-        else:
-            status = iran_status if iran_status in {"queued", "running"} else "queued"
-        item.update({"mode": "pair_code", "kharej_node": item["remote_label"], "kharej_status": "pair code", "status": status, "settings": json.loads(item["settings"])})
-        result.append(item)
-    return sorted(result, key=lambda item: (item["created_at"], item["mode"] == "pair_code", item["id"]), reverse=True)[:100]
-
-
-@app.post("/api/hybrid-deployments/{deployment_id}/pair-code")
-def recover_hybrid_pair_code(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row, pair_code = recover_pair_code_mutation(
-            db, deployment_id, decrypt=decrypt, plugin_pair_code=plugin_pair_code, token_hash=token_hash,
-        )
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_pair_reveal", row["name"], str(deployment_id), request.client.host if request.client else None)
-    return {"deployment_id": deployment_id, "pair_code": pair_code}
-
-
-@app.post("/api/hybrid-deployments/{deployment_id}/retry", status_code=202)
-def retry_hybrid_deployment(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row, job_id = retry_hybrid_mutation(
-            db, deployment_id, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            node_stale_after=NODE_STALE_AFTER, utc_ts=utc_ts, decrypt=decrypt,
-        )
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_pair_retry", row["name"], str(deployment_id), request.client.host if request.client else None)
-    return {"deployment_id": deployment_id, "status": "queued", "iran_job_id": job_id}
-
-
-@app.post("/api/hybrid-deployments/{deployment_id}/remove", status_code=202)
-def remove_hybrid_deployment(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row, job_id = remove_hybrid_mutation(db, deployment_id, user["id"], utc_ts=utc_ts)
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_pair_remove", row["name"], "Iran side only; foreign side is script-managed", request.client.host if request.client else None)
-    return {"deployment_id": deployment_id, "status": "queued", "iran_job_id": job_id, "foreign_action_required": True}
-
-
-@app.post("/api/plugin-deployments/{deployment_id}/retry", status_code=202)
-def retry_plugin_deployment(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row, new_jobs = retry_managed_mutation(
-            db, deployment_id, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            node_stale_after=NODE_STALE_AFTER, utc_ts=utc_ts, decrypt=decrypt,
-            plugin_job_payload=plugin_job_payload,
-        )
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_retry", str(deployment_id), json.dumps(new_jobs), request.client.host if request.client else None)
-    return {"deployment_id": deployment_id, "status": "queued", "jobs": new_jobs}
-
-
-@app.post("/api/plugin-deployments/{deployment_id}/remove", status_code=202)
-def remove_plugin_deployment(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row, jobs = remove_managed_mutation(db, deployment_id, user["id"], utc_ts=utc_ts)
-    except PluginDeploymentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_remove", row["name"], str(deployment_id), request.client.host if request.client else None)
-    return {"deployment_id": deployment_id, "status": "queued", "jobs": jobs}
-
-
 register_monitoring_router(
     app,
     current_user=current_user, db=db, MonitorBody=MonitorBody, fetch_monitor_inventory=fetch_monitor_inventory,
@@ -2321,93 +2181,6 @@ register_monitoring_router(
     monitor_values=monitor_values, resolve_incident=resolve_incident, utc_ts=utc_ts, decrypt=decrypt, audit=audit,
     fetch_monitor_result_rows=fetch_monitor_result_rows, node_stale_after=NODE_STALE_AFTER,
 )
-
-
-@app.get("/api/fleet/operations")
-def list_fleet_operations(limit: int = 100, _: sqlite3.Row = Depends(current_user)):
-    limit = min(max(limit, 1), 500)
-    with db() as conn:
-        operations = conn.execute(
-            "SELECT * FROM fleet_operations ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        result = []
-        for operation in operations:
-            item = dict(operation)
-            try:
-                payload = json.loads(item.get("payload") or "{}")
-                for key in list(payload):
-                    if any(word in key.casefold() for word in ("token", "password", "secret", "community", "private_key")):
-                        payload[key] = "[REDACTED]"
-                item["payload"] = payload
-            except (TypeError, ValueError):
-                item["payload"] = {}
-            rows = conn.execute(
-                """SELECT fleet_operation_items.id,fleet_operation_items.node_id,fleet_operation_items.job_id,
-                          fleet_operation_items.status,nodes.name node_name,jobs.output
-                   FROM fleet_operation_items JOIN nodes ON nodes.id=fleet_operation_items.node_id
-                   LEFT JOIN jobs ON jobs.id=fleet_operation_items.job_id
-                   WHERE operation_id=? ORDER BY nodes.name COLLATE NOCASE""",
-                (operation["id"],),
-            ).fetchall()
-            item["items"] = [dict(row) for row in rows]
-            result.append(item)
-    return result
-
-
-@app.post("/api/fleet/operations", status_code=202)
-def create_fleet_operation(
-    body: FleetOperationBody,
-    background: BackgroundTasks,
-    request: Request,
-    user: sqlite3.Row = Depends(current_user),
-):
-    try:
-        mutation = create_fleet_operation_mutation(
-            db, body, user["id"], version=VERSION, utc_ts=utc_ts,
-            queue_due_fleet_operations=queue_due_fleet_operations,
-        )
-    except CertificateFleetServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-
-    if mutation["kind"] == "sync_agent":
-        for item in mutation["created_items"]:
-            background.add_task(
-                provision_node_for_fleet,
-                item["item_id"], item["node_id"], item["enrollment"] or secrets.token_urlsafe(36),
-            )
-    elif mutation["kind"] == "upgrade_agents":
-        background.add_task(
-            orchestrate_agent_upgrade,
-            mutation["operation_id"],
-            mutation["rollout"],
-            mutation["batch_size"],
-            mutation["pause_seconds"],
-            mutation["stop_on_failure"],
-        )
-    audit(
-        user["id"], "fleet_operation_create", body.name,
-        f"{body.kind}:{mutation['node_count']} nodes",
-        request.client.host if request.client else None,
-    )
-    return {
-        "id": mutation["operation_id"],
-        "status": mutation["status"],
-        "nodes": mutation["node_count"],
-    }
-
-
-@app.delete("/api/fleet/operations/{operation_id}")
-def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        operation = cancel_fleet_operation_mutation(db, operation_id, utc_ts=utc_ts)
-    except CertificateFleetServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(
-        user["id"], "fleet_operation_cancel", operation["name"], str(operation_id),
-        request.client.host if request.client else None,
-    )
-    return {"ok": True}
 
 
 register_incidents_router(

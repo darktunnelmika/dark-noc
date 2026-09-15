@@ -1,3 +1,18 @@
+# DARK NOC v2.9.31 — Backend Router Split: Deployments, Certificates & Fleet
+
+- Continue backend route modularization by extracting Plugin Deployment routes into `hub/plugin_deployments_router.py`.
+- Extract Certificate routes into `hub/certificates_router.py` and Fleet Operations routes into `hub/fleet_router.py`.
+- Preserve Plugin Deployment and Certificate/Fleet service ownership, Pair Code behavior, TLS validation, Fleet scheduling/canary semantics and audit responses.
+- Preserve Fleet BackgroundTasks through runtime callback lookup so test/runtime overrides remain compatible.
+- Keep Dashboard/System/Auth, SSH/File Transfer, Agent control plane, Live WebSocket and all frontend/Live Matrix behavior unchanged.
+- Add permanent Plugin/Certificate/Fleet router-boundary regression coverage.
+
+## فارسی
+
+Routeهای Plugin Deployment، Certificate و Fleet Operations از `hub/app.py` به Routerهای مستقل منتقل شدند؛ Pair Code، TLS، Fleet rollout، Agent و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.30 — Backend Router Split: Nodes & Tunnels
 
 - Continue backend route modularization by extracting all `/api/nodes...` routes into `hub/nodes_router.py`.
