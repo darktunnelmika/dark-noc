@@ -1,3 +1,17 @@
+# DARK NOC v2.9.16 — Tunnel Operations Module Extraction
+
+- Architecture review identified tunnel cockpit/runtime as the highest-risk remaining feature block in app.js.
+- Extract 24h tunnel history rendering, operations cockpit loading, tunnel edit/redeploy and delete bindings into tunnel-operations.js.
+- Preserve delegated Start/Stop/Restart/Status/Logs/Test/SSH actions in the central event router unchanged.
+- Keep Live Matrix, Incident, Monitoring, Fleet, SSH, File Manager, APIs and Agent behavior unchanged.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+پس از بازبینی معماری، بخش پرریسک مدیریت تونل از app.js جدا و به tunnel-operations.js منتقل شد؛ ظاهر و رفتار پنل تغییر نکرده است.
+
+---
+
 # DARK NOC v2.9.15 — Incident Command Module Extraction
 
 - Extract Incident Command rendering, detail loading, timeline notes and report export from app.js into incident-management.js.

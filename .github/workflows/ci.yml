@@ -32,6 +32,7 @@ jobs:
           node --check hub/static/fleet-operations.js
           node --check hub/static/monitoring.js
           node --check hub/static/incident-management.js
+          node --check hub/static/tunnel-operations.js
           node --check hub/static/app.js
           node --check hub/static/live-matrix.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
@@ -58,6 +59,7 @@ jobs:
           python tests/fleet_operations_module_contract.py
           python tests/monitoring_module_contract.py
           python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
