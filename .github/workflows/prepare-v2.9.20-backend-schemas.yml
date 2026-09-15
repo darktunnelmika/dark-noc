@@ -116,7 +116,7 @@ jobs:
           )
           Path('tests/backend_schemas_contract.py').write_text(contract)
 
-          for name in ['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']:
+          for name in ['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py','tests/backend_config_contract.py']:
               p=Path(name); v=p.read_text()
               if '2.9.19' in v:
                   p.write_text(v.replace('2.9.19','2.9.20'))
