@@ -60,7 +60,7 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.38"
+VERSION = "2.9.39"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))

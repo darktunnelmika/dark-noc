@@ -1,3 +1,17 @@
+# DARK NOC v2.9.39 — cryptography Dependency Hardening
+
+- Upgrade the Hub cryptography runtime from `cryptography==44.0.0` to `cryptography==50.0.1`.
+- Keep the dependency exactly pinned so CI and production installs resolve the same cryptographic implementation.
+- Validate the DARK NOC Fernet encrypt/decrypt path and tamper rejection under the new runtime.
+- Run the complete Hub/Agent regression suite and reproducible release build with no other dependency changes.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+پکیج `cryptography` هاب از نسخه 44.0.0 به 50.0.1 ارتقا داده شد؛ مسیر Fernet، تشخیص داده دستکاری‌شده، کل تست‌ها و build تکرارپذیر بررسی می‌شوند و هیچ dependency دیگری تغییر نمی‌کند.
+
+---
+
 # DARK NOC v2.9.38 — python-multipart Dependency Hardening
 
 - Upgrade the Hub multipart parser from `python-multipart==0.0.20` to `python-multipart==0.0.32`.

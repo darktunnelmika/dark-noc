@@ -1,3 +1,8 @@
+## v2.9.39
+- Dependency hardening: pin `cryptography==50.0.1` (from 44.0.0).
+- Add permanent Fernet round-trip/tamper-rejection dependency coverage.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
 ## v2.9.38
 - Dependency hardening: pin `python-multipart` at 0.0.32 instead of 0.0.20.
 - Add permanent dependency pin regression coverage.
