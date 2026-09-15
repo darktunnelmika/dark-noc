@@ -1,3 +1,17 @@
+# DARK NOC v2.9.42 — Uvicorn Dependency Hardening
+
+- Upgrade the Hub ASGI runtime from `uvicorn[standard]==0.34.0` to `uvicorn[standard]==0.52.4`.
+- Keep the dependency exactly pinned so production and CI use the same HTTP/WebSocket server implementation.
+- Validate real local ASGI HTTP and WebSocket round trips under Uvicorn 0.52.4 in addition to the existing DARK NOC regression suite.
+- Exercise Hub startup, API, WebSocket, SSH terminal/file-transfer and reproducible release coverage with no other direct dependency changes.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+پکیج `Uvicorn` هاب از نسخه 0.34.0 به 0.52.4 ارتقا داده شد؛ HTTP و WebSocket واقعی روی ASGI، شروع Hub و کل تست‌های پنل بررسی می‌شوند و هیچ dependency مستقیم دیگری تغییر نمی‌کند.
+
+---
+
 # DARK NOC v2.9.41 — psutil Dependency Hardening
 
 - Upgrade `psutil` from `6.1.1` to `7.2.2` in both Hub and Agent requirement sets.

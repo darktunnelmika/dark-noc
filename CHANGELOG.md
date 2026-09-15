@@ -1,3 +1,8 @@
+## v2.9.42
+- Dependency hardening: pin `uvicorn[standard]==0.52.4` (from 0.34.0).
+- Add permanent real HTTP/WebSocket ASGI runtime compatibility coverage.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
 ## v2.9.41
 - Dependency hardening: pin `psutil==7.2.2` in Hub and Agent (from 6.1.1).
 - Add permanent Agent telemetry/socket/process compatibility coverage.

@@ -348,7 +348,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
     ).fetchone()
 baseline = int(sys.argv[2])
 ready = bool(
-    row and row[0] == "online" and row[1] == "2.9.41"
+    row and row[0] == "online" and row[1] == "2.9.42"
     and int(row[2] or 0) > baseline
     and int(row[2] or 0) >= int(time.time()) - 90
 )
@@ -361,7 +361,7 @@ PY
       sleep 2
     done
     if [[ "$POST_UPGRADE_AGENT_READY" -ne 1 ]]; then
-      echo "Local Hub Agent did not deliver a fresh v2.9.41 post-upgrade pulse." >&2
+      echo "Local Hub Agent did not deliver a fresh v2.9.42 post-upgrade pulse." >&2
       systemctl status dark-noc-agent.service --no-pager -l || true
       journalctl -u dark-noc-agent.service -n 160 --no-pager || true
       exit 1
