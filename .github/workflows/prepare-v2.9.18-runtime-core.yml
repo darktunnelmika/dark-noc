@@ -1,0 +1,179 @@
+name: Prepare v2.9.18 Runtime Core modularization
+
+on:
+  push:
+    branches: [automation/v2.9.17-action-router]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract state, API, refresh and session runtimes
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app=Path('hub/static/app.js')
+          text=app.read_text()
+
+          def extract(start_marker,end_marker):
+              global text
+              start=text.index(start_marker)
+              end=text.index(end_marker,start)
+              block=text[start:end]
+              text=text[:start]+text[end:]
+              return block.rstrip()+"\n"
+
+          # State and lifecycle flags.
+          state_start=text.index('let state = {')
+          state_end=text.index('async function api(',state_start)
+          state_block=text[state_start:state_end].rstrip()+"\n"
+          text=text[:state_start]+text[state_end:]
+
+          api_block=extract('async function api(', 'function terminateAuthenticatedActivity')
+          session_terminate=extract('function terminateAuthenticatedActivity', 'function transferStatus')
+          dashboard_block=extract('function dashboardLimits(', 'function renderTransferLimits')
+          refresh_block=extract('async function refreshLive()', 'async function createJob(')
+          jobs_block=extract('async function createJob(', "$('#login-form').addEventListener")
+          boot_block=extract('async function boot()', "$$('.nav-item').forEach")
+
+          app.write_text(text)
+
+          Path('hub/static/state.js').write_text('// DARK NOC shared frontend state. Classic-script globals are intentional.\n'+state_block)
+          Path('hub/static/api-client.js').write_text('// DARK NOC API/job client runtime. Classic-script globals are intentional.\n'+api_block+'\n'+dashboard_block+'\n'+jobs_block)
+          Path('hub/static/refresh-runtime.js').write_text('// DARK NOC cached/live refresh orchestration. Classic-script globals are intentional.\n'+refresh_block)
+          Path('hub/static/session-runtime.js').write_text('// DARK NOC authentication and live WebSocket lifecycle. Classic-script globals are intentional.\n'+session_terminate+'\n'+boot_block)
+
+          index=Path('hub/static/index.html')
+          html=index.read_text()
+          needle='  <script src="/static/core.js?v=1.0.0"></script>\n  <script src="/static/topology.js?v=1.0.0"></script>'
+          assert needle in html
+          html=html.replace(needle,'  <script src="/static/core.js?v=1.0.0"></script>\n  <script src="/static/state.js?v=1.0.0"></script>\n  <script src="/static/api-client.js?v=1.0.0"></script>\n  <script src="/static/topology.js?v=1.0.0"></script>',1)
+          needle2='  <script src="/static/ops-actions.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.17"></script>'
+          assert needle2 in html
+          html=html.replace(needle2,'  <script src="/static/refresh-runtime.js?v=1.0.0"></script>\n  <script src="/static/session-runtime.js?v=1.0.0"></script>\n  <script src="/static/ops-actions.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.18"></script>',1)
+          index.write_text(html)
+
+          # Update contracts which intentionally followed the old ownership boundary.
+          Path('tests/view_render_contract.py').write_text("""from pathlib import Path
+s=Path('hub/static/refresh-runtime.js').read_text()
+assert 'function renderCachedView' in s
+assert 'renderCachedView(name);' in s
+assert 'populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);' in s
+assert 'renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors();' not in s
+print('View-aware render contract passed')
+""")
+
+          Path('tests/topology_refresh_contract.py').write_text("""from pathlib import Path
+app=Path('hub/static/app.js').read_text()
+refresh=Path('hub/static/refresh-runtime.js').read_text()
+session=Path('hub/static/session-runtime.js').read_text()
+assert 'function syncLiveTopologyRoutes' in app
+assert 'topology.dataset.topologySignature===structureSignature' in app
+assert 'setTimeout(refreshLive,350)' in session
+assert 'now-(connectLive.lastFullRefresh||0)>=30000' in session
+assert 'setTimeout(refresh,250)' not in session
+assert "Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels')])" in refresh
+print('Topology refresh contract passed')
+""")
+
+          contract="""from pathlib import Path
+root=Path(__file__).resolve().parents[1]
+app=(root/'hub/static/app.js').read_text()
+state=(root/'hub/static/state.js').read_text()
+api=(root/'hub/static/api-client.js').read_text()
+refresh=(root/'hub/static/refresh-runtime.js').read_text()
+session=(root/'hub/static/session-runtime.js').read_text()
+index=(root/'hub/static/index.html').read_text()
+for marker in ['let state = {','let refreshInFlight = false;','let liveSocket = null;']:
+    assert marker in state and marker not in app
+for marker in ['async function api(','function dashboardLimits(','async function createJob(','async function waitForJob(']:
+    assert marker in api and marker not in app
+for marker in ['async function refreshLive()','function updateNavigationCounts()','function renderCachedView(','async function refresh()']:
+    assert marker in refresh and marker not in app
+for marker in ['function terminateAuthenticatedActivity(','async function boot()','function connectLive()']:
+    assert marker in session and marker not in app
+order=['core.js','state.js','api-client.js','topology.js','refresh-runtime.js','session-runtime.js','ops-actions.js','app.js']
+pos=[index.index(item) for item in order]
+assert pos==sorted(pos)
+assert "$('#login-form').addEventListener" in app
+assert 'boot();' in app
+print('Frontend runtime ownership contract passed')
+"""
+          Path('tests/frontend_runtime_contract.py').write_text(contract)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.17' in value: p.write_text(value.replace('2.9.17','2.9.18'))
+
+          notes='# DARK NOC v2.9.18 — Frontend Runtime Core Split\n\n- Extract shared frontend state into state.js.\n- Extract API and remote job helpers into api-client.js.\n- Extract cached/live refresh orchestration into refresh-runtime.js.\n- Extract authentication termination, boot and live WebSocket lifecycle into session-runtime.js.\n- Keep app.js focused on UI rendering/bindings while preserving behavior and the approved Live Matrix visuals.\n- Update regression contracts for the new ownership boundaries.\n\n## فارسی\n\nState، API، Refresh و Boot/WebSocket از app.js جدا شدند تا هسته فرانت سبک‌تر و قابل نگهداری‌تر شود؛ ظاهر و رفتار فعلی پنل تغییر نکرده است.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md');p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md');old=p.read_text();first,sep,rest=old.partition('\n');p.write_text(first+sep+'\n## 2.9.18 — Frontend runtime core split\n\n- Split shared state, API/jobs, refresh orchestration and session/WebSocket lifecycle from app.js.\n- Preserve current UI and behavior.\n- Update regression contracts for the new module ownership.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          for js in hub/static/core.js hub/static/state.js hub/static/api-client.js hub/static/topology.js hub/static/ssh-terminal.js hub/static/file-transfer.js hub/static/fleet-operations.js hub/static/monitoring.js hub/static/incident-management.js hub/static/tunnel-operations.js hub/static/node-actions.js hub/static/plugin-actions.js hub/static/tunnel-actions.js hub/static/refresh-runtime.js hub/static/session-runtime.js hub/static/ops-actions.js hub/static/app.js hub/static/live-matrix.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.18.tar.gz | grep -q 'state.js'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.18.tar.gz | grep -q 'api-client.js'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.18.tar.gz | grep -q 'refresh-runtime.js'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.18.tar.gz | grep -q 'session-runtime.js'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/state.js hub/static/api-client.js hub/static/refresh-runtime.js hub/static/session-runtime.js hub/static/app.js hub/static/index.html tests/*.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: split frontend runtime core for v2.9.18'
+          git push origin HEAD:refs/heads/release/v2.9.18-runtime-core
