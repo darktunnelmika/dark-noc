@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.14 — Synthetic Monitoring module extraction
+
+- Extract monitor rendering/editor/form runtime into monitoring.js.
+- Preserve all synthetic check kinds and run-all behavior.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.13 — Fleet Operations module extraction
 
 - Extract Fleet Operations rendering/editor/form runtime into fleet-operations.js.
