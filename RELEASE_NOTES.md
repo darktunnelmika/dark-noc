@@ -1,3 +1,17 @@
+# DARK NOC v2.9.38 — python-multipart Dependency Hardening
+
+- Upgrade the Hub multipart parser from `python-multipart==0.0.20` to `python-multipart==0.0.32`.
+- Keep the dependency pinned exactly so production installs and CI resolve the same parser version.
+- Verify existing authenticated SSH multipart upload handling, request size enforcement, file operations, API integration and reproducible packaging with the full regression suite.
+- Add a permanent dependency contract preventing accidental rollback of the multipart parser pin.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+`python-multipart` هاب از نسخه 0.0.20 به 0.0.32 ارتقا داده شد. تمام تست‌های Upload/SSH، محدودیت حجم، API و build تکرارپذیر بدون تغییر رفتاری باید پاس شوند.
+
+---
+
 # DARK NOC v2.9.37 — View-Aware Fetch Scheduling
 
 - Replace the broad 10-endpoint 15-second frontend poll with active-view fetch plans.
