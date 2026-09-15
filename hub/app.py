@@ -157,6 +157,20 @@ for _monitor_incident_service_name in [
     globals()[_monitor_incident_service_name] = getattr(_monitor_incident_service_module, _monitor_incident_service_name)
 del _monitor_incident_service_name
 
+
+_CERTIFICATE_FLEET_SERVICE_PATH = Path(__file__).resolve().with_name('certificate_fleet_service.py')
+_certificate_fleet_service_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_certificate_fleet_service', _CERTIFICATE_FLEET_SERVICE_PATH)
+if _certificate_fleet_service_spec is None or _certificate_fleet_service_spec.loader is None:
+    raise ImportError(f'Could not load Certificate/Fleet service: {_CERTIFICATE_FLEET_SERVICE_PATH}')
+_certificate_fleet_service_module = _realm_support_importlib_util.module_from_spec(_certificate_fleet_service_spec)
+_certificate_fleet_service_spec.loader.exec_module(_certificate_fleet_service_module)
+for _certificate_fleet_service_name in [
+    'CertificateFleetServiceError', 'issue_certificate_mutation', 'renew_certificate_mutation',
+    'create_fleet_operation_mutation', 'cancel_fleet_operation_mutation',
+]:
+    globals()[_certificate_fleet_service_name] = getattr(_certificate_fleet_service_module, _certificate_fleet_service_name)
+del _certificate_fleet_service_name
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -165,7 +179,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.27"
+VERSION = "2.9.28"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2368,42 +2382,36 @@ def list_certificates(_: sqlite3.Row = Depends(current_user)):
 
 @app.post("/api/certificates", status_code=202)
 def issue_certificate(body: CertificateBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    domain = body.domain.casefold().rstrip(".")
-    with db() as conn:
-        node = conn.execute("SELECT * FROM nodes WHERE id=?", (body.node_id,)).fetchone()
-        if not node:
-            raise HTTPException(404, "Node not found")
-        if not node["last_seen"] or node["last_seen"] < utc_ts() - NODE_STALE_AFTER:
-            raise HTTPException(409, "The selected Agent must be online")
-        try:
-            resolved = {normalize_ip(item[4][0]) for item in socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)}
-        except socket.gaierror:
-            raise HTTPException(422, "Domain DNS does not resolve yet")
-        expected = {normalize_ip(node["host"]), normalize_ip(node["observed_ip"])} - {""}
-        if not resolved.intersection(expected):
-            raise HTTPException(422, f"DNS mismatch: domain resolves to {', '.join(sorted(resolved))}, not the selected node")
-        now = utc_ts()
-        existing = conn.execute("SELECT id FROM certificates WHERE node_id=? AND domain=?", (body.node_id, domain)).fetchone()
-        if existing:
-            cert_id = existing["id"]
-            conn.execute("UPDATE certificates SET status='pending',last_error=NULL,updated_at=? WHERE id=?", (now, cert_id))
-        else:
-            cert_id = conn.execute("INSERT INTO certificates(node_id,domain,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)", (body.node_id, domain, "pending", user["id"], now, now)).lastrowid
-        job_id = conn.execute("INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)", (body.node_id, "certificate_issue", json.dumps({"certificate_id": cert_id, "domain": domain}), user["id"], now)).lastrowid
-        conn.execute("UPDATE certificates SET job_id=? WHERE id=?", (job_id, cert_id))
-    audit(user["id"], "certificate_issue", domain, node["name"], request.client.host if request.client else None)
-    return {"certificate_id": cert_id, "job_id": job_id, "status": "pending"}
+    try:
+        mutation = issue_certificate_mutation(
+            db, body, user["id"], utc_ts=utc_ts,
+            node_stale_after=NODE_STALE_AFTER, normalize_ip=normalize_ip,
+        )
+    except CertificateFleetServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    audit(
+        user["id"], "certificate_issue", mutation["domain"], mutation["node_name"],
+        request.client.host if request.client else None,
+    )
+    return {
+        "certificate_id": mutation["certificate_id"],
+        "job_id": mutation["job_id"],
+        "status": "pending",
+    }
 
 
 @app.post("/api/certificates/{certificate_id}/renew", status_code=202)
 def renew_certificate(certificate_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        cert = conn.execute("SELECT c.*,n.last_seen FROM certificates c JOIN nodes n ON n.id=c.node_id WHERE c.id=?", (certificate_id,)).fetchone()
-        if not cert: raise HTTPException(404, "Certificate not found")
-        if not cert["last_seen"] or cert["last_seen"] < utc_ts() - NODE_STALE_AFTER: raise HTTPException(409, "Agent is offline")
-        job_id = conn.execute("INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)", (cert["node_id"], "certificate_issue", json.dumps({"certificate_id": cert["id"], "domain": cert["domain"], "renew": True}), user["id"], utc_ts())).lastrowid
-        conn.execute("UPDATE certificates SET status='renewing',job_id=?,last_error=NULL,updated_at=? WHERE id=?", (job_id, utc_ts(), certificate_id))
-    audit(user["id"], "certificate_renew", cert["domain"], str(cert["node_id"]), request.client.host if request.client else None)
+    try:
+        cert, job_id = renew_certificate_mutation(
+            db, certificate_id, user["id"], utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER,
+        )
+    except CertificateFleetServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    audit(
+        user["id"], "certificate_renew", cert["domain"], str(cert["node_id"]),
+        request.client.host if request.client else None,
+    )
     return {"job_id": job_id, "status": "renewing"}
 
 
@@ -2722,125 +2730,51 @@ def create_fleet_operation(
     request: Request,
     user: sqlite3.Row = Depends(current_user),
 ):
-    node_ids = list(dict.fromkeys(body.node_ids))
-    now = utc_ts()
-    scheduled_at = int(body.scheduled_at or now)
-    if scheduled_at > now + 366 * 86400:
-        raise HTTPException(422, "Fleet operations can be scheduled at most one year ahead")
-    if body.kind in {"restart_service", "service_status"} and not body.service:
-        raise HTTPException(422, "This fleet operation requires a managed service name")
-    remote_rollout = body.kind in {"sync_agent", "upgrade_agents"}
-    if remote_rollout and scheduled_at > now + 5:
-        raise HTTPException(422, "Agent synchronization and upgrades must be started immediately")
-    payload = dict(body.payload)
-    batch_size = 1
-    pause_seconds = 5
-    stop_on_failure = True
-    canary_node_id: int | None = None
-    if body.kind == "upgrade_agents":
-        try:
-            batch_size = min(max(int(payload.get("batch_size", 1)), 1), 10)
-            pause_seconds = min(max(int(payload.get("pause_seconds", 5)), 0), 300)
-            raw_stop = payload.get("stop_on_failure", True)
-            if isinstance(raw_stop, bool):
-                stop_on_failure = raw_stop
-            elif str(raw_stop).strip().casefold() in {"true", "1", "yes", "on"}:
-                stop_on_failure = True
-            elif str(raw_stop).strip().casefold() in {"false", "0", "no", "off"}:
-                stop_on_failure = False
-            else:
-                raise ValueError("invalid stop_on_failure")
-            raw_canary = payload.get("canary_node_id")
-            canary_node_id = int(raw_canary) if raw_canary not in (None, "") else None
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(422, "Invalid Agent upgrade rollout settings") from exc
-        payload = {
-            "target_version": VERSION,
-            "batch_size": batch_size,
-            "pause_seconds": pause_seconds,
-            "stop_on_failure": stop_on_failure,
-            "canary_node_id": canary_node_id,
-        }
-    if body.service:
-        payload["service"] = body.service
-    with db() as conn:
-        placeholders = ",".join("?" for _ in node_ids)
-        nodes = conn.execute(
-            f"SELECT * FROM nodes WHERE id IN ({placeholders}) ORDER BY id",
-            node_ids,
-        ).fetchall()
-        if len(nodes) != len(node_ids):
-            raise HTTPException(404, "One or more selected Nodes do not exist")
-        if remote_rollout:
-            for node in nodes:
-                if node["role"] == "hub" or (not node["ssh_password_enc"] and not node["ssh_key_enc"]):
-                    raise HTTPException(409, f"{node['name']} cannot be managed through remote SSH")
-                if node["provision_status"] == "provisioning":
-                    raise HTTPException(409, f"{node['name']} is already being provisioned")
-        if body.kind == "upgrade_agents" and canary_node_id is None:
-            canary_node_id = node_ids[0]
-            payload["canary_node_id"] = canary_node_id
-        if canary_node_id is not None and canary_node_id not in node_ids:
-            raise HTTPException(422, "The canary Node must be included in the selected rollout Nodes")
-        operation_id = conn.execute(
-            """INSERT INTO fleet_operations(name,kind,payload,status,scheduled_at,created_by,created_at,started_at)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (body.name, body.kind, json.dumps(payload), "running" if remote_rollout else "scheduled",
-             scheduled_at, user["id"], now, now if remote_rollout else None),
-        ).lastrowid
-        created_items: list[tuple[int, sqlite3.Row, str | None]] = []
-        for node in nodes:
-            enrollment = secrets.token_urlsafe(36) if remote_rollout else None
-            if body.kind == "sync_agent":
-                conn.execute(
-                    "UPDATE nodes SET provision_status='provisioning',provision_output='',updated_at=? WHERE id=?",
-                    (now, node["id"]),
-                )
-            item_id = conn.execute(
-                "INSERT INTO fleet_operation_items(operation_id,node_id,status) VALUES(?,?,?)",
-                (operation_id, node["id"], "running" if body.kind == "sync_agent" else "scheduled"),
-            ).lastrowid
-            created_items.append((item_id, node, enrollment))
-        if not remote_rollout and scheduled_at <= now:
-            queue_due_fleet_operations(conn, now)
-    if body.kind == "sync_agent":
-        for item_id, node, enrollment in created_items:
-            background.add_task(provision_node_for_fleet, item_id, node["id"], enrollment or secrets.token_urlsafe(36))
-    elif body.kind == "upgrade_agents":
-        ordered = sorted(created_items, key=lambda item: 0 if item[1]["id"] == canary_node_id else 1)
-        rollout = [
-            {
-                "item_id": item_id,
-                "node_id": node["id"],
-                "enrollment": enrollment or secrets.token_urlsafe(36),
-                "canary": node["id"] == canary_node_id,
-            }
-            for item_id, node, enrollment in ordered
-        ]
+    try:
+        mutation = create_fleet_operation_mutation(
+            db, body, user["id"], version=VERSION, utc_ts=utc_ts,
+            queue_due_fleet_operations=queue_due_fleet_operations,
+        )
+    except CertificateFleetServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+
+    if mutation["kind"] == "sync_agent":
+        for item in mutation["created_items"]:
+            background.add_task(
+                provision_node_for_fleet,
+                item["item_id"], item["node_id"], item["enrollment"] or secrets.token_urlsafe(36),
+            )
+    elif mutation["kind"] == "upgrade_agents":
         background.add_task(
             orchestrate_agent_upgrade,
-            operation_id,
-            rollout,
-            batch_size,
-            pause_seconds,
-            stop_on_failure,
+            mutation["operation_id"],
+            mutation["rollout"],
+            mutation["batch_size"],
+            mutation["pause_seconds"],
+            mutation["stop_on_failure"],
         )
-    audit(user["id"], "fleet_operation_create", body.name, f"{body.kind}:{len(node_ids)} nodes", request.client.host if request.client else None)
-    return {"id": operation_id, "status": "running" if remote_rollout or scheduled_at <= now else "scheduled", "nodes": len(node_ids)}
+    audit(
+        user["id"], "fleet_operation_create", body.name,
+        f"{body.kind}:{mutation['node_count']} nodes",
+        request.client.host if request.client else None,
+    )
+    return {
+        "id": mutation["operation_id"],
+        "status": mutation["status"],
+        "nodes": mutation["node_count"],
+    }
 
 
 @app.delete("/api/fleet/operations/{operation_id}")
 def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        operation = conn.execute("SELECT * FROM fleet_operations WHERE id=?", (operation_id,)).fetchone()
-        if not operation:
-            raise HTTPException(404, "Fleet operation not found")
-        cancellable_rollout = operation["kind"] == "upgrade_agents" and operation["status"] == "running"
-        if operation["status"] != "scheduled" and not cancellable_rollout:
-            raise HTTPException(409, "Only a scheduled operation or active Agent rollout can be cancelled")
-        conn.execute("UPDATE fleet_operations SET status='cancelled',finished_at=? WHERE id=?", (utc_ts(), operation_id))
-        conn.execute("UPDATE fleet_operation_items SET status='cancelled' WHERE operation_id=? AND status='scheduled'", (operation_id,))
-    audit(user["id"], "fleet_operation_cancel", operation["name"], str(operation_id), request.client.host if request.client else None)
+    try:
+        operation = cancel_fleet_operation_mutation(db, operation_id, utc_ts=utc_ts)
+    except CertificateFleetServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    audit(
+        user["id"], "fleet_operation_cancel", operation["name"], str(operation_id),
+        request.client.host if request.client else None,
+    )
     return {"ok": True}
 
 

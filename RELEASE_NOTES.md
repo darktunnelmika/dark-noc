@@ -1,3 +1,16 @@
+# DARK NOC v2.9.28 — Certificate & Fleet Operations Service Layer
+
+- Continue backend write/service modularization by extracting Certificate issue/renew transactions and Fleet Operation create/cancel transactions from `hub/app.py` into `hub/certificate_fleet_service.py`.
+- Keep FastAPI route declarations, audit logging, BackgroundTasks orchestration, Agent upgrade/provision execution and API response shaping in `hub/app.py`.
+- Preserve DNS/certificate validation, Fleet scheduling/canary rollout semantics, transaction boundaries, Agent behavior and frontend visuals.
+- Add permanent Certificate/Fleet service-boundary regression coverage.
+
+## فارسی
+
+عملیات نوشتنی Certificate و Fleet Operations از `hub/app.py` به `hub/certificate_fleet_service.py` منتقل شدند؛ Routeها، Audit، Background Task، رفتار Agent و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.27 — Monitor & Incident Mutation Service Layer
 
 - Continue the backend write/service layer by extracting Monitor create/update/delete/run transactions and Incident note/action mutations from `hub/app.py` into `hub/monitor_incident_service.py`.
