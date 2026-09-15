@@ -187,6 +187,22 @@ _incidents_router_module = _realm_support_importlib_util.module_from_spec(_incid
 _incidents_router_spec.loader.exec_module(_incidents_router_module)
 register_incidents_router = _incidents_router_module.register_incidents_router
 
+_NODES_ROUTER_PATH = Path(__file__).resolve().with_name('nodes_router.py')
+_nodes_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_nodes_router', _NODES_ROUTER_PATH)
+if _nodes_router_spec is None or _nodes_router_spec.loader is None:
+    raise ImportError(f'Could not load Nodes router: {_NODES_ROUTER_PATH}')
+_nodes_router_module = _realm_support_importlib_util.module_from_spec(_nodes_router_spec)
+_nodes_router_spec.loader.exec_module(_nodes_router_module)
+register_nodes_router = _nodes_router_module.register_nodes_router
+
+_TUNNELS_ROUTER_PATH = Path(__file__).resolve().with_name('tunnels_router.py')
+_tunnels_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_tunnels_router', _TUNNELS_ROUTER_PATH)
+if _tunnels_router_spec is None or _tunnels_router_spec.loader is None:
+    raise ImportError(f'Could not load Tunnels router: {_TUNNELS_ROUTER_PATH}')
+_tunnels_router_module = _realm_support_importlib_util.module_from_spec(_tunnels_router_spec)
+_tunnels_router_spec.loader.exec_module(_tunnels_router_module)
+register_tunnels_router = _tunnels_router_module.register_tunnels_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -195,7 +211,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.29"
+VERSION = "2.9.30"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1507,90 +1523,6 @@ def dashboard_traffic(minutes: int = 60, _: sqlite3.Row = Depends(current_user))
     return [dict(row) for row in rows]
 
 
-@app.get("/api/nodes")
-def list_nodes(_: sqlite3.Row = Depends(current_user)):
-    records = fetch_node_inventory(db, utc_ts() - NODE_STALE_AFTER)
-    result = []
-    for row, metric, services in records:
-        item = public_node(row, metric)
-        try:
-            item["plugins"] = json.loads(row["plugin_inventory"] or "{}")
-        except (TypeError, ValueError):
-            item["plugins"] = {}
-        item["services"] = [dict(service) for service in services]
-        if not row["last_seen"] or row["last_seen"] < utc_ts() - NODE_STALE_AFTER:
-            item["status"] = "pending" if not row["last_seen"] else "offline"
-        result.append(item)
-    return result
-
-
-@app.post("/api/nodes", status_code=202)
-def create_node(body: NodeBody, background: BackgroundTasks, request: Request, user: sqlite3.Row = Depends(current_user)):
-    enrollment = secrets.token_urlsafe(36)
-    try:
-        node_id = create_node_mutation(
-            db, body, enrollment, utc_ts(), encrypt=encrypt, token_hash=token_hash,
-            endpoint_conflict=node_endpoint_conflict,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    background.add_task(provision_node, node_id, enrollment)
-    try:
-        audit(user["id"], "node_create", body.name, f"Node {body.host} registered", request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record Node creation audit event")
-    return {"id": node_id, "name": body.name, "provisioning": True, "message": "Secure SSH installation started"}
-
-
-@app.post("/api/nodes/{node_id}/provision", status_code=202)
-def retry_node_provision(node_id: int, background: BackgroundTasks, request: Request, user: sqlite3.Row = Depends(current_user)):
-    enrollment = secrets.token_urlsafe(36)
-    try:
-        node = prepare_node_provision_mutation(
-            db, node_id, utc_ts(), endpoint_conflict=node_endpoint_conflict,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    background.add_task(provision_node, node_id, enrollment)
-    try:
-        audit(user["id"], "node_provision_retry", node["name"], "Automatic Agent installation retried", request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record Agent synchronization audit event")
-    return {"ok": True, "provisioning": True}
-
-
-@app.delete("/api/nodes/{node_id}")
-def delete_node(node_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row = delete_node_mutation(db, node_id)
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "node_delete", row["name"], "Node and telemetry removed", request.client.host if request.client else None)
-    return {"ok": True}
-
-
-@app.put("/api/nodes/{node_id}")
-def update_node(node_id: int, body: NodeUpdateBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        reset_pin = update_node_mutation(
-            db, node_id, body, utc_ts(), encrypt=encrypt, endpoint_conflict=node_endpoint_conflict,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "node_update", body.name, "Node connection settings updated", request.client.host if request.client else None)
-    return {"ok": True, "ssh_pin_reset": reset_pin}
-
-
-@app.delete("/api/nodes/{node_id}/ssh-fingerprint")
-def reset_ssh_fingerprint(node_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row = reset_node_fingerprint_mutation(db, node_id, utc_ts())
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "ssh_pin_reset", row["name"], "SSH host fingerprint reset", request.client.host if request.client else None)
-    return {"ok": True}
-
-
 def ssh_file_node(node_id: int) -> tuple[sqlite3.Row, str | None, str | None]:
     with db() as conn:
         node = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
@@ -2044,42 +1976,6 @@ async def download_ssh_file(node_id: int, path: str, request: Request, user: sql
     )
 
 
-@app.get("/api/nodes/{node_id}/metrics")
-def metrics(node_id: int, hours: int = 24, resolution: str = "auto", _: sqlite3.Row = Depends(current_user)):
-    hours = min(max(hours, 1), METRIC_ROLLUP_RETENTION_DAYS * 24)
-    if resolution not in {"auto", "raw", "hour"}:
-        raise HTTPException(422, "resolution must be auto, raw or hour")
-    use_hourly = resolution == "hour" or (resolution == "auto" and hours > 48)
-    cutoff = utc_ts() - hours * 3600
-    with db() as conn:
-        if not conn.execute("SELECT 1 FROM nodes WHERE id=?", (node_id,)).fetchone():
-            raise HTTPException(404, "Node not found")
-        if not use_hourly:
-            rows = conn.execute(
-                "SELECT ts,cpu,ram,swap,disk,load1,rx_bps,tx_bps,uptime,connections FROM metrics WHERE node_id=? AND ts>? ORDER BY ts LIMIT 20000",
-                (node_id, cutoff),
-            ).fetchall()
-            return [{**dict(row), "resolution": "raw"} for row in rows]
-        current_bucket = (utc_ts() // 3600) * 3600
-        rolled = conn.execute(
-            """SELECT bucket ts,cpu_avg cpu,ram_avg ram,NULL swap,disk_max disk,load_avg load1,
-                      rx_avg rx_bps,tx_avg tx_bps,NULL uptime,connections_max connections,samples
-               FROM metric_rollups WHERE node_id=? AND bucket>=? AND bucket<? ORDER BY bucket""",
-            (node_id, (cutoff // 3600) * 3600, current_bucket),
-        ).fetchall()
-        raw_hourly = conn.execute(
-            """SELECT (ts/3600)*3600 ts,AVG(cpu) cpu,AVG(ram) ram,AVG(swap) swap,MAX(disk) disk,AVG(load1) load1,
-                      AVG(rx_bps) rx_bps,AVG(tx_bps) tx_bps,MAX(uptime) uptime,MAX(connections) connections,
-                      COUNT(*) samples
-               FROM metrics WHERE node_id=? AND ts>=? GROUP BY (ts/3600)*3600 ORDER BY ts""",
-            (node_id, cutoff),
-        ).fetchall()
-    rollup_buckets = {int(row["ts"]) for row in rolled}
-    combined = [*rolled, *(row for row in raw_hourly if int(row["ts"]) not in rollup_buckets)]
-    combined.sort(key=lambda row: int(row["ts"]))
-    return [{**dict(row), "resolution": "hour"} for row in combined]
-
-
 def tunnel_topology_side(node_role: str, method: str, tunnel_role: str) -> str:
     node_role = str(node_role or "").casefold()
     tunnel_role = str(tunnel_role or "").casefold()
@@ -2121,250 +2017,6 @@ def tunnel_health_score(item: dict[str, Any]) -> int:
     if checks.get("path") is False:
         score -= 35
     return min(max(score, 0), 100)
-
-
-@app.get("/api/tunnels")
-def list_tunnels(_: sqlite3.Row = Depends(current_user)):
-    rows, nodes, deployments = fetch_tunnel_inventory(db)
-    now = utc_ts()
-    node_index = {row["id"]: dict(row) for row in nodes}
-    deployment_index: dict[tuple[str, int], dict[str, Any]] = {}
-    for row in deployments:
-        deployment = dict(row)
-        deployment_index.setdefault((row["name"], row["iran_node_id"]), deployment)
-        deployment_index.setdefault((row["name"], row["kharej_node_id"]), deployment)
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        item = dict(row)
-        try:
-            details = json.loads(item.get("details") or "{}")
-        except (TypeError, ValueError):
-            details = {}
-        item["tunnel_role"] = str(details.get("role") or "")
-        item["topology_side"] = tunnel_topology_side(item["node_role"], str(item.get("method") or ""), item["tunnel_role"])
-        item["target_host"] = normalize_ip(details.get("target_host"))
-        item["target_port"] = details.get("target_port")
-        item["user_ports"] = details.get("user_ports") if isinstance(details.get("user_ports"), list) else []
-        item["transport"] = str(details.get("transport") or "unknown")
-        item["profile"] = str(details.get("profile") or "unknown")
-        item["restart_every"] = str(details.get("restart_every") or "off")
-        item["checks"] = details.get("checks") if isinstance(details.get("checks"), dict) else {}
-        try:
-            item["service_uptime"] = max(0, int(details.get("service_uptime") or 0))
-        except (TypeError, ValueError):
-            item["service_uptime"] = 0
-        item["peer_ips"] = [normalize_ip(value) for value in details.get("peer_ips", []) if value] if isinstance(details.get("peer_ips"), list) else []
-        item["node_agent_online"] = bool(item["node_last_seen"] and item["node_last_seen"] >= now - NODE_STALE_AFTER)
-        if not item["node_agent_online"]:
-            item["status"] = "stale"
-        item["traffic_bps"] = float(item.get("rx_bps") or 0) + float(item.get("tx_bps") or 0)
-        item["health_score"] = tunnel_health_score(item)
-        item.pop("details", None)
-        result.append(item)
-
-    for item in result:
-        peer_id: int | None = None
-        deployment = deployment_index.get((item["name"], item["node_id"]))
-        if deployment:
-            peer_id = (
-                deployment["kharej_node_id"]
-                if item["node_id"] == deployment["iran_node_id"]
-                else deployment["iran_node_id"]
-            )
-
-        remote_addresses = {normalize_ip(value) for value in item["peer_ips"] if normalize_ip(value)}
-        if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}:
-            remote_addresses.add(item["target_host"])
-        if not peer_id and remote_addresses:
-            matching_nodes = [
-                candidate for candidate in node_index.values()
-                if candidate["id"] != item["node_id"]
-                and remote_addresses.intersection({
-                    normalize_ip(candidate["host"]),
-                    normalize_ip(candidate.get("observed_ip")),
-                })
-            ]
-            if len(matching_nodes) == 1:
-                peer_id = matching_nodes[0]["id"]
-
-        if not peer_id:
-            opposite_candidates = [
-                candidate for candidate in result
-                if candidate["node_id"] != item["node_id"]
-                and candidate["name"] == item["name"]
-                and candidate.get("method") == item.get("method")
-                and (
-                    item["topology_side"] == "unknown"
-                    or candidate["topology_side"] == "unknown"
-                    or candidate["topology_side"] != item["topology_side"]
-                )
-            ]
-            if len(opposite_candidates) == 1:
-                peer_id = opposite_candidates[0]["node_id"]
-
-        peer = node_index.get(peer_id) if peer_id else None
-        item["peer_node_id"] = peer_id
-        item["peer_name"] = peer["name"] if peer else None
-        item["peer_host"] = (
-            (peer.get("observed_ip") or peer["host"])
-            if peer else (
-                item["peer_ips"][0]
-                if item["peer_ips"] else (
-                    item["target_host"]
-                    if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}
-                    else None
-                )
-            )
-        )
-        item["peer_role"] = peer["role"] if peer else None
-        item["peer_agent_online"] = bool(peer and peer.get("last_seen") and peer["last_seen"] >= now - NODE_STALE_AFTER)
-        item["peer_ssh_configured"] = bool(peer and peer.get("ssh_configured"))
-        if peer_id:
-            first, second = sorted((int(item["node_id"]), int(peer_id)))
-            item["topology_key"] = f"{item.get('method') or 'DARK'}|{item['name']}|{first}|{second}"
-        else:
-            item["topology_key"] = f"{item.get('method') or 'DARK'}|{item['name']}|{item['node_id']}|{item.get('service') or item['id']}"
-        item["peer_resolved"] = bool(peer_id)
-    return result
-
-
-@app.get("/api/tunnels/{tunnel_id}/operations")
-def tunnel_operations(
-    tunnel_id: int,
-    hours: int = 24,
-    user: sqlite3.Row = Depends(current_user),
-):
-    hours = min(max(hours, 1), TUNNEL_SAMPLE_RETENTION_DAYS * 24)
-    inventory = list_tunnels(user)
-    tunnel = next((item for item in inventory if int(item["id"]) == tunnel_id), None)
-    if not tunnel:
-        raise HTTPException(404, "Tunnel not found")
-    peer = next(
-        (
-            item for item in inventory
-            if item["name"] == tunnel["name"]
-            and int(item["node_id"]) == int(tunnel.get("peer_node_id") or 0)
-        ),
-        None,
-    )
-    cutoff = utc_ts() - hours * 3600
-    node_ids = [int(tunnel["node_id"])]
-    if tunnel.get("peer_node_id"):
-        node_ids.append(int(tunnel["peer_node_id"]))
-    samples, job_rows, managed, hybrid = fetch_tunnel_operation_rows(
-        db,
-        tunnel_id=tunnel_id,
-        cutoff=cutoff,
-        node_ids=node_ids,
-        tunnel_name=tunnel["name"],
-    )
-    recent_jobs: list[dict[str, Any]] = []
-    for row in job_rows:
-        try:
-            payload = json.loads(row["payload"] or "{}")
-        except (TypeError, ValueError):
-            payload = {}
-        if (
-            payload.get("name") == tunnel["name"]
-            or payload.get("service") == tunnel.get("service")
-            or row["kind"] == "tunnel_test"
-        ):
-            recent_jobs.append(public_job(row))
-        if len(recent_jobs) >= 20:
-            break
-    deployment = managed or hybrid
-    deployment_info = None
-    if deployment:
-        try:
-            settings = json.loads(deployment["settings"] or "{}")
-        except (TypeError, ValueError):
-            settings = {}
-        deployment_info = {
-            "id": deployment["id"],
-            "plugin_id": deployment["plugin_id"],
-            "mode": "managed" if managed else "pair_code",
-            "lifecycle": deployment["lifecycle"],
-            "created_at": deployment["created_at"],
-            "endpoint": settings.get("endpoint") or settings.get("iran_endpoint"),
-            "tunnel_port": settings.get("tunnel_port"),
-            "certificate_domain": settings.get("certificate_domain"),
-            "remote_label": hybrid["remote_label"] if hybrid else None,
-        }
-    sample_list = [dict(row) for row in samples]
-    return {
-        "tunnel": tunnel,
-        "peer": peer,
-        "deployment": deployment_info,
-        "samples": sample_list,
-        "recent_jobs": recent_jobs,
-        "window_hours": hours,
-        "sample_count": len(sample_list),
-    }
-
-
-@app.post("/api/tunnels/{tunnel_id}/action", status_code=202)
-def tunnel_action(tunnel_id: int, body: TunnelActionBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        tunnel, job_id = queue_tunnel_action_mutation(
-            db, tunnel_id, body.action, user["id"], utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], f"tunnel_{body.action}", tunnel["name"], str(tunnel_id), request.client.host if request.client else None)
-    return {"job_id": job_id, "status": "queued"}
-
-
-@app.post("/api/nodes/{node_id}/plugins/{plugin_id}/install", status_code=202)
-def install_plugin(node_id: int, plugin_id: str, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        node, job_id = queue_plugin_install_mutation(
-            db, node_id, plugin_id, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "plugin_install", node["name"], plugin_id, request.client.host if request.client else None)
-    return {"job_id": job_id, "status": "queued"}
-
-
-@app.put("/api/tunnels/{tunnel_id}", status_code=202)
-def reconfigure_tunnel(tunnel_id: int, body: TunnelReconfigureBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        mutation = reconfigure_tunnel_mutation(
-            db, tunnel_id, body, user["id"], plugin_catalog=PLUGIN_CATALOG,
-            certificate_for_deployment=certificate_for_deployment, decrypt=decrypt,
-            plugin_job_payload=plugin_job_payload, plugin_pair_code=plugin_pair_code,
-            token_hash=token_hash, utc_ts=utc_ts,
-        )
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(
-        user["id"], "tunnel_reconfigure", mutation["tunnel_name"],
-        json.dumps({"ports": mutation["ports"], "transport": body.transport, "profile": body.profile}),
-        request.client.host if request.client else None,
-    )
-    result: dict[str, Any] = {
-        "status": "queued", "jobs": mutation["jobs"],
-        "mode": "managed" if mutation["managed"] else "pair_code",
-    }
-    if mutation["hybrid"]:
-        result["pair_code"] = mutation["pair_code"]
-        result["foreign_action_required"] = True
-    return result
-
-
-@app.delete("/api/tunnels/{tunnel_id}", status_code=202)
-def remove_tunnel_from_manager(tunnel_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        mutation = remove_tunnel_mutation(db, tunnel_id, user["id"], utc_ts())
-    except NodeTunnelServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(
-        user["id"], "tunnel_remove", mutation["tunnel_name"],
-        "managed pair" if mutation["managed"] else "selected node",
-        request.client.host if request.client else None,
-    )
-    return {"status": "queued", "jobs": mutation["jobs"], "foreign_action_required": mutation["hybrid"]}
 
 
 @app.get("/api/plugins")
@@ -2484,6 +2136,33 @@ def plugin_job_payload(settings: dict[str, Any], token: str, role: str) -> dict[
         payload.pop("certificate_path", None)
         payload.pop("certificate_key_path", None)
     return payload
+
+register_nodes_router(
+    app,
+    current_user=current_user, db=db, NodeBody=NodeBody, NodeUpdateBody=NodeUpdateBody, JobBody=JobBody,
+    fetch_node_inventory=fetch_node_inventory, public_node=public_node, utc_ts=utc_ts,
+    create_node_mutation=create_node_mutation, encrypt=encrypt, token_hash=token_hash,
+    node_endpoint_conflict=node_endpoint_conflict, NodeTunnelServiceError=NodeTunnelServiceError,
+    get_provision_node=lambda: provision_node, audit=audit, LOGGER=LOGGER,
+    prepare_node_provision_mutation=prepare_node_provision_mutation, delete_node_mutation=delete_node_mutation,
+    update_node_mutation=update_node_mutation, reset_node_fingerprint_mutation=reset_node_fingerprint_mutation,
+    queue_plugin_install_mutation=queue_plugin_install_mutation, PLUGIN_CATALOG=PLUGIN_CATALOG,
+    node_stale_after=NODE_STALE_AFTER, metric_rollup_retention_days=METRIC_ROLLUP_RETENTION_DAYS,
+)
+
+register_tunnels_router(
+    app,
+    current_user=current_user, db=db, fetch_tunnel_inventory=fetch_tunnel_inventory, utc_ts=utc_ts,
+    normalize_ip=normalize_ip, tunnel_topology_side=tunnel_topology_side, tunnel_health_score=tunnel_health_score,
+    fetch_tunnel_operation_rows=fetch_tunnel_operation_rows, public_job=public_job,
+    TunnelActionBody=TunnelActionBody, queue_tunnel_action_mutation=queue_tunnel_action_mutation,
+    NodeTunnelServiceError=NodeTunnelServiceError, audit=audit, TunnelReconfigureBody=TunnelReconfigureBody,
+    reconfigure_tunnel_mutation=reconfigure_tunnel_mutation, PLUGIN_CATALOG=PLUGIN_CATALOG,
+    certificate_for_deployment=certificate_for_deployment, decrypt=decrypt, plugin_job_payload=plugin_job_payload,
+    plugin_pair_code=plugin_pair_code, token_hash=token_hash, remove_tunnel_mutation=remove_tunnel_mutation,
+    node_stale_after=NODE_STALE_AFTER, tunnel_sample_retention_days=TUNNEL_SAMPLE_RETENTION_DAYS,
+)
+
 
 @app.post("/api/plugins/{plugin_id}/pair-code", status_code=202)
 def deploy_plugin_pair_code(plugin_id: str, body: PairCodeDeployBody, request: Request, user: sqlite3.Row = Depends(current_user)):
@@ -2739,20 +2418,6 @@ register_incidents_router(
     MonitorIncidentServiceError=MonitorIncidentServiceError, append_incident_event=append_incident_event,
     resolve_incident=resolve_incident, utc_ts=utc_ts, audit=audit,
 )
-
-
-@app.post("/api/nodes/{node_id}/jobs", status_code=202)
-def create_job(node_id: int, body: JobBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    payload = dict(body.payload)
-    if body.service:
-        payload["service"] = body.service
-    with db() as conn:
-        node = conn.execute("SELECT name FROM nodes WHERE id=?", (node_id,)).fetchone()
-        if not node:
-            raise HTTPException(404, "Node not found")
-        cursor = conn.execute("INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)", (node_id, body.kind, json.dumps(payload), user["id"], utc_ts()))
-    audit(user["id"], "job_create", node["name"], body.kind, request.client.host if request.client else None)
-    return {"job_id": cursor.lastrowid, "status": "queued"}
 
 
 @app.get("/api/jobs/{job_id}")
