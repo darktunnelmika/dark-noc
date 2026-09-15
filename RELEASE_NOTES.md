@@ -1,3 +1,18 @@
+# DARK NOC v2.9.40 — AsyncSSH Dependency Hardening
+
+- Upgrade the Hub SSH runtime from `asyncssh==2.19.0` to `asyncssh==2.24.0`.
+- Keep the dependency exactly pinned so CI and production installs use the same SSH/SFTP implementation.
+- Validate the AsyncSSH API surface used by DARK NOC: SSHClient host-key pinning, private-key import, SSH connect, SFTP attributes and SFTP exception handling.
+- Exercise the existing SSH Terminal, SFTP File Manager, upload/relay, provisioning and full Hub/Agent regression suites.
+- Run the reproducible release build with no other dependency changes.
+- No API, Agent, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+پکیج `AsyncSSH` هاب از نسخه 2.19.0 به 2.24.0 ارتقا داده شد؛ مسیرهای SSH Terminal، SFTP، آپلود/Relay، Host-Key Pinning و نصب Agent با تست‌های کامل بررسی می‌شوند و هیچ dependency دیگری تغییر نمی‌کند.
+
+---
+
 # DARK NOC v2.9.39 — cryptography Dependency Hardening
 
 - Upgrade the Hub cryptography runtime from `cryptography==44.0.0` to `cryptography==50.0.1`.

@@ -49,5 +49,5 @@ for marker in [
     assert marker in service
     assert marker not in app
 
-assert 'VERSION = "2.9.39"' in app
+assert 'VERSION = "2.9.40"' in app
 print("Monitor/Incident mutation service boundary passed")
