@@ -30,21 +30,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_25.py
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('hub/node_tunnel_service.py')
-          text = path.read_text()
-          old = '''        token = decrypt(deployment["pair_token_enc"])
-        if not token:
-            raise NodeTunnelServiceError(409, "This deployment has no recoverable pair token")
-        jobs: dict[str, int] = {}
-'''
-          new = '''        token = decrypt(deployment["pair_token_enc"])
-        jobs: dict[str, int] = {}
-'''
-          assert old in text
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python -c "from pathlib import Path; p=Path('hub/node_tunnel_service.py'); s=p.read_text(); old='        if not token:\\n            raise NodeTunnelServiceError(409, \\"This deployment has no recoverable pair token\\")\\n'; assert old in s; p.write_text(s.replace(old,'',1))"
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
