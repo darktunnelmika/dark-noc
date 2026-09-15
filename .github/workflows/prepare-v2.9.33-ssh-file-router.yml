@@ -30,6 +30,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_33.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/backend_node_tunnel_router_contract.py')
+          text = path.read_text()
+          old = "assert 'def ssh_upload_file' in app and 'def agent_heartbeat' in app"
+          new = "assert \"with_name('ssh_file_router.py')\" in app and 'def agent_heartbeat' in app"
+          if old not in text:
+              raise SystemExit('Node/Tunnel SSH ownership guard not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
