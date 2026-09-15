@@ -266,8 +266,10 @@ case "${1:-}" in
       else
         rollback_step "could not remove the Hub data-path policy created by the failed upgrade" rm -f /etc/systemd/system/dark-noc-hub.service.d/data-path.conf || rollback_failed=1
       fi
-      if [[ -x /opt/dark-noc/venv/bin/pip && -f /opt/dark-noc/hub/requirements.txt ]]; then
-        rollback_step "could not restore Hub Python dependencies" /opt/dark-noc/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc/hub/requirements.txt || rollback_failed=1
+      if [[ -x /opt/dark-noc/venv/bin/pip && -f /opt/dark-noc/hub/requirements.lock ]]; then
+        rollback_step "could not restore Hub Python dependencies" /opt/dark-noc/venv/bin/pip install --disable-pip-version-check --require-hashes -r /opt/dark-noc/hub/requirements.lock || rollback_failed=1
+      elif [[ -x /opt/dark-noc/venv/bin/pip && -f /opt/dark-noc/hub/requirements.txt ]]; then
+        rollback_step "could not restore legacy Hub Python dependencies" /opt/dark-noc/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc/hub/requirements.txt || rollback_failed=1
       else
         echo "ROLLBACK ERROR: Hub virtualenv or restored requirements are missing" >&2
         rollback_failed=1
@@ -348,7 +350,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
     ).fetchone()
 baseline = int(sys.argv[2])
 ready = bool(
-    row and row[0] == "online" and row[1] == "2.9.43"
+    row and row[0] == "online" and row[1] == "2.9.44"
     and int(row[2] or 0) > baseline
     and int(row[2] or 0) >= int(time.time()) - 90
 )
@@ -361,7 +363,7 @@ PY
       sleep 2
     done
     if [[ "$POST_UPGRADE_AGENT_READY" -ne 1 ]]; then
-      echo "Local Hub Agent did not deliver a fresh v2.9.43 post-upgrade pulse." >&2
+      echo "Local Hub Agent did not deliver a fresh v2.9.44 post-upgrade pulse." >&2
       systemctl status dark-noc-agent.service --no-pager -l || true
       journalctl -u dark-noc-agent.service -n 160 --no-pager || true
       exit 1
@@ -409,8 +411,10 @@ PY
       else
         rollback_step "could not remove the Agent systemd unit created by the failed upgrade" rm -f /etc/systemd/system/dark-noc-agent.service || rollback_failed=1
       fi
-      if [[ -x /opt/dark-noc-agent/venv/bin/pip && -f /opt/dark-noc-agent/requirements.txt ]]; then
-        rollback_step "could not restore Agent Python dependencies" /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt || rollback_failed=1
+      if [[ -x /opt/dark-noc-agent/venv/bin/pip && -f /opt/dark-noc-agent/requirements.lock ]]; then
+        rollback_step "could not restore Agent Python dependencies" /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check --require-hashes -r /opt/dark-noc-agent/requirements.lock || rollback_failed=1
+      elif [[ -x /opt/dark-noc-agent/venv/bin/pip && -f /opt/dark-noc-agent/requirements.txt ]]; then
+        rollback_step "could not restore legacy Agent Python dependencies" /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt || rollback_failed=1
       else
         echo "ROLLBACK ERROR: Agent virtualenv or restored requirements are missing" >&2
         rollback_failed=1
@@ -443,7 +447,8 @@ PY
     install -m 0755 "$SCRIPT_DIR/agent/agent.py" /opt/dark-noc-agent/agent.py
     install -m 0644 "$SCRIPT_DIR/agent/realm_plugin.py" /opt/dark-noc-agent/realm_plugin.py
     install -m 0644 "$SCRIPT_DIR/agent/requirements.txt" /opt/dark-noc-agent/requirements.txt
-    /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check -r /opt/dark-noc-agent/requirements.txt
+    install -m 0644 "$SCRIPT_DIR/agent/requirements.lock" /opt/dark-noc-agent/requirements.lock
+    /opt/dark-noc-agent/venv/bin/pip install --disable-pip-version-check --require-hashes -r /opt/dark-noc-agent/requirements.lock
     /opt/dark-noc-agent/venv/bin/python -m py_compile /opt/dark-noc-agent/agent.py /opt/dark-noc-agent/realm_plugin.py
     install -m 0644 "$SCRIPT_DIR/deploy/dark-noc-agent.service" /etc/systemd/system/dark-noc-agent.service
     if grep -q '"hub_url"[[:space:]]*:[[:space:]]*"http://.*:9090' /etc/dark-noc-agent/config.json 2>/dev/null; then

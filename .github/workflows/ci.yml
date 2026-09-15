@@ -21,7 +21,10 @@ jobs:
         with:
           node-version: "22"
       - name: Install dependencies
-        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+        run: |
+          pip install --disable-pip-version-check --require-hashes -r hub/requirements.lock
+          pip install --disable-pip-version-check --require-hashes -r agent/requirements.lock
+          pip check
       - name: Static checks
         run: |
           python -m compileall -q hub agent tests
@@ -95,6 +98,7 @@ jobs:
           python tests/dependency_psutil_contract.py
           python tests/dependency_uvicorn_contract.py
           python tests/dependency_fastapi_contract.py
+          python tests/dependency_lock_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh

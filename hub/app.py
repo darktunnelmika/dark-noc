@@ -313,7 +313,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.43"
+VERSION = "2.9.44"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -892,8 +892,9 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
             agent_file = AGENT_PAYLOAD_DIR / "agent.py"
             realm_adapter_file = AGENT_PAYLOAD_DIR / "realm_plugin.py"
             requirements_file = AGENT_PAYLOAD_DIR / "requirements.txt"
+            requirements_lock_file = AGENT_PAYLOAD_DIR / "requirements.lock"
             service_file = AGENT_PAYLOAD_DIR / "dark-noc-agent.service"
-            for required in (agent_file, realm_adapter_file, requirements_file, service_file):
+            for required in (agent_file, realm_adapter_file, requirements_file, requirements_lock_file, service_file):
                 if not required.is_file():
                     raise RuntimeError(f"Hub Node payload is missing: {required}")
 
@@ -974,6 +975,7 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                     ("/opt/dark-noc-agent/agent.py", agent_file.read_bytes(), 0o755),
                     ("/opt/dark-noc-agent/realm_plugin.py", realm_adapter_file.read_bytes(), 0o644),
                     ("/opt/dark-noc-agent/requirements.txt", requirements_file.read_bytes(), 0o644),
+                    ("/opt/dark-noc-agent/requirements.lock", requirements_lock_file.read_bytes(), 0o644),
                     ("/etc/systemd/system/dark-noc-agent.service", service_file.read_bytes(), 0o644),
                     ("/etc/dark-noc-agent/config.json", (json.dumps(config, indent=2) + "\n").encode(), 0o600),
                 ]
@@ -1021,10 +1023,11 @@ async def _provision_node_impl(node_id: int, enrollment: str) -> None:
                             raise RuntimeError(f"Staged Agent payload size mismatch for {target}")
 
                     requirements_stage = next(entry["temporary"] for entry in staged_files if entry["target"].endswith("requirements.txt"))
+                    requirements_lock_stage = next(entry["temporary"] for entry in staged_files if entry["target"].endswith("requirements.lock"))
                     venv_result = await ssh.run(
                         f"test ! -e {shlex.quote(venv_stage)} && "
                         f"python3 -m venv {shlex.quote(venv_stage)} && "
-                        f"{shlex.quote(venv_stage + '/bin/pip')} install --disable-pip-version-check -r {shlex.quote(requirements_stage)}",
+                        f"{shlex.quote(venv_stage + '/bin/pip')} install --disable-pip-version-check --require-hashes -r {shlex.quote(requirements_lock_stage)}",
                         check=False,
                         timeout=600,
                     )
