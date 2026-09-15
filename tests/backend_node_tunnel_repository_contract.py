@@ -15,5 +15,5 @@ assert 'SELECT id,name,host FROM nodes WHERE ssh_port=?' in repo
 assert "ORDER BY CASE role WHEN 'hub'" not in app
 assert 'FROM tunnel_samples WHERE tunnel_id=? AND ts>=?' not in app
 assert 'SELECT id,name,host FROM nodes WHERE ssh_port=?' not in app
-assert 'VERSION = "2.9.24"' in app
+assert 'VERSION = "2.9.25"' in app
 print('Node/Tunnel repository query boundary passed')

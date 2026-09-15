@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.25 — Node and Tunnel mutation service layer
+
+- Extract Node CRUD/provision mutations and Tunnel control/reconfigure/remove writes into hub/node_tunnel_service.py.
+- Keep route orchestration, audit and response shaping in hub/app.py.
+- Add service-boundary regression coverage.
+
+
 ## 2.9.24 — Monitor and Incident repository query layer
 
 - Extract Monitor inventory/history and Incident list/detail reads into hub/monitor_incident_repository.py.

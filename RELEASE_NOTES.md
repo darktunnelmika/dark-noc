@@ -1,3 +1,16 @@
+# DARK NOC v2.9.25 — Node & Tunnel Mutation Service Layer
+
+- Start the backend write/service layer by extracting Node create/provision/update/delete/fingerprint mutations and Tunnel control/install/reconfigure/remove transactions from `hub/app.py` into `hub/node_tunnel_service.py`.
+- Keep FastAPI route declarations, BackgroundTasks, audit logging and response shaping in `hub/app.py` while moving database write ownership into the service layer.
+- Preserve transaction boundaries, HTTP status/details, Agent behavior and frontend visuals.
+- Add permanent Node/Tunnel mutation-service regression coverage.
+
+## فارسی
+
+عملیات نوشتنی اصلی Node و Tunnel از `hub/app.py` به `hub/node_tunnel_service.py` منتقل شدند؛ Routeها، Audit، Background Task و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.24 — Monitor & Incident Repository Query Layer
 
 - Continue the backend repository/query layer by extracting Synthetic Monitor inventory/history reads and Incident list/detail/timeline reads from `hub/app.py` into `hub/monitor_incident_repository.py`.
