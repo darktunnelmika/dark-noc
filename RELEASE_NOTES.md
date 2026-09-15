@@ -1,3 +1,16 @@
+# DARK NOC v2.9.30 — Backend Router Split: Nodes & Tunnels
+
+- Continue backend route modularization by extracting all `/api/nodes...` routes into `hub/nodes_router.py`.
+- Extract all `/api/tunnels...` routes into `hub/tunnels_router.py`.
+- Preserve Node provisioning monkeypatch/runtime indirection, BackgroundTasks, Repository + Service ownership, API paths, audit behavior, tunnel topology semantics, Agent control plane, SSH/File Transfer and frontend visuals.
+- Add permanent Node/Tunnel router-boundary regression coverage.
+
+## فارسی
+
+تمام Routeهای Node و Tunnel از `hub/app.py` به `nodes_router.py` و `tunnels_router.py` منتقل شدند؛ API، Agent، SSH و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.29 — Backend Router Split: Monitoring & Incidents
 
 - Complete a backend architecture audit after the Repository + Service modularization wave.

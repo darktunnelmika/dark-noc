@@ -1,3 +1,6 @@
+## v2.9.30
+- Split Node and Tunnel FastAPI route registration into dedicated APIRouter modules.
+
 ## v2.9.29
 - Backend architecture audit and first FastAPI router split for Monitoring and Incidents.
 
