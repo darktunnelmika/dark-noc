@@ -1,0 +1,128 @@
+name: Prepare v2.9.10 topology modularization final2
+
+on:
+  push:
+    branches: [automation/v2.9.10-topology-module]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract topology model module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          topology = r'''(() => {
+            'use strict';
+            const { displayHost } = window.DarkNocCore;
+            const severity = { healthy:0, online:0, unknown:1, pending:1, degraded:2, stale:3, offline:4, down:4 };
+            function inferSide(tunnel, node) {
+              const explicit=String(tunnel.topology_side||'').toLowerCase();
+              if(explicit==='iran'||explicit==='kharej')return explicit;
+              if(node?.role==='hub'||node?.role==='edge')return 'iran';
+              if(node?.role==='exit')return 'kharej';
+              const role=String(tunnel.tunnel_role||'').toLowerCase(),method=String(tunnel.method||'');
+              if(method==='DARK Packet Pro')return role==='client'?'iran':role==='server'?'kharej':'unknown';
+              if(method==='DARK Realm Pro')return role==='edge'?'iran':role==='gateway'?'kharej':'unknown';
+              if(method==='DARK Backhaul'||method==='DARK Ghost Pro')return role==='server'?'iran':role==='client'?'kharej':'unknown';
+              return 'unknown';
+            }
+            function endpoint(node,name,host){return {node,name:node?.name||name||'UNRESOLVED ENDPOINT',host:displayHost(node?.observed_ip||node?.host||host||'IP UNAVAILABLE')};}
+            function buildLinks({nodes=[],tunnels=[],filter='all',search=''}) {
+              const nodeIndex=new Map(nodes.map(node=>[Number(node.id),node]));
+              const groups=new Map();
+              tunnels.forEach(tunnel=>{
+                const peerId=Number(tunnel.peer_node_id||0),nodeId=Number(tunnel.node_id||0);
+                const fallbackKey=peerId?`${tunnel.method||'DARK'}|${tunnel.name}|${Math.min(nodeId,peerId)}|${Math.max(nodeId,peerId)}`:`${tunnel.method||'DARK'}|${tunnel.name}|${nodeId}|${tunnel.service||tunnel.id}`;
+                const key=String(tunnel.topology_key||fallbackKey);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(tunnel);
+              });
+              const links=[];
+              groups.forEach(rows=>{
+                const records=rows.map(tunnel=>{const node=nodeIndex.get(Number(tunnel.node_id));return {tunnel,node,side:inferSide(tunnel,node)};});
+                let iran=records.find(item=>item.side==='iran')||null,kharej=records.find(item=>item.side==='kharej')||null;
+                if(!iran&&!kharej&&records.length){const first=records[0];if(first.node?.role==='exit')kharej=first;else iran=first;}
+                const representative=iran?.tunnel||kharej?.tunnel||rows[0],peerId=Number(representative.peer_node_id||0),peerNode=nodeIndex.get(peerId);
+                const left=iran?endpoint(iran.node,iran.tunnel.node_name,iran.tunnel.node_observed_ip||iran.tunnel.node_host):endpoint(peerNode,kharej?.tunnel.peer_name||'IRAN / HUB',kharej?.tunnel.peer_host);
+                const right=kharej?endpoint(kharej.node,kharej.tunnel.node_name,kharej.tunnel.node_observed_ip||kharej.tunnel.node_host):endpoint(peerNode,iran?.tunnel.peer_name||'REMOTE ENDPOINT',iran?.tunnel.peer_host||iran?.tunnel.target_host);
+                const statuses=rows.map(item=>String(item.status||'unknown').toLowerCase());if(left.node&&left.node.status!=='online')statuses.push('stale');if(right.node&&right.node.status!=='online')statuses.push('stale');
+                const worst=statuses.reduce((current,value)=>(severity[value]??1)>(severity[current]??1)?value:current,'healthy');
+                const status=['down','offline'].includes(worst)?'DOWN':worst==='stale'?'STALE':worst==='degraded'?'DEGRADED':'ONLINE',tone=status==='ONLINE'?'online':status==='DEGRADED'?'degraded':status==='STALE'?'stale':'down';
+                const haystack=[representative.name,representative.method,left.name,left.host,right.name,right.host].join(' ').toLowerCase();if(filter!=='all'&&filter!==tone)return;if(search&&!haystack.includes(search))return;
+                const rates=rows.map(item=>Number(item.rx_bps||0)+Number(item.tx_bps||0));
+                links.push({tunnel:representative,rows,left,right,status,tone,rate:rates.length?Math.max(...rates):0,sessions:Math.max(0,...rows.map(item=>Number(item.sessions||0))),health:Math.min(100,...rows.map(item=>Number(item.health_score??100))),latency:Math.max(0,...rows.map(item=>Number(item.latency_ms||0))),loss:Math.max(0,...rows.map(item=>Number(item.packet_loss||0))),uptime:Math.max(0,...rows.map(item=>Number(item.service_uptime||0)))});
+              });
+              return links;
+            }
+            window.DarkNocTopology = Object.freeze({ inferSide, endpoint, buildLinks });
+          })();
+          '''
+          Path('hub/static/topology.js').write_text(topology)
+          app=Path('hub/static/app.js'); s=app.read_text(); start=s.index('function renderLiveTopology() {'); pivot=s.index('  if(!links.length){',start)
+          app.write_text(s[:start]+"function renderLiveTopology() {\n  const topology=$('#topology');\n  const links=window.DarkNocTopology.buildLinks({nodes:state.nodes,tunnels:state.tunnels,filter:state.topologyFilter,search:state.topologySearch});\n\n"+s[pivot:])
+          index=Path('hub/static/index.html'); s=index.read_text(); needle='<script src="/static/core.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.9"></script>'; assert needle in s
+          index.write_text(s.replace(needle,'<script src="/static/core.js?v=1.0.0"></script>\n  <script src="/static/topology.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.10"></script>',1))
+          Path('tests/topology_module_contract.py').write_text('from pathlib import Path\napp=Path("hub/static/app.js").read_text(); topology=Path("hub/static/topology.js").read_text(); index=Path("hub/static/index.html").read_text()\nassert "window.DarkNocTopology.buildLinks" in app\nassert "function inferSide" not in app\nassert "function buildLinks" in topology\nassert "window.DarkNocTopology = Object.freeze" in topology\nassert index.index("core.js") < index.index("topology.js") < index.index("app.js")\nprint("Topology module boundary passed")\n')
+          p=Path('tests/topology_inventory_regression.py'); t=p.read_text(); old='assert "topology_side" in app_js and "pairTotals" in app_js'; assert old in t; p.write_text(t.replace(old,'topology_js = (ROOT / "hub" / "static" / "topology.js").read_text()\nassert "topology_side" in topology_js and "pairTotals" in app_js',1))
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); text=p.read_text();
+              if '2.9.9' in text: p.write_text(text.replace('2.9.9','2.9.10'))
+          notes='# DARK NOC v2.9.10 — Topology Module Extraction\n\n- Extract topology grouping, side inference, endpoint resolution and health aggregation from app.js into topology.js.\n- Keep the current Live tunnel matrix rendering and visual behavior unchanged.\n- Add a permanent topology module-boundary regression test.\n- No API, Agent, tunnel configuration or database behavior changes beyond version synchronization.\n\n## فارسی\n\nمرحله دوم ماژولار کردن فرانت‌اند انجام شد: منطق مدل‌سازی توپولوژی از app.js به topology.js منتقل شد، بدون تغییر ظاهر یا رفتار Live tunnel matrix.\n\n---\n\n'; p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); text=p.read_text(); first,sep,rest=text.partition('\n'); p.write_text(first+sep+'\n## 2.9.10 — Topology module extraction\n\n- Extract topology modeling from app.js into topology.js.\n- Preserve current matrix visuals and interactions.\n- Add topology module-boundary regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/topology_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/topology.js hub/static/app.js hub/static/index.html tests/topology_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract topology model for v2.9.10'
+          git push origin HEAD:refs/heads/release/v2.9.10-topology-module
