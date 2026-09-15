@@ -1,3 +1,16 @@
+# DARK NOC v2.9.19 — Backend Runtime Configuration Module
+
+- Start backend modularization by extracting environment parsing and runtime limits from hub/app.py into hub/runtime_config.py.
+- Preserve VERSION and process-local runtime state in app.py.
+- Keep all API routes, database behavior, Agent behavior and frontend visuals unchanged.
+- Add a permanent backend module-boundary regression contract.
+
+## فارسی
+
+اولین مرحله ماژولار کردن بک‌اند انجام شد: تنظیمات محیطی و محدودیت‌های Runtime از hub/app.py به hub/runtime_config.py منتقل شدند، بدون تغییر API یا رفتار پنل.
+
+---
+
 # DARK NOC v2.9.18 — Frontend Runtime Core Split
 
 - Extract shared frontend state into state.js.

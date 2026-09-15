@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.19 — Backend runtime configuration module
+
+- Extract environment parsing and runtime limits from hub/app.py into hub/runtime_config.py.
+- Preserve APIs and runtime behavior.
+- Add backend module-boundary regression coverage.
+
+
 ## 2.9.18 — Frontend runtime core split
 
 - Split shared state, API/jobs, refresh orchestration and session/WebSocket lifecycle from app.js.
