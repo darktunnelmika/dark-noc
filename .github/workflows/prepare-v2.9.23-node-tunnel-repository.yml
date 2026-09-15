@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 1
+          ref: automation/v2.9.23-node-tunnel-repository
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -26,7 +26,9 @@ jobs:
       - name: Extract Node and Tunnel repository queries
         run: |
           set -Eeuo pipefail
-          git show "$GITHUB_SHA:scripts/prepare_v2_9_23.py" > /tmp/prepare_v2_9_23.py
+          cp scripts/prepare_v2_9_23.py /tmp/prepare_v2_9_23.py
+          git fetch origin main
+          git checkout -B candidate origin/main
           python /tmp/prepare_v2_9_23.py
           git diff --check
       - name: Install dependencies
