@@ -1,0 +1,144 @@
+name: Prepare v2.9.12 file transfer modularization
+
+on:
+  push:
+    branches: [automation/v2.9.11-ssh-module]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract file transfer module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('hub/static/app.js')
+          text = app.read_text()
+
+          # 1) Move file-manager runtime functions as one stable contiguous block.
+          fn_start = text.index('function fileSelection(entry=null){')
+          fn_end = text.index('function openMonitorEditor(', fn_start)
+          fn_block = text[fn_start:fn_end].rstrip() + '\n\n'
+          for marker in ['function fileSelection(entry=null){','function renderFileManager(){','async function loadFileDirectory(','async function fileAction(']:
+              assert marker in fn_block, marker
+          text = text[:fn_start] + text[fn_end:]
+
+          # 2) Move browser upload + server relay bindings.
+          transfer_start = text.index("$('#ssh-upload-form').addEventListener('submit',event=>{")
+          transfer_end = text.index("$('#add-monitor').addEventListener('click',()=>openMonitorEditor());", transfer_start)
+          transfer_block = text[transfer_start:transfer_end].rstrip() + '\n\n'
+          for marker in ["$('#ssh-upload-form').addEventListener", "$('#upload-cancel').addEventListener", "$('#ssh-relay-form').addEventListener", "$('#relay-cancel').addEventListener"]:
+              assert marker in transfer_block, marker
+          text = text[:transfer_start] + text[transfer_end:]
+
+          # 3) Move file-manager UI bindings, leaving SSH terminal controls in app.js.
+          files_start = text.index("$('#file-manager-node').addEventListener")
+          files_end = text.index("$('#ssh-connect').addEventListener", files_start)
+          files_block = text[files_start:files_end].rstrip() + '\n'
+          for marker in ["$('#file-manager-node').addEventListener", "$('#file-new-directory').addEventListener", "$('#file-download').addEventListener", "$('#file-edit').addEventListener", "$('#file-delete').addEventListener"]:
+              assert marker in files_block, marker
+          text = text[:files_start] + text[files_end:]
+          app.write_text(text)
+
+          module = "// DARK NOC secure file manager + browser upload/relay runtime. Classic-script globals are intentional.\n" + fn_block + transfer_block + files_block
+          Path('hub/static/file-transfer.js').write_text(module)
+
+          index = Path('hub/static/index.html')
+          html = index.read_text()
+          needle = '  <script src="/static/ssh-terminal.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.11"></script>'
+          assert needle in html
+          replacement = '  <script src="/static/ssh-terminal.js?v=1.0.0"></script>\n  <script src="/static/file-transfer.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.12"></script>'
+          index.write_text(html.replace(needle, replacement, 1))
+
+          contract = '''from pathlib import Path
+root=Path(__file__).resolve().parents[1]
+app=(root/'hub/static/app.js').read_text()
+module=(root/'hub/static/file-transfer.js').read_text()
+index=(root/'hub/static/index.html').read_text()
+for marker in ['function fileSelection(entry=null){','function renderFileManager(){','async function loadFileDirectory(','async function fileAction(']:
+    assert marker in module
+    assert marker not in app
+for marker in ["$('#ssh-upload-form').addEventListener", "$('#ssh-relay-form').addEventListener", "$('#file-manager-node').addEventListener", "$('#file-download').addEventListener", "$('#file-delete').addEventListener"]:
+    assert marker in module
+    assert marker not in app
+assert "$('#ssh-connect').addEventListener" in app
+assert 'connectSSH(nodeId)' in app
+assert index.index('core.js') < index.index('topology.js') < index.index('ssh-terminal.js') < index.index('file-transfer.js') < index.index('app.js')
+print('File transfer module boundary passed')
+'''
+          Path('tests/file_transfer_module_contract.py').write_text(contract)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.11' in value:
+                  p.write_text(value.replace('2.9.11','2.9.12'))
+
+          notes='''# DARK NOC v2.9.12 — Secure File Transfer Module Extraction\n\n- Extract SFTP file-manager runtime plus browser upload and Hub relay bindings from app.js into file-transfer.js.\n- Preserve upload progress, cancellation, size limits, authentication handling, relay behavior and remote file actions.\n- Keep SSH terminal, Live tunnel matrix, API, Agent and tunnel behavior unchanged.\n- Add permanent module-boundary regression coverage.\n\n## فارسی\n\nمرحله چهارم ماژولار کردن فرانت‌اند انجام شد: File Manager، Upload و Relay از app.js به file-transfer.js منتقل شدند، بدون تغییر ظاهر یا رفتار پنل.\n\n---\n\n'''
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.12 — Secure file transfer module extraction\n\n- Extract File Manager, browser Upload and Hub Relay runtime into file-transfer.js.\n- Preserve transfer progress/cancel/limits and remote file actions.\n- Add permanent module-boundary regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/file-transfer.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.12.tar.gz > /tmp/darknoc-hub-files
+          grep -q 'file-transfer.js' /tmp/darknoc-hub-files
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/file-transfer.js hub/static/app.js hub/static/index.html tests/file_transfer_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract secure file transfer runtime for v2.9.12'
+          git push origin HEAD:refs/heads/release/v2.9.12-file-transfer-module
