@@ -1,3 +1,10 @@
+## v2.9.37
+- Performance: active-view frontend fetch scheduling replaces broad periodic polling.
+- WebSocket catch-up now refreshes only the active view dependencies.
+- Hidden tabs pause periodic view polling and sync immediately on visibility restore.
+- Full refreshes remain serialized and are queued behind active-view refreshes when required.
+- No Live Matrix visual changes.
+
 ## v2.9.36
 
 - Final backend composition audit and maintenance/lifespan runtime extraction.

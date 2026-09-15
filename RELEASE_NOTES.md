@@ -1,3 +1,20 @@
+# DARK NOC v2.9.37 — View-Aware Fetch Scheduling
+
+- Replace the broad 10-endpoint 15-second frontend poll with active-view fetch plans.
+- Keep Dashboard, Nodes and Tunnels as the lightweight shared live base; fetch Incidents/Traffic, Plugins/Deployments/Certificates, Monitors or Fleet data only when the owning view is active.
+- Keep full refresh for boot/login and explicit post-mutation synchronization.
+- Make WebSocket catch-up use the active-view plan instead of triggering a broad full refresh every 30 seconds.
+- Skip periodic view polling while the document is hidden and refresh the active view immediately when it becomes visible again.
+- Coalesce a requested full refresh behind an in-flight view refresh so post-mutation state is not lost.
+- Stop rebuilding hidden Live Matrix DOM on telemetry updates; the approved topology appearance and always-visible connected path invariant are unchanged.
+- Add permanent view-aware fetch regression coverage.
+
+## فارسی
+
+Polling پنل سبک‌تر شد: به‌جای گرفتن همه endpointها هر ۱۵ ثانیه، فقط داده‌های مشترک و داده‌های صفحه فعال دریافت می‌شوند. هنگام برگشت به تب مرورگر صفحه فعال فوراً sync می‌شود و ظاهر Live Matrix هیچ تغییری نکرده است.
+
+---
+
 # DARK NOC v2.9.36 — Backend Final Audit & Maintenance Runtime Cleanup
 
 - Extract maintenance scheduling, retention/rollup work, scheduled Monitor/Fleet queueing, certificate renewal scheduling and FastAPI lifespan cleanup into `hub/maintenance_runtime.py`.

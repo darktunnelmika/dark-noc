@@ -8,6 +8,8 @@ let state = {
   files: { nodeId: null, path: '/root', parent: '/', entries: [], selected: null, editingPath: null }
 };
 let refreshInFlight = false;
+let viewRefreshInFlight = false;
+let refreshPendingFull = false;
 let liveRefreshInFlight = false;
 let liveSocket = null;
 let activeUpload = null;

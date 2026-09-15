@@ -3,6 +3,7 @@ function terminateAuthenticatedActivity({showLoginGate = true, transferMessage =
   if (showLoginGate) $('#login-gate').classList.remove('hidden');
   clearTimeout(connectLive.reconnectTimer);
   clearTimeout(connectLive.refreshTimer);
+  clearTimeout(connectLive.fullRefreshTimer);
   if (authenticatedActivityTerminated) return;
   authenticatedActivityTerminated = true;
 
@@ -49,6 +50,6 @@ function connectLive(){
   const socket=new WebSocket(`${protocol}//${location.host}/ws/live`);
   socket.intentionalClose=false;liveSocket=socket;
   socket.onopen=()=>{if(liveSocket!==socket)return;socket.keepaliveTimer=setInterval(()=>{if(liveSocket===socket&&socket.readyState===WebSocket.OPEN)socket.send('ping');},25000);};
-  socket.onmessage=event=>{if(liveSocket!==socket)return;let message={};try{message=JSON.parse(event.data)}catch{}if(message.type==='telemetry'){clearTimeout(connectLive.refreshTimer);connectLive.refreshTimer=setTimeout(refreshLive,350);const now=Date.now();if(now-(connectLive.lastFullRefresh||0)>=30000){connectLive.lastFullRefresh=now;clearTimeout(connectLive.fullRefreshTimer);connectLive.fullRefreshTimer=setTimeout(refresh,1200);}}};
+  socket.onmessage=event=>{if(liveSocket!==socket)return;let message={};try{message=JSON.parse(event.data)}catch{}if(message.type==='telemetry'){clearTimeout(connectLive.refreshTimer);connectLive.refreshTimer=setTimeout(refreshLive,350);const now=Date.now();if(now-(connectLive.lastFullRefresh||0)>=30000){connectLive.lastFullRefresh=now;clearTimeout(connectLive.fullRefreshTimer);connectLive.fullRefreshTimer=setTimeout(()=>refreshActiveView(),1200);}}};
   socket.onclose=event=>{clearInterval(socket.keepaliveTimer);if(liveSocket===socket)liveSocket=null;if(event.code===4401){terminateAuthenticatedActivity();return;}if(!socket.intentionalClose&&$('#login-gate').classList.contains('hidden'))connectLive.reconnectTimer=setTimeout(connectLive,3000);};
 }

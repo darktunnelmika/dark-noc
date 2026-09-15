@@ -6,11 +6,11 @@ api=(root/'hub/static/api-client.js').read_text()
 refresh=(root/'hub/static/refresh-runtime.js').read_text()
 session=(root/'hub/static/session-runtime.js').read_text()
 index=(root/'hub/static/index.html').read_text()
-for marker in ['let state = {','let refreshInFlight = false;','let liveSocket = null;']:
+for marker in ['let state = {','let refreshInFlight = false;','let viewRefreshInFlight = false;','let liveSocket = null;']:
     assert marker in state and marker not in app
 for marker in ['async function api(','function dashboardLimits(','async function createJob(','async function waitForJob(']:
     assert marker in api and marker not in app
-for marker in ['async function refreshLive()','function updateNavigationCounts()','function renderCachedView(','async function refresh()']:
+for marker in ['async function refreshLive()','function updateNavigationCounts(','function renderCachedView(','async function refreshActiveView(','async function refresh()']:
     assert marker in refresh and marker not in app
 for marker in ['function terminateAuthenticatedActivity(','async function boot()','function connectLive()']:
     assert marker in session and marker not in app
