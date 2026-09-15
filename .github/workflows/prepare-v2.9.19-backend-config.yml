@@ -29,12 +29,16 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           app=Path('hub/app.py'); text=app.read_text()
-          start=text.index('def bounded_env_int('); end=text.index('SSH_FILE_CHUNK =', start); block=text[start:end]
-          const_start=block.index('SSH_UPLOAD_LIMIT =')
-          functions=block[:const_start].rstrip()+"\n"
-          constants=block[const_start:].rstrip()+"\n"
-          Path('hub/runtime_config.py').write_text('from __future__ import annotations\n\nimport os\n\n'+functions+'\n'+constants)
-          text=text[:start]+text[end:]
+          start=text.index('def bounded_env_int('); end=text.index('SSH_UPLOAD_LIMIT =', start)
+          functions=text[start:end].rstrip()+"\n"; text=text[:start]+text[end:]
+          names=['SSH_UPLOAD_LIMIT','SSH_RELAY_LIMIT','SSH_TRANSFER_CONCURRENCY','SSH_TRANSFER_TIMEOUT','SSH_TRANSFER_IDLE_TIMEOUT','SSH_KEEPALIVE_INTERVAL','SSH_KEEPALIVE_COUNT_MAX','SSH_UPLOAD_QUEUE_TIMEOUT','NODE_PROVISION_TIMEOUT','NODE_PROVISION_CONCURRENCY','MONITOR_RESULT_RETENTION_DAYS','METRIC_RAW_RETENTION_DAYS','METRIC_ROLLUP_RETENTION_DAYS','TUNNEL_SAMPLE_RETENTION_DAYS','HUB_LEASE_SECONDS','SSH_EDITOR_LIMIT']
+          kept=[]; moved=[]
+          for line in text.splitlines(True):
+              if any(line.startswith(name+' =') for name in names): moved.append(line)
+              else: kept.append(line)
+          text=''.join(kept)
+          assert len(moved)==len(names), (len(moved), moved)
+          Path('hub/runtime_config.py').write_text('from __future__ import annotations\n\nimport os\n\n'+functions+'\n'+''.join(moved))
           anchor='from pydantic import BaseModel, Field, field_validator\n'; assert anchor in text
           imp=("\ntry:\n"
                "    from .runtime_config import (\n"
@@ -55,17 +59,7 @@ jobs:
                "        bounded_env_int, configured_public_hub_url,\n"
                "    )\n")
           app.write_text(text.replace(anchor,anchor+imp,1))
-          contract=("from pathlib import Path\n"
-                    "root=Path(__file__).resolve().parents[1]\n"
-                    "app=(root/'hub/app.py').read_text()\n"
-                    "config=(root/'hub/runtime_config.py').read_text()\n"
-                    "for marker in ['def bounded_env_int(', 'def configured_public_hub_url(', 'SSH_UPLOAD_LIMIT =', 'SSH_RELAY_LIMIT =', 'NODE_PROVISION_TIMEOUT =', 'HUB_LEASE_SECONDS =']:\n"
-                    "    assert marker in config\n"
-                    "    assert marker not in app\n"
-                    "assert 'from .runtime_config import (' in app\n"
-                    "assert 'from runtime_config import (' in app\n"
-                    "assert 'VERSION = \\\"2.9.19\\\"' in app\n"
-                    "print('Backend runtime configuration module boundary passed')\n")
+          contract=("from pathlib import Path\nroot=Path(__file__).resolve().parents[1]\napp=(root/'hub/app.py').read_text()\nconfig=(root/'hub/runtime_config.py').read_text()\nfor marker in ['def bounded_env_int(', 'def configured_public_hub_url(', 'SSH_UPLOAD_LIMIT =', 'SSH_RELAY_LIMIT =', 'NODE_PROVISION_TIMEOUT =', 'HUB_LEASE_SECONDS =']:\n    assert marker in config\n    assert marker not in app\nassert 'from .runtime_config import (' in app\nassert 'from runtime_config import (' in app\nassert 'VERSION = \\\"2.9.19\\\"' in app\nprint('Backend runtime configuration module boundary passed')\n")
           Path('tests/backend_config_contract.py').write_text(contract)
           ci=Path('.github/workflows/ci.yml'); c=ci.read_text(); needle='          python tests/action_router_module_contract.py\n          python tests/frontend_runtime_contract.py\n'; assert needle in c; ci.write_text(c.replace(needle,needle+'          python tests/backend_config_contract.py\n',1))
           for name in ['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']:
