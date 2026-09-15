@@ -1,3 +1,6 @@
+## v2.9.32
+- Split Authentication, Dashboard and System health/index FastAPI route registration into dedicated APIRouter modules.
+
 ## v2.9.31
 - Split Plugin Deployment, Certificate and Fleet Operations FastAPI routes into dedicated APIRouter modules.
 

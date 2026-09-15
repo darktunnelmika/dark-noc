@@ -227,6 +227,30 @@ _fleet_router_module = _realm_support_importlib_util.module_from_spec(_fleet_rou
 _fleet_router_spec.loader.exec_module(_fleet_router_module)
 register_fleet_router = _fleet_router_module.register_fleet_router
 
+_AUTH_ROUTER_PATH = Path(__file__).resolve().with_name('auth_router.py')
+_auth_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_auth_router', _AUTH_ROUTER_PATH)
+if _auth_router_spec is None or _auth_router_spec.loader is None:
+    raise ImportError(f'Could not load Auth router: {_AUTH_ROUTER_PATH}')
+_auth_router_module = _realm_support_importlib_util.module_from_spec(_auth_router_spec)
+_auth_router_spec.loader.exec_module(_auth_router_module)
+register_auth_router = _auth_router_module.register_auth_router
+
+_DASHBOARD_ROUTER_PATH = Path(__file__).resolve().with_name('dashboard_router.py')
+_dashboard_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_dashboard_router', _DASHBOARD_ROUTER_PATH)
+if _dashboard_router_spec is None or _dashboard_router_spec.loader is None:
+    raise ImportError(f'Could not load Dashboard router: {_DASHBOARD_ROUTER_PATH}')
+_dashboard_router_module = _realm_support_importlib_util.module_from_spec(_dashboard_router_spec)
+_dashboard_router_spec.loader.exec_module(_dashboard_router_module)
+register_dashboard_router = _dashboard_router_module.register_dashboard_router
+
+_SYSTEM_ROUTER_PATH = Path(__file__).resolve().with_name('system_router.py')
+_system_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_system_router', _SYSTEM_ROUTER_PATH)
+if _system_router_spec is None or _system_router_spec.loader is None:
+    raise ImportError(f'Could not load System router: {_SYSTEM_ROUTER_PATH}')
+_system_router_module = _realm_support_importlib_util.module_from_spec(_system_router_spec)
+_system_router_spec.loader.exec_module(_system_router_module)
+register_system_router = _system_router_module.register_system_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -235,7 +259,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.31"
+VERSION = "2.9.32"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1476,75 +1500,24 @@ def login_rate_record(ip: str, success: bool) -> None:
             LOGIN_FAILURES.setdefault(ip, []).append(utc_ts())
 
 
-@app.post("/api/auth/login")
-def login(body: LoginBody, request: Request):
-    client_ip = request.client.host if request.client else "unknown"
-    login_rate_check(client_ip)
-    with db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE username=?", (body.username,)).fetchone()
-        if not user or not verify_password(body.password, user["password_hash"]):
-            login_rate_record(client_ip, False)
-            audit(user["id"] if user else None, "login_failed", body.username, "Invalid credentials", client_ip)
-            raise HTTPException(401, "Invalid username or password")
-        token = secrets.token_urlsafe(42)
-        conn.execute("INSERT INTO sessions(token_hash,user_id,expires_at,ip,created_at) VALUES(?,?,?,?,?)", (token_hash(token), user["id"], utc_ts() + SESSION_TTL, request.client.host if request.client else None, utc_ts()))
-    response = JSONResponse({"ok": True, "username": user["username"], "role": user["role"]})
-    response.set_cookie("dark_noc_session", token, httponly=True, secure=os.getenv("DARK_NOC_COOKIE_SECURE", "0") == "1", samesite="strict", max_age=SESSION_TTL)
-    login_rate_record(client_ip, True)
-    audit(user["id"], "login", user["username"], "Session created", client_ip)
-    return response
+register_auth_router(
+    app,
+    LoginBody=LoginBody, current_user=current_user, db=db, login_rate_check=login_rate_check,
+    login_rate_record=login_rate_record, verify_password=verify_password, audit=audit, token_hash=token_hash,
+    utc_ts=utc_ts, session_ttl=SESSION_TTL,
+)
 
+register_dashboard_router(
+    app,
+    current_user=current_user, db=db, utc_ts=utc_ts, node_stale_after=NODE_STALE_AFTER, version=VERSION,
+    ssh_upload_limit=SSH_UPLOAD_LIMIT, ssh_relay_limit=SSH_RELAY_LIMIT,
+    ssh_upload_queue_timeout=SSH_UPLOAD_QUEUE_TIMEOUT,
+)
 
-@app.post("/api/auth/logout")
-def logout(user: sqlite3.Row = Depends(current_user), dark_noc_session: str | None = Cookie(default=None)):
-    with db() as conn:
-        conn.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(dark_noc_session or ""),))
-    response = JSONResponse({"ok": True})
-    response.delete_cookie("dark_noc_session")
-    return response
-
-
-@app.get("/api/auth/me")
-def me(user: sqlite3.Row = Depends(current_user)):
-    return {"username": user["username"], "role": user["role"]}
-
-
-@app.put("/api/auth/account")
-def update_account(_: sqlite3.Row = Depends(current_user)):
-    raise HTTPException(403, "Account changes are server-only. Run sudo darknoc on the Hub server.")
-
-
-@app.get("/api/dashboard")
-def dashboard(_: sqlite3.Row = Depends(current_user)):
-    cutoff = utc_ts() - NODE_STALE_AFTER
-    with db() as conn:
-        nodes = conn.execute("SELECT CASE WHEN last_seen>=? THEN 'online' WHEN last_seen IS NULL THEN 'pending' ELSE 'offline' END status,COUNT(*) count FROM nodes GROUP BY 1", (cutoff,)).fetchall()
-        tunnel_rows = conn.execute("SELECT CASE WHEN nodes.last_seen>=? THEN tunnels.status ELSE 'stale' END status,COUNT(*) count FROM tunnels JOIN nodes ON nodes.id=tunnels.node_id GROUP BY 1", (cutoff,)).fetchall()
-        totals = conn.execute("SELECT COALESCE(SUM(rx_bps),0) rx,COALESCE(SUM(tx_bps),0) tx,COALESCE(SUM(connections),0) connections FROM (SELECT m.* FROM metrics m JOIN (SELECT node_id,MAX(ts) ts FROM metrics WHERE ts>=? GROUP BY node_id) x ON x.node_id=m.node_id AND x.ts=m.ts)", (cutoff,)).fetchone()
-        incidents = conn.execute("SELECT COUNT(*) count FROM incidents WHERE status IN ('open','acknowledged')").fetchone()["count"]
-    node_counts = {r["status"]: r["count"] for r in nodes}
-    tunnel_counts = {r["status"]: r["count"] for r in tunnel_rows}
-    component_total = sum(node_counts.values()) + sum(tunnel_counts.values())
-    health_percent = round(100 * (node_counts.get("online", 0) + tunnel_counts.get("healthy", 0)) / component_total, 1) if component_total else 0.0
-    return {"version": VERSION, "nodes": node_counts, "tunnels": tunnel_counts, "health_percent": health_percent, "rx_bps": totals["rx"], "tx_bps": totals["tx"], "throughput_bps": totals["rx"] + totals["tx"], "connections": totals["connections"], "open_incidents": incidents, "server_time": utc_ts(), "limits": {"ssh_upload_bytes": SSH_UPLOAD_LIMIT, "ssh_relay_bytes": SSH_RELAY_LIMIT, "ssh_upload_queue_seconds": SSH_UPLOAD_QUEUE_TIMEOUT}}
-
-
-@app.get("/api/dashboard/traffic")
-def dashboard_traffic(minutes: int = 60, _: sqlite3.Row = Depends(current_user)):
-    minutes = min(max(minutes, 10), 1440)
-    bucket = 60 if minutes <= 180 else 300
-    with db() as conn:
-        rows = conn.execute(
-            """WITH ranked AS (
-                 SELECT (ts / ?) * ? bucket,node_id,rx_bps,tx_bps,
-                        ROW_NUMBER() OVER (PARTITION BY node_id,(ts / ?) ORDER BY ts DESC) rn
-                 FROM metrics WHERE ts>=?
-               )
-               SELECT bucket ts,COALESCE(SUM(rx_bps),0) rx_bps,COALESCE(SUM(tx_bps),0) tx_bps
-               FROM ranked WHERE rn=1 GROUP BY bucket ORDER BY bucket""",
-            (bucket, bucket, bucket, utc_ts() - minutes * 60),
-        ).fetchall()
-    return [dict(row) for row in rows]
+register_system_router(
+    app,
+    db=db, version=VERSION, key_path=KEY_PATH, static_dir=STATIC_DIR, hub_instance_id=HUB_INSTANCE_ID,
+)
 
 
 def ssh_file_node(node_id: int) -> tuple[sqlite3.Row, str | None, str | None]:
@@ -2725,23 +2698,6 @@ async def ssh_terminal(websocket: WebSocket, node_id: int):
             pass
 
 
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok", "version": VERSION}
-
-
-@app.get("/readyz")
-def readyz():
-    try:
-        with db() as conn:
-            conn.execute("SELECT 1").fetchone()
-        if not KEY_PATH.is_file() or not (STATIC_DIR / "index.html").is_file():
-            raise RuntimeError("Hub runtime files are incomplete")
-    except Exception as exc:
-        raise HTTPException(503, f"Hub is not ready: {str(exc)[:160]}") from exc
-    return {"status": "ready", "version": VERSION, "instance": HUB_INSTANCE_ID}
-
-
 @app.get("/api/system/status")
 def system_status(_: sqlite3.Row = Depends(current_user)):
     with db() as conn:
@@ -2765,11 +2721,6 @@ def system_status(_: sqlite3.Row = Depends(current_user)):
         },
         "counts": counts,
     }
-
-
-@app.get("/")
-def index():
-    return FileResponse(STATIC_DIR / "index.html")
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
