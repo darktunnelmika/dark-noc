@@ -251,6 +251,22 @@ _system_router_module = _realm_support_importlib_util.module_from_spec(_system_r
 _system_router_spec.loader.exec_module(_system_router_module)
 register_system_router = _system_router_module.register_system_router
 
+_SSH_FILE_ROUTER_PATH = Path(__file__).resolve().with_name('ssh_file_router.py')
+_ssh_file_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_ssh_file_router', _SSH_FILE_ROUTER_PATH)
+if _ssh_file_router_spec is None or _ssh_file_router_spec.loader is None:
+    raise ImportError(f'Could not load SSH File router: {_SSH_FILE_ROUTER_PATH}')
+_ssh_file_router_module = _realm_support_importlib_util.module_from_spec(_ssh_file_router_spec)
+_ssh_file_router_spec.loader.exec_module(_ssh_file_router_module)
+register_ssh_file_router = _ssh_file_router_module.register_ssh_file_router
+
+_SSH_TERMINAL_ROUTER_PATH = Path(__file__).resolve().with_name('ssh_terminal_router.py')
+_ssh_terminal_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_ssh_terminal_router', _SSH_TERMINAL_ROUTER_PATH)
+if _ssh_terminal_router_spec is None or _ssh_terminal_router_spec.loader is None:
+    raise ImportError(f'Could not load SSH Terminal router: {_SSH_TERMINAL_ROUTER_PATH}')
+_ssh_terminal_router_module = _realm_support_importlib_util.module_from_spec(_ssh_terminal_router_spec)
+_ssh_terminal_router_spec.loader.exec_module(_ssh_terminal_router_module)
+register_ssh_terminal_router = _ssh_terminal_router_module.register_ssh_terminal_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -259,7 +275,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.32"
+VERSION = "2.9.33"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -1606,145 +1622,6 @@ def ssh_file_error(exc: BaseException) -> HTTPException:
     return HTTPException(502, f"Secure file operation failed: {detail}")
 
 
-@app.post("/api/ssh/upload/{node_id}")
-async def ssh_upload_file(
-    node_id: int,
-    request: Request,
-    remote_path: str = Form(...),
-    overwrite: bool = Form(False),
-    file: UploadFile = File(...),
-    user: sqlite3.Row = Depends(current_user),
-):
-    node, password, key = ssh_file_node(node_id)
-    if file.size is not None and file.size > SSH_UPLOAD_LIMIT:
-        await file.close()
-        raise HTTPException(413, f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit")
-    try:
-        destination = clean_remote_path(remote_path, filename=file.filename)
-    except ValueError as exc:
-        await file.close()
-        raise HTTPException(400, str(exc)) from exc
-    if not destructive_remote_path_allowed(destination):
-        await file.close()
-        raise HTTPException(400, "This protected system path cannot be replaced through file upload")
-    temporary = f"{destination}.darknoc-{secrets.token_hex(8)}.part"
-    transferred = 0
-    try:
-        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
-            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
-                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                    async with ssh.start_sftp_client() as sftp:
-                        try:
-                            parent = posixpath.dirname(destination)
-                            parent_attrs = await sftp.stat(parent)
-                            if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
-                                raise HTTPException(400, "Destination parent is not a directory")
-                            if await sftp_path_exists(sftp, destination) and not overwrite:
-                                raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
-                            async with sftp.open(
-                                temporary,
-                                "xb",
-                                attrs=asyncssh.SFTPAttrs(permissions=0o600),
-                            ) as remote:
-                                while True:
-                                    if await request.is_disconnected():
-                                        raise HTTPException(499, "Client disconnected")
-                                    chunk = await asyncio.wait_for(file.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
-                                    if not chunk:
-                                        break
-                                    transferred += len(chunk)
-                                    if transferred > SSH_UPLOAD_LIMIT:
-                                        raise HTTPException(413, f"Upload exceeds the {SSH_UPLOAD_LIMIT // 1024 // 1024} MB limit")
-                                    await asyncio.wait_for(remote.write(chunk), SSH_TRANSFER_IDLE_TIMEOUT)
-                            async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], destination)):
-                                if await request.is_disconnected():
-                                    raise HTTPException(499, "Client disconnected")
-                                await finalize_sftp_file(sftp, temporary, destination, overwrite)
-                        except BaseException:
-                            await asyncio.shield(cleanup_sftp_path(sftp, temporary))
-                            raise
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-    finally:
-        try:
-            await asyncio.shield(file.close())
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            LOGGER.warning("Could not close uploaded file", exc_info=True)
-    try:
-        audit(user["id"], "ssh_file_upload", node["name"], f"Uploaded {transferred} bytes to {destination}", request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record successful SSH upload audit event")
-    return {"ok": True, "node": node["name"], "path": destination, "bytes": transferred}
-
-
-@app.post("/api/ssh/relay")
-async def ssh_relay_file(body: SSHRelayBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    source, source_password, source_key = ssh_file_node(body.source_node_id)
-    destination, destination_password, destination_key = ssh_file_node(body.destination_node_id)
-    if source["id"] == destination["id"] and body.source_path == body.destination_path:
-        raise HTTPException(400, "Source and destination are the same file")
-    if not destructive_remote_path_allowed(body.destination_path):
-        raise HTTPException(400, "This protected system path cannot be replaced through file relay")
-    temporary = f"{body.destination_path}.darknoc-{secrets.token_hex(8)}.part"
-    transferred = 0
-    try:
-        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
-            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
-                async with asyncssh.connect(**ssh_connection_options(source, source_password, source_key)) as source_ssh:
-                    async with asyncssh.connect(**ssh_connection_options(destination, destination_password, destination_key)) as destination_ssh:
-                        async with source_ssh.start_sftp_client() as source_sftp, destination_ssh.start_sftp_client() as destination_sftp:
-                            try:
-                                source_attrs = await source_sftp.stat(body.source_path)
-                                if source_attrs.permissions is not None and not statmod.S_ISREG(source_attrs.permissions):
-                                    raise HTTPException(400, "Source path must be a regular file")
-                                source_size = int(source_attrs.size or 0)
-                                if source_size > SSH_RELAY_LIMIT:
-                                    raise HTTPException(413, f"File exceeds the {SSH_RELAY_LIMIT // 1024 // 1024} MB relay limit")
-                                parent_attrs = await destination_sftp.stat(posixpath.dirname(body.destination_path))
-                                if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
-                                    raise HTTPException(400, "Destination parent is not a directory")
-                                if await sftp_path_exists(destination_sftp, body.destination_path) and not body.overwrite:
-                                    raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
-                                source_mode = statmod.S_IMODE(source_attrs.permissions) if source_attrs.permissions is not None else 0o600
-                                async with source_sftp.open(body.source_path, "rb") as reader, destination_sftp.open(
-                                    temporary,
-                                    "xb",
-                                    attrs=asyncssh.SFTPAttrs(permissions=source_mode),
-                                ) as writer:
-                                    while True:
-                                        if await request.is_disconnected():
-                                            raise HTTPException(499, "Client disconnected")
-                                        chunk = await asyncio.wait_for(reader.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
-                                        if not chunk:
-                                            break
-                                        transferred += len(chunk)
-                                        if transferred > SSH_RELAY_LIMIT:
-                                            raise HTTPException(413, f"File exceeds the {SSH_RELAY_LIMIT // 1024 // 1024} MB relay limit")
-                                        await asyncio.wait_for(writer.write(chunk), SSH_TRANSFER_IDLE_TIMEOUT)
-                                async with disconnect_aware_semaphore(
-                                    request, ssh_destination_lock(destination["id"], body.destination_path)
-                                ):
-                                    if await request.is_disconnected():
-                                        raise HTTPException(499, "Client disconnected")
-                                    await finalize_sftp_file(destination_sftp, temporary, body.destination_path, body.overwrite)
-                            except BaseException:
-                                await asyncio.shield(cleanup_sftp_path(destination_sftp, temporary))
-                                raise
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-    try:
-        audit(user["id"], "ssh_file_relay", f"{source['name']} → {destination['name']}", f"Relayed {transferred} bytes: {body.source_path} → {body.destination_path}", request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record successful SSH relay audit event")
-    return {"ok": True, "source_node": source["name"], "destination_node": destination["name"], "source_path": body.source_path, "destination_path": body.destination_path, "bytes": transferred}
-
-
 def sftp_entry(name: str, directory: str, attrs: Any) -> dict[str, Any]:
     permissions = int(getattr(attrs, "permissions", 0) or 0)
     item_type = "directory" if statmod.S_ISDIR(permissions) else "symlink" if statmod.S_ISLNK(permissions) else "file"
@@ -1758,219 +1635,24 @@ def sftp_entry(name: str, directory: str, attrs: Any) -> dict[str, Any]:
     }
 
 
-@app.get("/api/ssh/files/{node_id}")
-async def list_ssh_files(node_id: int, path: str = "/root", _: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    try:
-        directory = clean_remote_directory(path)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    try:
-        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
-            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                async with ssh.start_sftp_client() as sftp:
-                    attrs = await sftp.stat(directory)
-                    if attrs.permissions is not None and not statmod.S_ISDIR(attrs.permissions):
-                        raise HTTPException(400, "Remote path is not a directory")
-                    entries = []
-                    async for entry in sftp.scandir(directory):
-                        name = str(entry.filename)
-                        if name in {".", ".."}:
-                            continue
-                        entries.append(sftp_entry(name, directory, entry.attrs))
-        entries.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
-        parent = None if directory == "/" else posixpath.dirname(directory) or "/"
-        return {"node": node["name"], "path": directory, "parent": parent, "entries": entries[:5000]}
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-
-
-@app.get("/api/ssh/files/{node_id}/read")
-async def read_ssh_file(node_id: int, path: str, _: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    try:
-        remote_path = clean_remote_path(path)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    try:
-        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
-            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                async with ssh.start_sftp_client() as sftp:
-                    attrs = await sftp.stat(remote_path)
-                    if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
-                        raise HTTPException(400, "Only regular files can be opened in the editor")
-                    if int(attrs.size or 0) > SSH_EDITOR_LIMIT:
-                        raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
-                    async with sftp.open(remote_path, "rb") as remote:
-                        payload = await asyncio.wait_for(remote.read(SSH_EDITOR_LIMIT + 1), SSH_TRANSFER_IDLE_TIMEOUT)
-        if len(payload) > SSH_EDITOR_LIMIT:
-            raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
-        try:
-            content = payload.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HTTPException(415, "File is not valid UTF-8 text") from exc
-        return {"node": node["name"], "path": remote_path, "content": content, "bytes": len(payload)}
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-
-
-@app.put("/api/ssh/files/{node_id}/write")
-async def write_ssh_file(node_id: int, body: SSHFileWriteBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    if not destructive_remote_path_allowed(body.path):
-        raise HTTPException(400, "This protected system path cannot be edited from File Manager")
-    payload = body.content.encode("utf-8")
-    if len(payload) > SSH_EDITOR_LIMIT:
-        raise HTTPException(413, f"Editor limit is {SSH_EDITOR_LIMIT // 1024} KB")
-    temporary = f"{body.path}.darknoc-{secrets.token_hex(8)}.part"
-    try:
-        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 300)):
-            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
-                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                    async with ssh.start_sftp_client() as sftp:
-                        try:
-                            parent = await sftp.stat(posixpath.dirname(body.path))
-                            if parent.permissions is not None and not statmod.S_ISDIR(parent.permissions):
-                                raise HTTPException(400, "Destination parent is not a directory")
-                            if await sftp_path_exists(sftp, body.path) and not body.overwrite:
-                                raise HTTPException(409, "File already exists; enable overwrite to replace it")
-                            async with sftp.open(temporary, "xb", attrs=asyncssh.SFTPAttrs(permissions=0o600)) as remote:
-                                await asyncio.wait_for(remote.write(payload), SSH_TRANSFER_IDLE_TIMEOUT)
-                            async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], body.path)):
-                                await finalize_sftp_file(sftp, temporary, body.path, body.overwrite)
-                        except BaseException:
-                            await asyncio.shield(cleanup_sftp_path(sftp, temporary))
-                            raise
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-    try:
-        audit(user["id"], "ssh_file_write", node["name"], f"Saved {len(payload)} bytes to {body.path}", request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record SSH editor audit event")
-    return {"ok": True, "path": body.path, "bytes": len(payload)}
-
-
-@app.post("/api/ssh/files/{node_id}/action")
-async def ssh_file_action(node_id: int, body: SSHFileActionBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    if not destructive_remote_path_allowed(body.path):
-        raise HTTPException(400, "This protected system path cannot be changed from File Manager")
-    if body.action == "rename":
-        if not body.destination:
-            raise HTTPException(422, "Rename requires a destination path")
-        if not destructive_remote_path_allowed(body.destination):
-            raise HTTPException(400, "This protected destination cannot be changed from File Manager")
-    if body.action == "chmod" and not body.mode:
-        raise HTTPException(422, "CHMOD requires an octal mode")
-    try:
-        async with asyncio.timeout(min(SSH_TRANSFER_TIMEOUT, 120)):
-            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
-                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                    async with ssh.start_sftp_client() as sftp:
-                        async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], body.destination or body.path)):
-                            if body.action == "mkdir":
-                                await sftp.mkdir(body.path, attrs=asyncssh.SFTPAttrs(permissions=0o750))
-                            elif body.action == "rename":
-                                if await sftp_path_exists(sftp, body.destination or ""):
-                                    raise HTTPException(409, "Destination already exists")
-                                await sftp.rename(body.path, body.destination)
-                            elif body.action == "delete":
-                                attrs = await sftp.lstat(body.path)
-                                if attrs.permissions is not None and statmod.S_ISDIR(attrs.permissions):
-                                    await sftp.rmdir(body.path)
-                                else:
-                                    await sftp.remove(body.path)
-                            else:
-                                await sftp.chmod(body.path, int(body.mode or "600", 8))
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-    target = f"{body.path} -> {body.destination}" if body.destination else body.path
-    try:
-        audit(user["id"], f"ssh_file_{body.action}", node["name"], target, request.client.host if request.client else None)
-    except Exception:
-        LOGGER.exception("Could not record SSH File Manager action")
-    return {"ok": True, "action": body.action, "path": body.path, "destination": body.destination}
-
-
-@app.get("/api/ssh/files/{node_id}/checksum")
-async def checksum_ssh_file(node_id: int, path: str, _: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    try:
-        remote_path = clean_remote_path(path)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    digest = hashlib.sha256()
-    size = 0
-    try:
-        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
-            async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                async with ssh.start_sftp_client() as sftp:
-                    attrs = await sftp.stat(remote_path)
-                    if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
-                        raise HTTPException(400, "Checksum requires a regular file")
-                    async with sftp.open(remote_path, "rb") as remote:
-                        while True:
-                            chunk = await asyncio.wait_for(remote.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
-                            if not chunk:
-                                break
-                            size += len(chunk)
-                            digest.update(chunk)
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-    return {"node": node["name"], "path": remote_path, "bytes": size, "sha256": digest.hexdigest()}
-
-
-@app.get("/api/ssh/files/{node_id}/download")
-async def download_ssh_file(node_id: int, path: str, request: Request, user: sqlite3.Row = Depends(current_user)):
-    node, password, key = ssh_file_node(node_id)
-    try:
-        remote_path = clean_remote_path(path)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    try:
-        async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-            async with ssh.start_sftp_client() as sftp:
-                attrs = await sftp.stat(remote_path)
-                if attrs.permissions is not None and not statmod.S_ISREG(attrs.permissions):
-                    raise HTTPException(400, "Only regular files can be downloaded")
-    except BaseException as exc:
-        if not isinstance(exc, Exception):
-            raise
-        raise ssh_file_error(exc) from exc
-
-    async def stream_remote_file():
-        async with asyncio.timeout(SSH_TRANSFER_TIMEOUT):
-            async with disconnect_aware_semaphore(request, SSH_TRANSFER_SEMAPHORE):
-                async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
-                    async with ssh.start_sftp_client() as sftp:
-                        async with sftp.open(remote_path, "rb") as remote:
-                            while True:
-                                if await request.is_disconnected():
-                                    break
-                                chunk = await asyncio.wait_for(remote.read(SSH_FILE_CHUNK), SSH_TRANSFER_IDLE_TIMEOUT)
-                                if not chunk:
-                                    break
-                                yield chunk
-
-    safe_name = posixpath.basename(remote_path).replace('"', "_").replace("\\", "_") or "download.bin"
-    try:
-        audit(user["id"], "ssh_file_download", node["name"], remote_path)
-    except Exception:
-        LOGGER.exception("Could not record SSH download audit event")
-    return StreamingResponse(
-        stream_remote_file(), media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}"', "Cache-Control": "no-store"},
-    )
+_ssh_file_router, _ssh_file_handlers = register_ssh_file_router(
+    app,
+    current_user=current_user, ssh_file_node=ssh_file_node, clean_remote_path=clean_remote_path,
+    destructive_remote_path_allowed=destructive_remote_path_allowed,
+    disconnect_aware_semaphore=disconnect_aware_semaphore, ssh_connection_options=ssh_connection_options,
+    sftp_path_exists=sftp_path_exists, ssh_destination_lock=ssh_destination_lock,
+    finalize_sftp_file=finalize_sftp_file, cleanup_sftp_path=cleanup_sftp_path, ssh_file_error=ssh_file_error,
+    audit=audit, LOGGER=LOGGER, SSHRelayBody=SSHRelayBody, clean_remote_directory=clean_remote_directory,
+    sftp_entry=sftp_entry, SSHFileWriteBody=SSHFileWriteBody, SSHFileActionBody=SSHFileActionBody,
+    get_ssh_upload_limit=lambda: SSH_UPLOAD_LIMIT, get_ssh_relay_limit=lambda: SSH_RELAY_LIMIT,
+    get_ssh_transfer_timeout=lambda: SSH_TRANSFER_TIMEOUT,
+    get_ssh_transfer_idle_timeout=lambda: SSH_TRANSFER_IDLE_TIMEOUT,
+    get_ssh_transfer_semaphore=lambda: SSH_TRANSFER_SEMAPHORE, get_ssh_file_chunk=lambda: SSH_FILE_CHUNK,
+    get_ssh_editor_limit=lambda: SSH_EDITOR_LIMIT,
+)
+for _ssh_file_name, _ssh_file_handler in _ssh_file_handlers.items():
+    globals()[_ssh_file_name] = _ssh_file_handler
+del _ssh_file_name, _ssh_file_handler, _ssh_file_handlers
 
 
 def tunnel_topology_side(node_role: str, method: str, tunnel_role: str) -> str:
@@ -2533,6 +2215,18 @@ async def websocket_session_guard(session_digest: str, user_id: int, lifetime_de
     return False
 
 
+_ssh_terminal_router, _ssh_terminal_handlers = register_ssh_terminal_router(
+    app,
+    websocket_user=websocket_user, db=db, decrypt=decrypt, token_hash=token_hash, utc_ts=utc_ts, audit=audit,
+    websocket_session_valid=websocket_session_valid, websocket_session_guard=websocket_session_guard, LOGGER=LOGGER,
+    get_session_ttl=lambda: SESSION_TTL, get_ssh_keepalive_interval=lambda: SSH_KEEPALIVE_INTERVAL,
+    get_ssh_keepalive_count_max=lambda: SSH_KEEPALIVE_COUNT_MAX,
+)
+for _ssh_terminal_name, _ssh_terminal_handler in _ssh_terminal_handlers.items():
+    globals()[_ssh_terminal_name] = _ssh_terminal_handler
+del _ssh_terminal_name, _ssh_terminal_handler, _ssh_terminal_handlers
+
+
 @app.websocket("/ws/live")
 async def live_updates(websocket: WebSocket):
     user = await websocket_user(websocket)
@@ -2573,129 +2267,6 @@ async def live_updates(websocket: WebSocket):
         pass
     finally:
         LIVE_CLIENTS.discard(websocket)
-
-
-@app.websocket("/ws/ssh/{node_id}")
-async def ssh_terminal(websocket: WebSocket, node_id: int):
-    user = await websocket_user(websocket)
-    if not user:
-        await websocket.close(code=4401)
-        return
-    await websocket.accept()
-    with db() as conn:
-        node = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
-    if not node:
-        await websocket.send_json({"type": "error", "message": "Node not found"})
-        await websocket.close()
-        return
-    password, key = decrypt(node["ssh_password_enc"]), decrypt(node["ssh_key_enc"])
-    if not password and not key:
-        await websocket.send_json({"type": "error", "message": "SSH credentials are not configured"})
-        await websocket.close()
-        return
-    session_digest = token_hash(websocket.cookies.get("dark_noc_session", ""))
-    session_deadline = min(
-        int(user["session_expires_at"]),
-        int(user["session_created_at"]) + SESSION_TTL,
-        utc_ts() + SESSION_TTL,
-    )
-    requested_session = str(websocket.query_params.get("session", "workspace"))
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", requested_session):
-        await websocket.send_json({"type": "error", "message": "Invalid persistent terminal session name"})
-        await websocket.close(code=4400)
-        return
-    terminal_session = f"dn-{user['id']}-{node_id}-{requested_session}"[:64]
-    audit(user["id"], "ssh_open", node["name"], "Interactive terminal opened", websocket.client.host if websocket.client else None)
-    try:
-        expected_fingerprint = node["ssh_host_fingerprint"]
-
-        class PinnedSSHClient(asyncssh.SSHClient):
-            def validate_host_public_key(self, host: str, addr: str, port: int, host_key: Any) -> bool:
-                fingerprint = host_key.get_fingerprint("sha256")
-                if expected_fingerprint:
-                    return hmac.compare_digest(expected_fingerprint, fingerprint)
-                with db() as pin_conn:
-                    current = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-                    if not current:
-                        return False
-                    if current["ssh_host_fingerprint"]:
-                        return hmac.compare_digest(current["ssh_host_fingerprint"], fingerprint)
-                    changed = pin_conn.execute("UPDATE nodes SET ssh_host_fingerprint=?,updated_at=? WHERE id=? AND ssh_host_fingerprint IS NULL", (fingerprint, utc_ts(), node_id)).rowcount
-                    if changed == 1:
-                        return True
-                    saved = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-                    return bool(saved and saved["ssh_host_fingerprint"] and hmac.compare_digest(saved["ssh_host_fingerprint"], fingerprint))
-
-        options: dict[str, Any] = {
-            "host": node["host"], "port": node["ssh_port"], "username": node["ssh_user"],
-            "known_hosts": ([], [], [], [], [], [], []), "client_factory": PinnedSSHClient,
-            "connect_timeout": 12, "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
-            "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
-        }
-        if key:
-            options["client_keys"] = [asyncssh.import_private_key(key)]
-        if password:
-            options["password"] = password
-        async with asyncssh.connect(**options) as conn:
-            if not websocket_session_valid(session_digest, user["id"], session_deadline):
-                await websocket.close(code=4401)
-                return
-            tmux_probe = await conn.run("command -v tmux >/dev/null 2>&1", check=False)
-            persistent = tmux_probe.exit_status == 0
-            if persistent:
-                command = f"exec tmux new-session -A -s {shlex.quote(terminal_session)}"
-                process = await conn.create_process(command, term_type="xterm-256color", term_size=(120, 32))
-            else:
-                process = await conn.create_process(term_type="xterm-256color", term_size=(120, 32))
-
-            async def ssh_to_ws():
-                while not process.stdout.at_eof():
-                    chunk = await process.stdout.read(4096)
-                    if chunk:
-                        await websocket.send_json({"type": "output", "data": chunk})
-
-            async def ws_to_ssh():
-                while True:
-                    message = await websocket.receive_json()
-                    if message.get("type") == "input":
-                        process.stdin.write(str(message.get("data", "")))
-                    elif message.get("type") == "resize":
-                        process.change_terminal_size(int(message.get("cols", 120)), int(message.get("rows", 32)))
-                    elif message.get("type") == "ping":
-                        await websocket.send_json({"type": "pong", "server_time": utc_ts()})
-
-            with db() as pin_conn:
-                pinned = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-            await websocket.send_json({
-                "type": "connected",
-                "node": node["name"],
-                "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None,
-                "persistent": persistent,
-                "session": terminal_session,
-            })
-            auth_task = asyncio.create_task(websocket_session_guard(session_digest, user["id"], session_deadline))
-            tasks = {asyncio.create_task(ssh_to_ws()), asyncio.create_task(ws_to_ssh()), auth_task}
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
-            if auth_task in done and auth_task.result() is False:
-                await websocket.close(code=4401)
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:
-        try:
-            LOGGER.warning("SSH session failed for node %s: %s", node_id, exc)
-            detail = str(exc).strip().replace("\n", " ")[:240] or exc.__class__.__name__
-            await websocket.send_json({"type": "error", "message": f"SSH connection failed: {detail}"})
-        except Exception:
-            pass
-    finally:
-        audit(user["id"], "ssh_close", node["name"], "Interactive terminal closed", websocket.client.host if websocket.client else None)
-        try:
-            await websocket.close()
-        except Exception:
-            pass
 
 
 @app.get("/api/system/status")

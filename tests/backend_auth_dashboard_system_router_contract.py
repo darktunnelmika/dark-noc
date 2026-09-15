@@ -29,5 +29,5 @@ assert 'Hub is not ready' in system and 'FileResponse(STATIC_DIR / "index.html")
 assert 'app.mount("/static"' in app
 assert '@app.websocket("/ws/live")' in app
 assert 'def agent_heartbeat' in app and 'def agent_job_result' in app
-assert 'VERSION = "2.9.32"' in app
+assert 'VERSION = "2.9.33"' in app
 print('Auth/Dashboard/System router boundary passed')
