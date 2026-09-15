@@ -55,9 +55,6 @@ jobs:
               blocks.append(''.join(lines[start-1:end]).rstrip()+'\n')
               names.append(node.name)
 
-          # Preserve pure validation helpers referenced by schema validators. We copy
-          # them into schemas.py while leaving their existing app.py ownership intact
-          # for non-schema call sites; a later backend-services split can deduplicate.
           needed=[]; seen=set(); queue=[]
           for model in model_nodes:
               queue.extend(n.id for n in ast.walk(model) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load))
@@ -75,12 +72,14 @@ jobs:
               helper_blocks.append(''.join(lines[start-1:node.end_lineno]).rstrip()+'\n')
 
           new_text=''.join(line for i,line in enumerate(lines) if i not in remove)
+          rebuild='\nfor _schema_model in ['+', '.join(names)+']:\n    _schema_model.model_rebuild()\ndel _schema_model\n'
           schemas=(
               'from __future__ import annotations\n\n'
               'import ipaddress\nimport json\nimport posixpath\nimport re\nimport secrets\n\n'
               'from typing import Any\n\n'
               'from pydantic import BaseModel, Field, field_validator\n\n'
               + '\n'.join(helper_blocks + blocks)
+              + rebuild
           )
           Path('hub/schemas.py').write_text(schemas)
 
@@ -108,6 +107,7 @@ jobs:
               "schemas=(root/'hub/schemas.py').read_text()\n"
               "assert 'BaseModel' in schemas\n"
               "assert 'def clean_remote_path(' in schemas\n"
+              "assert '.model_rebuild()' in schemas\n"
               "assert \"with_name('schemas.py')\" in app\n"
               "assert '_schemas_spec.loader.exec_module' in app\n"
               "assert 'from pydantic import BaseModel, Field, field_validator' not in app\n"
