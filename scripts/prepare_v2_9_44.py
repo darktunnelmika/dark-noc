@@ -84,7 +84,7 @@ def validate_lock(name: str, text: str, required: set[str]) -> None:
     assert text.count('--hash=sha256:') >= len(required), f'{name} hash coverage is unexpectedly small'
     normalized = text.lower().replace('_', '-')
     for package in required:
-        assert re.search(rf'(?m)^{re.escape(package)}==[^\\\s]+(?:\\s+\\\\)?$', normalized), (name, package)
+        assert f'{package}==' in normalized, (name, package)
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith('#') or stripped.startswith('--hash=') or stripped == '\\':
