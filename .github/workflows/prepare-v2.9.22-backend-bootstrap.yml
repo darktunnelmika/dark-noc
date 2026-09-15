@@ -102,24 +102,25 @@ jobs:
           new_text = new_text.replace(anchor, anchor + loader, 1)
           app_path.write_text(new_text)
 
-          contract = '''from pathlib import Path
-root = Path(__file__).resolve().parents[1]
-app = (root / 'hub/app.py').read_text()
-bootstrap = (root / 'hub/database_bootstrap.py').read_text()
-assert "with_name('database_bootstrap.py')" in app
-assert '_database_bootstrap_spec.loader.exec_module' in app
-assert 'def bootstrap() -> None:' in app
-assert 'bootstrap_database(' in app
-assert 'def bootstrap_database(' in bootstrap
-assert 'ALTER TABLE plugin_deployments' in bootstrap
-assert 'ALTER TABLE nodes' in bootstrap
-assert 'interrupted_operations' in bootstrap
-assert 'DARK_NOC_ADMIN_PASSWORD' in bootstrap
-assert 'ALTER TABLE plugin_deployments' not in app
-assert 'interrupted_operations = conn.execute' not in app
-assert 'VERSION = "2.9.22"' in app
-print('Backend database bootstrap module boundary passed')
-'''
+          contract = (
+              "from pathlib import Path\n"
+              "root = Path(__file__).resolve().parents[1]\n"
+              "app = (root / 'hub/app.py').read_text()\n"
+              "bootstrap = (root / 'hub/database_bootstrap.py').read_text()\n"
+              "assert \"with_name('database_bootstrap.py')\" in app\n"
+              "assert '_database_bootstrap_spec.loader.exec_module' in app\n"
+              "assert 'def bootstrap() -> None:' in app\n"
+              "assert 'bootstrap_database(' in app\n"
+              "assert 'def bootstrap_database(' in bootstrap\n"
+              "assert 'ALTER TABLE plugin_deployments' in bootstrap\n"
+              "assert 'ALTER TABLE nodes' in bootstrap\n"
+              "assert 'interrupted_operations' in bootstrap\n"
+              "assert 'DARK_NOC_ADMIN_PASSWORD' in bootstrap\n"
+              "assert 'ALTER TABLE plugin_deployments' not in app\n"
+              "assert 'interrupted_operations = conn.execute' not in app\n"
+              "assert 'VERSION = \\\"2.9.22\\\"' in app\n"
+              "print('Backend database bootstrap module boundary passed')\n"
+          )
           Path('tests/backend_bootstrap_contract.py').write_text(contract)
 
           identity_paths = [
@@ -133,21 +134,17 @@ print('Backend database bootstrap module boundary passed')
               if '2.9.21' in value:
                   p.write_text(value.replace('2.9.21', '2.9.22'))
 
-          notes = '''# DARK NOC v2.9.22 — Database Bootstrap & Migrations Module
-
-- Continue database-layer modularization by extracting Hub database bootstrap, migrations and startup recovery into `hub/database_bootstrap.py`.
-- Preserve the existing SQLite schema, `ALTER TABLE` migration behavior, interrupted provisioning/fleet recovery and initial owner creation.
-- Keep `hub/app.py` with a compatibility `bootstrap()` wrapper and unchanged lifespan behavior.
-- Preserve API routes, feature query flows, Agent behavior and frontend visuals.
-- Add permanent database-bootstrap ownership regression coverage.
-
-## فارسی
-
-Bootstrap دیتابیس، Migrationها و Recoveryهای زمان شروع از `hub/app.py` به `hub/database_bootstrap.py` منتقل شدند؛ رفتار فعلی دیتابیس، API و پنل بدون تغییر باقی مانده است.
-
----
-
-'''
+          notes = (
+              '# DARK NOC v2.9.22 — Database Bootstrap & Migrations Module\n\n'
+              '- Continue database-layer modularization by extracting Hub database bootstrap, migrations and startup recovery into `hub/database_bootstrap.py`.\n'
+              '- Preserve the existing SQLite schema, `ALTER TABLE` migration behavior, interrupted provisioning/fleet recovery and initial owner creation.\n'
+              '- Keep `hub/app.py` with a compatibility `bootstrap()` wrapper and unchanged lifespan behavior.\n'
+              '- Preserve API routes, feature query flows, Agent behavior and frontend visuals.\n'
+              '- Add permanent database-bootstrap ownership regression coverage.\n\n'
+              '## فارسی\n\n'
+              'Bootstrap دیتابیس، Migrationها و Recoveryهای زمان شروع از `hub/app.py` به `hub/database_bootstrap.py` منتقل شدند؛ رفتار فعلی دیتابیس، API و پنل بدون تغییر باقی مانده است.\n\n'
+              '---\n\n'
+          )
           p = Path('RELEASE_NOTES.md')
           p.write_text(notes + p.read_text())
           p = Path('CHANGELOG.md')
