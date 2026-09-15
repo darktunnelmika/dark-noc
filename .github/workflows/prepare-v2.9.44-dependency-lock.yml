@@ -111,9 +111,11 @@ jobs:
           cp -a dist/. "$first/"
           scripts/build-release.sh
           diff -qr "$first" dist
-          tar -tzf dist/DARK-NOC-HUB-v2.9.44.tar.gz | grep -q 'hub/requirements.lock'
-          tar -tzf dist/DARK-NOC-HUB-v2.9.44.tar.gz | grep -q 'agent/requirements.lock'
-          tar -tzf dist/DARK-NOC-NODE-v2.9.44.tar.gz | grep -q 'agent/requirements.lock'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.44.tar.gz > /tmp/dark-noc-hub-v2.9.44.list
+          tar -tzf dist/DARK-NOC-NODE-v2.9.44.tar.gz > /tmp/dark-noc-node-v2.9.44.list
+          grep -q 'hub/requirements.lock' /tmp/dark-noc-hub-v2.9.44.list
+          grep -q 'agent/requirements.lock' /tmp/dark-noc-hub-v2.9.44.list
+          grep -q 'agent/requirements.lock' /tmp/dark-noc-node-v2.9.44.list
       - name: Commit verified candidate
         run: |
           set -Eeuo pipefail
