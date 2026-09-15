@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.17 — Delegated action router split
+
+- Split the monolithic delegated click router into Node, Plugin, Tunnel and cross-feature action handlers.
+- Keep central routing minimal and behavior-compatible.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.16 — Tunnel Operations module extraction
 
 - Extract tunnel cockpit/history/edit/delete runtime into tunnel-operations.js.

@@ -1,3 +1,17 @@
+# DARK NOC v2.9.17 — Delegated Action Router Split
+
+- Architecture review found the monolithic document click dispatcher to be the largest remaining frontend regression hotspot.
+- Split delegated Node, Plugin/Deployment, Tunnel and cross-feature actions into dedicated handler modules.
+- Keep the central dispatcher intentionally tiny and preserve action ordering/behavior.
+- No visual changes to Live Matrix, Incident, Monitoring, Fleet, SSH, File Manager or Tunnel cockpit.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+روتر بزرگ کلیک پنل به هندلرهای جدا برای Node، Plugin، Tunnel و عملیات عمومی تقسیم شد؛ ظاهر و رفتار فعلی پنل تغییر نکرده است.
+
+---
+
 # DARK NOC v2.9.16 — Tunnel Operations Module Extraction
 
 - Architecture review identified tunnel cockpit/runtime as the highest-risk remaining feature block in app.js.

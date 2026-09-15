@@ -541,101 +541,10 @@ $('#topology-search').addEventListener('input',event=>{state.topologySearch=even
 $('#topology-fullscreen').addEventListener('click',async()=>{const panel=$('.topology-panel');try{if(!document.fullscreenElement)await panel.requestFullscreen();else await document.exitFullscreen();}catch(error){showToast('FULLSCREEN UNAVAILABLE',error.message||'The browser blocked fullscreen mode.',true);}});
 
 document.addEventListener('click', event => {
-  const jump = event.target.closest('[data-jump]');
-  const takeControl = event.target.closest('#take-control');
-  const pluginDeploy = event.target.closest('.plugin-deploy');
-  const installMissing = event.target.closest('.plugin-install-missing');
-  const createTunnel = event.target.closest('[data-create-tunnel]');
-  const manageTunnel = event.target.closest('.tunnel-manage');
-  const tunnelAction = event.target.closest('[data-tunnel-action]');
-  const ssh = event.target.closest('.server-ssh');
-  const diagnostics = event.target.closest('.node-diagnostics');
-  const logs = event.target.closest('.node-logs');
-  const deleteNode = event.target.closest('.node-delete');
-  const restartTunnel = event.target.closest('.tunnel-restart');
-  const deployRetry = event.target.closest('.deploy-retry');
-  const deployRemove = event.target.closest('.deploy-remove');
-  const pairRetry = event.target.closest('.pair-retry');
-  const pairRemove = event.target.closest('.pair-remove');
-  const pairReveal = event.target.closest('.pair-reveal');
-  const topologyNode = event.target.closest('.node[data-node]');
-  const cyberNode = event.target.closest('.cyber-node');
-  const editNode = event.target.closest('.node-edit');
-  const resetPin = event.target.closest('.node-pin');
-  const serviceRestart = event.target.closest('.service-chip');
-  const incidentAck = event.target.closest('.incident-ack');
-  const incidentResolve = event.target.closest('.incident-resolve');
-  const incidentReopen = event.target.closest('.incident-reopen');
-  const incidentSelect = event.target.closest('[data-incident-select]');
-  const monitorRun = event.target.closest('.monitor-run');
-  const monitorHistory = event.target.closest('.monitor-history');
-  const monitorEdit = event.target.closest('.monitor-edit');
-  const monitorDelete = event.target.closest('.monitor-delete');
-  const fleetOutput = event.target.closest('[data-fleet-output]');
-  const fleetCancel = event.target.closest('.fleet-cancel');
-  const fileRow = event.target.closest('[data-file-index]');
-  const autohealNode = event.target.closest('.node-autoheal');
-  const provisionRetry = event.target.closest('.node-provision-retry');
-  const syncAgent = event.target.closest('.node-agent-sync');
-  const provisionLog = event.target.closest('.node-provision-log');
-  const certRenew = event.target.closest('.cert-renew');
-  const tunnelSSH = event.target.closest('[data-tunnel-ssh-node]');
-  const terminalClose = event.target.closest('.terminal-close');
-  if (jump) { switchView(jump.dataset.jump); const modal=jump.closest('.modal-backdrop'); if(modal)closeModal(modal); }
-  if (takeControl) { const node=state.nodes.find(item=>item.id===Number(takeControl.dataset.nodeId))||state.nodes.find(item=>item.status!=='online')||state.nodes[0]; if(node)connectSSH(node.id); else showToast('NO NODE AVAILABLE','Add a server first.',true); }
-  if(createTunnel){const trigger=$('.plugin-deploy');if(trigger)trigger.click();}
-  if(installMissing){const pluginId=installMissing.dataset.pluginId,plugin=state.plugins.find(p=>p.id===pluginId),missing=state.nodes.filter(node=>node.status==='online'&&!pluginInventory(node,pluginId)?.installed);Promise.all(missing.map(node=>api(`/api/nodes/${node.id}/plugins/${pluginId}/install`,{method:'POST'}))).then(()=>showToast('CORE INSTALL QUEUED',`${missing.length} Agent${missing.length===1?'':'s'} will install ${plugin?.name||pluginId}.`)).catch(error=>showToast('INSTALL FAILED',error.message,true));}
-  if (pluginDeploy) {
-    state.selectedPlugin=pluginDeploy.dataset.pluginId;
-    const plugin=state.plugins.find(item=>item.id===state.selectedPlugin);
-    $('#plugin-title').textContent=`Deploy ${plugin?.name||state.selectedPlugin}`;
-    const transport=$('#plugin-form').elements.transport;
-    transport.innerHTML=(plugin?.transports||[]).map((item,index)=>`<option value="${esc(item)}">${esc(item.toUpperCase())}${index===0?' · Recommended':''}</option>`).join('');
-    const online = state.nodes.filter(node=>node.status==='online');
-    const iranNodes=online.filter(node=>['edge','hub'].includes(node.role)), kharejNodes=online.filter(node=>node.role==='exit');
-    if (!iranNodes.length) return showToast('IRAN AGENT REQUIRED','At least one online Iran Edge or Hub Agent is required.',true);
-    $('#plugin-iran-node').innerHTML = iranNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
-    $('#plugin-kharej-node').innerHTML = kharejNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
-    const form=$('#plugin-form');form.reset();form.elements.name.value='dark-link';form.elements.tunnel_port.value='3080';form.elements.target_host.value='127.0.0.1';form.elements.ws_path.value=`/dark-${crypto.getRandomValues(new Uint32Array(2)).join('')}`;form.elements.ws_mask.value='skipped';
-    const iran = iranNodes[0],kharej=kharejNodes[0];
-    $('#plugin-iran-node').value=iran.id;if(kharej){$('#plugin-kharej-node').value=kharej.id;form.elements.kharej_endpoint.value=kharej.host;}$('#plugin-endpoint').value=state.selectedPlugin==='dark-realm'?(kharej?.host||''):iran.host;updatePluginMode();
-    openModal('#plugin-modal');
-  }
-  if (ssh) connectSSH(ssh.dataset.nodeId);
-  if(manageTunnel){const tunnel=state.tunnels.find(item=>item.id===Number(manageTunnel.dataset.tunnelId));if(tunnel)openTunnelManager(tunnel);}
-  if(tunnelSSH){const nodeId=Number(tunnelSSH.dataset.tunnelSshNode);closeModal($('#tunnel-manage-modal'));connectSSH(nodeId);}
-  if(terminalClose){const card=terminalClose.closest('.terminal-card'),slot=$('.terminal-screen',card)?.id;if(slot){closeSocket(slot);if($$('.terminal-card').length>1){state.terminals.get(slot)?.terminal.dispose();state.terminals.delete(slot);card.remove();selectTerminalCard($('.terminal-card'));activeTerminal()?.fitAddon.fit();}else{state.terminals.get(slot)?.terminal.reset();$('.terminal-server strong',card).textContent='NO SESSION';$('.terminal-server small',card).textContent='Select a server and connect';$('.ssh-online',card).textContent='● IDLE';}}}
-  if(tunnelAction&&state.selectedTunnel){const action=tunnelAction.dataset.tunnelAction;if(action==='stop'&&!confirm(`Stop ${state.selectedTunnel.name}?`))return;api(`/api/tunnels/${state.selectedTunnel.id}/action`,{method:'POST',body:JSON.stringify({action})}).then(result=>{showToast('TUNNEL JOB QUEUED',`${action.toUpperCase()} sent to ${state.selectedTunnel.node_name}.`);if(['logs','status','test'].includes(action))waitForJob(result.job_id);setTimeout(refresh,2500);}).catch(error=>showToast('TUNNEL ACTION FAILED',error.message,true));}
-  if (diagnostics) createJob(Number(diagnostics.dataset.nodeId),'diagnostics',null,{},true).catch(error=>showToast('COMMAND FAILED',error.message,true));
-  if (logs) createJob(Number(logs.dataset.nodeId),'logs',null,{},true).catch(error=>showToast('LOG REQUEST FAILED',error.message,true));
-  if (deleteNode && confirm(`Delete node “${deleteNode.dataset.nodeName}” and its telemetry from DARK NOC?`)) api(`/api/nodes/${Number(deleteNode.dataset.nodeId)}`,{method:'DELETE'}).then(()=>{showToast('NODE DELETED',`${deleteNode.dataset.nodeName} was removed from the Hub.`);refresh();}).catch(error=>showToast('DELETE FAILED',error.message,true));
-  if (restartTunnel) { if(!restartTunnel.dataset.service)return showToast('NO SERVICE DEFINED','Register a systemd service for this tunnel first.',true); if(confirm(`Restart ${restartTunnel.dataset.service}?`))createJob(Number(restartTunnel.dataset.nodeId),'restart_service',restartTunnel.dataset.service,{},true).then(()=>setTimeout(refresh,3500)); }
-  if (deployRetry) api(`/api/plugin-deployments/${Number(deployRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('RETRY QUEUED','Only the failed side will be deployed again.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
-  if (deployRemove && confirm('Remove this managed tunnel from both servers?')) api(`/api/plugin-deployments/${Number(deployRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('REMOVAL QUEUED','The tunnel will be removed from both Agents.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));
-  if(pairReveal)api(`/api/hybrid-deployments/${Number(pairReveal.dataset.deploymentId)}/pair-code`,{method:'POST'}).then(result=>{const name=result.pair_code.startsWith('DR1.')?'DARK Realm Pro':result.pair_code.startsWith('DGP-')?'DARK Ghost Pro':result.pair_code.startsWith('DPP-N1-')?'DARK Packet Pro':'DARK Backhaul';$('#output-title').textContent='DARK NOC PAIR CODE';$('#job-output').textContent=`KEEP THIS CODE SECRET\n\n${result.pair_code}\n\nOn the KHAREJ server run ${name}, select KHAREJ, choose Connect with DARK NOC Pair Code, and paste this code.`;openModal('#output-modal');}).catch(error=>showToast('PAIR CODE FAILED',error.message,true));
-  if(pairRetry)api(`/api/hybrid-deployments/${Number(pairRetry.dataset.deploymentId)}/retry`,{method:'POST'}).then(()=>{showToast('IRAN RETRY QUEUED','Only the managed Iran side will be retried.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
-  if(pairRemove&&confirm('Remove the IRAN side? You must remove the KHAREJ side manually from its script.'))api(`/api/hybrid-deployments/${Number(pairRemove.dataset.deploymentId)}/remove`,{method:'POST'}).then(()=>{showToast('IRAN REMOVAL QUEUED','Remove the foreign side manually using the matching DARK tunnel script.');refresh();}).catch(error=>showToast('REMOVAL FAILED',error.message,true));
-  if (topologyNode) { const node=state.nodes.find(item=>item.name===topologyNode.dataset.node); switchView('servers'); if(node) showToast('NODE LOCATED',`${node.name} · ${node.status}`); }
-  if(cyberNode){const node=state.nodes.find(item=>item.id===Number(cyberNode.dataset.nodeId));const related=node?state.tunnels.filter(item=>Number(item.node_id)===node.id||Number(item.peer_node_id)===node.id):[];$('#output-title').textContent=node?`${node.name} · NODE INTELLIGENCE`:cyberNode.dataset.endpointName;$('#job-output').textContent=node?`ROLE: ${node.role}\nHOST: ${node.host}\nOBSERVED IP: ${node.observed_ip||'—'}\nAGENT: ${node.status}\nSSH: ${node.ssh_configured?'READY':'NO ACCESS'}\nLAST SEEN: ${relativeTime(node.last_seen)}\n\nDARK BACKHAUL PATHS:\n${related.map(item=>`• ${item.name} · ${String(item.status).toUpperCase()} · ${item.sessions||0} sessions`).join('\n')||'None'}`:'This endpoint is visible from a live Backhaul TCP peer but is not enrolled as a manageable Node.';openModal('#output-modal');}
-  if(editNode){const node=state.nodes.find(item=>item.id===Number(editNode.dataset.nodeId));if(node)openNodeEditor(node);}
-  if(resetPin&&confirm('Forget the pinned SSH fingerprint? Only do this after verifying the server key changed.'))api(`/api/nodes/${Number(resetPin.dataset.nodeId)}/ssh-fingerprint`,{method:'DELETE'}).then(()=>showToast('SSH PIN RESET','The next SSH connection will pin the presented host key.')).catch(error=>showToast('PIN RESET FAILED',error.message,true));
-  if(serviceRestart&&confirm(`Restart ${serviceRestart.dataset.serviceName}?`))createJob(Number(serviceRestart.dataset.serviceNode),'restart_service',serviceRestart.dataset.serviceName,{},true).then(()=>setTimeout(refresh,2500)).catch(error=>showToast('SERVICE RESTART FAILED',error.message,true));
-  if(incidentSelect)loadIncidentDetail(Number(incidentSelect.dataset.incidentSelect));
-  if(incidentAck){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentAck.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'acknowledge',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));}
-  if(incidentResolve&&confirm('Resolve this incident and record the operator findings?')){const form=$('#incident-note-form');api(`/api/incidents/${Number(incidentResolve.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'resolve',note:form?.elements.message.value||null,root_cause:form?.elements.root_cause.value||null,resolution:form?.elements.resolution.value||null})}).then(()=>{if(form)form.elements.message.value='';return refresh();}).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));}
-  if(incidentReopen&&confirm('Reopen this incident?'))api(`/api/incidents/${Number(incidentReopen.dataset.incidentId)}/action`,{method:'POST',body:JSON.stringify({action:'reopen'})}).then(refresh).catch(error=>showToast('INCIDENT ACTION FAILED',error.message,true));
-  if(monitorRun)api(`/api/monitors/${Number(monitorRun.dataset.monitorId)}/run`,{method:'POST'}).then(result=>{showToast('MONITOR QUEUED',`Job #${result.job_id} is running from its assigned Agent.`);setTimeout(refresh,1800);}).catch(error=>showToast('MONITOR FAILED',error.message,true));
-  if(monitorHistory){const monitor=state.monitors.find(item=>item.id===Number(monitorHistory.dataset.monitorId));api(`/api/monitors/${Number(monitorHistory.dataset.monitorId)}/results?limit=200`).then(results=>{$('#output-title').textContent=`${monitor?.name||'MONITOR'} · LAST ${results.length} CHECKS`;$('#job-output').textContent=results.map(result=>`${new Date(result.ts*1000).toLocaleString('en-GB')}  ${String(result.status).toUpperCase().padEnd(4)}  ${result.latency_ms==null?'—':`${Number(result.latency_ms).toFixed(1)} ms`}\n${JSON.stringify(result.detail||{})}`).join('\n\n')||'No results yet.';openModal('#output-modal');}).catch(error=>showToast('HISTORY FAILED',error.message,true));}
-  if(monitorEdit){const monitor=state.monitors.find(item=>item.id===Number(monitorEdit.dataset.monitorId));if(monitor)openMonitorEditor(monitor);}
-  if(monitorDelete&&confirm(`Delete monitor “${monitorDelete.dataset.monitorName}” and its result history?`))api(`/api/monitors/${Number(monitorDelete.dataset.monitorId)}`,{method:'DELETE'}).then(()=>{showToast('MONITOR DELETED',monitorDelete.dataset.monitorName);refresh();}).catch(error=>showToast('DELETE FAILED',error.message,true));
-  if(fleetOutput){const operation=state.fleetOperations.find(item=>item.id===Number(fleetOutput.dataset.operationId)),item=operation?.items?.find(entry=>entry.id===Number(fleetOutput.dataset.fleetOutput));$('#output-title').textContent=`FLEET OUTPUT · ${item?.node_name||'NODE'}`;$('#job-output').textContent=item?.output||'No output yet.';openModal('#output-modal');}
-  if(fleetCancel&&confirm('Cancel this scheduled fleet operation?'))api(`/api/fleet/operations/${Number(fleetCancel.dataset.operationId)}`,{method:'DELETE'}).then(refresh).catch(error=>showToast('CANCEL FAILED',error.message,true));
-  if(fileRow){const entry=state.files.entries[Number(fileRow.dataset.fileIndex)];if(entry){fileSelection(entry);fileRow.classList.add('selected');}}
-  if(autohealNode){const node=state.nodes.find(item=>item.id===Number(autohealNode.dataset.nodeId));if(node){const enabled=!Boolean(node.autoheal_enabled);if(confirm(`${enabled?'Enable':'Disable'} Auto-Heal on ${node.name}?`))createJob(node.id,'configure_autoheal',null,{enabled,cooldown_seconds:Number(node.autoheal_cooldown||300),max_restarts_per_hour:Number(node.autoheal_max_restarts||3)},true).then(()=>setTimeout(refresh,3000)).catch(error=>showToast('AUTO-HEAL UPDATE FAILED',error.message,true));}}
-  if(provisionRetry)api(`/api/nodes/${Number(provisionRetry.dataset.nodeId)}/provision`,{method:'POST'}).then(()=>{showToast('INSTALLATION RETRIED','The Hub is reconnecting and installing the Agent.');refresh();}).catch(error=>showToast('RETRY FAILED',error.message,true));
-  if(syncAgent){const node=state.nodes.find(item=>item.id===Number(syncAgent.dataset.nodeId));if(node&&confirm(`Redeploy and synchronize the DARK NOC Agent on “${node.name}”?\n\nManaged configuration and tunnels will be preserved.`))api(`/api/nodes/${node.id}/provision`,{method:'POST'}).then(()=>{showToast('AGENT SYNC STARTED',`${node.name} is receiving the matching Agent build; managed configuration and tunnels are preserved.`);refresh();}).catch(error=>showToast('AGENT SYNC FAILED',error.message,true));}
-  if(provisionLog){const node=state.nodes.find(item=>item.id===Number(provisionLog.dataset.nodeId));if(node){$('#output-title').textContent=`${node.name} · installation ${String(node.provision_status||'unknown').toUpperCase()}`;$('#job-output').textContent=node.provision_output||'Installation is running; refresh in a few seconds.';openModal('#output-modal');}}
-  if(certRenew)api(`/api/certificates/${Number(certRenew.dataset.certId)}/renew`,{method:'POST'}).then(result=>{showToast('RENEWAL QUEUED',`Certificate job #${result.job_id} queued.`);refresh();}).catch(error=>showToast('RENEWAL FAILED',error.message,true));
+  if (handleNodeActions(event)) return;
+  if (handlePluginActions(event)) return;
+  if (handleTunnelActions(event)) return;
+  handleOpsActions(event);
 });
 
 $('#plugin-mode').addEventListener('change',updatePluginMode);
