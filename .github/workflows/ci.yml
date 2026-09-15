@@ -85,6 +85,7 @@ jobs:
           python tests/backend_operations_router_contract.py
           python tests/backend_auth_dashboard_system_router_contract.py
           python tests/backend_ssh_router_contract.py
+          python tests/backend_jobs_system_router_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
