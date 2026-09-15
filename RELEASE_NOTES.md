@@ -1,3 +1,19 @@
+# DARK NOC v2.9.44 — Dependency Lock & Supply-Chain Hardening
+
+- Add separate hash-locked dependency graphs for Hub and Agent (`requirements.lock`).
+- Generate the locks from reviewed direct requirements with pinned `pip-tools==7.6.1`.
+- Enforce `pip --require-hashes` on Hub installs, local Agent installs, zero-touch remote Agent provisioning and normal Agent upgrades.
+- Keep rollback compatibility with pre-v2.9.44 installations which only have legacy `requirements.txt`.
+- Add a permanent drift guard covering transitive pins, SHA256 hashes and runtime install paths.
+- Keep the direct dependency versions unchanged in this release; this step captures and freezes the dependency graph already validated by DARK NOC.
+- No API, Agent protocol, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+برای Hub و Agent فایل Lock مستقل با Pin کامل dependencyهای ترانزیتی و SHA256 اضافه شد. نصب‌های جدید و Provision/Upgrade از `--require-hashes` استفاده می‌کنند تا تغییر ناخواسته dependency یا جایگزینی فایل پکیج باعث تغییر رفتار پنل نشود؛ Rollback به نسخه‌های قدیمی هم همچنان پشتیبانی می‌شود.
+
+---
+
 # DARK NOC v2.9.43 — FastAPI Dependency Hardening
 
 - Upgrade the Hub API framework from `fastapi==0.115.6` to `fastapi==0.141.1`.

@@ -1,3 +1,9 @@
+## v2.9.44
+- Supply-chain hardening: add SHA256 hash-locked Hub and Agent dependency graphs.
+- Enforce `--require-hashes` in install, provisioning and upgrade paths.
+- Preserve legacy requirements fallback only for rollback compatibility with older releases.
+- No direct dependency version, API, Agent protocol, tunnel, frontend or Live Matrix behavior changes.
+
 ## v2.9.43
 - Dependency hardening: pin `fastapi==0.141.1` (from 0.115.6).
 - Add permanent APIRouter/request/auth/WebSocket compatibility coverage.
