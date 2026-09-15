@@ -1,0 +1,207 @@
+name: Prepare v2.9.22 Backend Bootstrap modularization
+
+on:
+  push:
+    branches: [automation/v2.9.22-backend-bootstrap]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract database bootstrap and migrations
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+
+          app_path = Path('hub/app.py')
+          text = app_path.read_text()
+          tree = ast.parse(text)
+          bootstrap_node = next(
+              node for node in tree.body
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'bootstrap'
+          )
+          assert isinstance(bootstrap_node, ast.FunctionDef), 'bootstrap must remain synchronous'
+          lines = text.splitlines(True)
+          assert bootstrap_node.body, 'bootstrap body is empty'
+          body = ''.join(lines[bootstrap_node.body[0].lineno - 1:bootstrap_node.end_lineno])
+          original = ''.join(lines[bootstrap_node.lineno - 1:bootstrap_node.end_lineno])
+          for marker in [
+              'ALTER TABLE plugin_deployments',
+              'ALTER TABLE nodes',
+              'interrupted_operations',
+              'DARK_NOC_ADMIN_PASSWORD',
+              'finalize_fleet_operation',
+          ]:
+              assert marker in original, f'missing expected bootstrap marker: {marker}'
+
+          module = (
+              'from __future__ import annotations\n\n'
+              'import os\n'
+              'from pathlib import Path\n'
+              'from typing import Any\n\n'
+              'from cryptography.fernet import Fernet\n\n\n'
+              'def bootstrap_database(\n'
+              '    *,\n'
+              '    DATA_DIR: Path,\n'
+              '    KEY_PATH: Path,\n'
+              '    db: Any,\n'
+              '    SCHEMA: str,\n'
+              '    utc_ts: Any,\n'
+              '    hash_password: Any,\n'
+              '    finalize_fleet_operation: Any,\n'
+              ') -> None:\n'
+              + body
+          )
+          Path('hub/database_bootstrap.py').write_text(module)
+
+          wrapper = (
+              'def bootstrap() -> None:\n'
+              '    bootstrap_database(\n'
+              '        DATA_DIR=DATA_DIR,\n'
+              '        KEY_PATH=KEY_PATH,\n'
+              '        db=db,\n'
+              '        SCHEMA=SCHEMA,\n'
+              '        utc_ts=utc_ts,\n'
+              '        hash_password=hash_password,\n'
+              '        finalize_fleet_operation=finalize_fleet_operation,\n'
+              '    )\n'
+          )
+          new_text = ''.join(
+              lines[:bootstrap_node.lineno - 1]
+              + [wrapper]
+              + lines[bootstrap_node.end_lineno:]
+          )
+          anchor = 'del _database_name\n'
+          assert anchor in new_text
+          loader = (
+              "\n_DATABASE_BOOTSTRAP_PATH = Path(__file__).resolve().with_name('database_bootstrap.py')\n"
+              "_database_bootstrap_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_database_bootstrap', _DATABASE_BOOTSTRAP_PATH)\n"
+              "if _database_bootstrap_spec is None or _database_bootstrap_spec.loader is None:\n"
+              "    raise ImportError(f'Could not load database bootstrap: {_DATABASE_BOOTSTRAP_PATH}')\n"
+              "_database_bootstrap_module = _realm_support_importlib_util.module_from_spec(_database_bootstrap_spec)\n"
+              "_database_bootstrap_spec.loader.exec_module(_database_bootstrap_module)\n"
+              "bootstrap_database = _database_bootstrap_module.bootstrap_database\n"
+          )
+          new_text = new_text.replace(anchor, anchor + loader, 1)
+          app_path.write_text(new_text)
+
+          contract = '''from pathlib import Path
+root = Path(__file__).resolve().parents[1]
+app = (root / 'hub/app.py').read_text()
+bootstrap = (root / 'hub/database_bootstrap.py').read_text()
+assert "with_name('database_bootstrap.py')" in app
+assert '_database_bootstrap_spec.loader.exec_module' in app
+assert 'def bootstrap() -> None:' in app
+assert 'bootstrap_database(' in app
+assert 'def bootstrap_database(' in bootstrap
+assert 'ALTER TABLE plugin_deployments' in bootstrap
+assert 'ALTER TABLE nodes' in bootstrap
+assert 'interrupted_operations' in bootstrap
+assert 'DARK_NOC_ADMIN_PASSWORD' in bootstrap
+assert 'ALTER TABLE plugin_deployments' not in app
+assert 'interrupted_operations = conn.execute' not in app
+assert 'VERSION = "2.9.22"' in app
+print('Backend database bootstrap module boundary passed')
+'''
+          Path('tests/backend_bootstrap_contract.py').write_text(contract)
+
+          identity_paths = [
+              Path('hub/app.py'), Path('agent/agent.py'), Path('darknoc'),
+              Path('install-hub.sh'), Path('install-node.sh'), Path('upgrade.sh'),
+              Path('hub/static/index.html'),
+          ]
+          identity_paths.extend(Path('tests').glob('*.py'))
+          for p in identity_paths:
+              value = p.read_text()
+              if '2.9.21' in value:
+                  p.write_text(value.replace('2.9.21', '2.9.22'))
+
+          notes = '''# DARK NOC v2.9.22 — Database Bootstrap & Migrations Module
+
+- Continue database-layer modularization by extracting Hub database bootstrap, migrations and startup recovery into `hub/database_bootstrap.py`.
+- Preserve the existing SQLite schema, `ALTER TABLE` migration behavior, interrupted provisioning/fleet recovery and initial owner creation.
+- Keep `hub/app.py` with a compatibility `bootstrap()` wrapper and unchanged lifespan behavior.
+- Preserve API routes, feature query flows, Agent behavior and frontend visuals.
+- Add permanent database-bootstrap ownership regression coverage.
+
+## فارسی
+
+Bootstrap دیتابیس، Migrationها و Recoveryهای زمان شروع از `hub/app.py` به `hub/database_bootstrap.py` منتقل شدند؛ رفتار فعلی دیتابیس، API و پنل بدون تغییر باقی مانده است.
+
+---
+
+'''
+          p = Path('RELEASE_NOTES.md')
+          p.write_text(notes + p.read_text())
+          p = Path('CHANGELOG.md')
+          old = p.read_text()
+          first, sep, rest = old.partition('\n')
+          p.write_text(first + sep + '\n## 2.9.22 — Database bootstrap and migrations module\n\n- Extract database bootstrap, ALTER TABLE migrations and startup recovery into hub/database_bootstrap.py.\n- Preserve initialization and recovery behavior through a thin app.py compatibility wrapper.\n- Add backend bootstrap ownership regression coverage.\n\n' + rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          for js in hub/static/*.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+          python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
+          python tests/backend_database_contract.py
+          python tests/backend_bootstrap_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"; cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.22.tar.gz | grep -q 'database_bootstrap.py'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/database_bootstrap.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract database bootstrap for v2.9.22'
+          git push origin HEAD:refs/heads/release/v2.9.22-backend-bootstrap
