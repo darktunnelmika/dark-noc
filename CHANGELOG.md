@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.20 — Backend request schemas module
+
+- Extract Pydantic request and validation models from hub/app.py into hub/schemas.py.
+- Preserve API payload contracts and behavior.
+- Add backend schema ownership regression coverage.
+
+
 ## 2.9.19 — Backend runtime configuration module
 
 - Extract environment parsing and runtime limits from hub/app.py into hub/runtime_config.py.

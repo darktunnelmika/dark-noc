@@ -51,7 +51,6 @@ except Exception as exc:
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
 
 _RUNTIME_CONFIG_PATH = Path(__file__).resolve().with_name('runtime_config.py')
 _runtime_config_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_runtime_config', _RUNTIME_CONFIG_PATH)
@@ -63,6 +62,16 @@ for _runtime_name in ['SSH_UPLOAD_LIMIT', 'SSH_RELAY_LIMIT', 'SSH_TRANSFER_CONCU
     globals()[_runtime_name] = getattr(_runtime_config_module, _runtime_name)
 del _runtime_name
 
+_SCHEMAS_PATH = Path(__file__).resolve().with_name('schemas.py')
+_schemas_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_schemas', _SCHEMAS_PATH)
+if _schemas_spec is None or _schemas_spec.loader is None:
+    raise ImportError(f'Could not load request schemas: {_SCHEMAS_PATH}')
+_schemas_module = _realm_support_importlib_util.module_from_spec(_schemas_spec)
+_schemas_spec.loader.exec_module(_schemas_module)
+for _schema_name in ['LoginBody', 'NodeBody', 'SSHRelayBody', 'IncidentActionBody', 'IncidentNoteBody', 'MonitorBody', 'FleetOperationBody', 'SSHFileActionBody', 'SSHFileWriteBody', 'JobBody', 'PluginDeployBody', 'PairCodeDeployBody', 'TunnelActionBody', 'TunnelReconfigureBody', 'CertificateBody', 'AgentPulse', 'AgentReport', 'JobResult']:
+    globals()[_schema_name] = getattr(_schemas_module, _schema_name)
+del _schema_name
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DARK_NOC_DATA", "/var/lib/dark-noc"))
 DB_PATH = DATA_DIR / "dark-noc.db"
@@ -73,7 +82,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.19"
+VERSION = "2.9.20"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -816,253 +825,44 @@ PLUGIN_CATALOG = [{
 }]
 
 
-class LoginBody(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=256)
 
 
-class NodeBody(BaseModel):
-    name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,48}$")
-    region: str = Field(min_length=2, max_length=64)
-    role: str = Field(default="edge", pattern=r"^(edge|exit|hub)$")
-    host: str = Field(min_length=1, max_length=255)
-    ssh_port: int = Field(default=22, ge=1, le=65535)
-    ssh_user: str = Field(default="root", min_length=1, max_length=64)
-    ssh_password: str | None = Field(default=None, max_length=512)
-    ssh_private_key: str | None = Field(default=None, max_length=32768)
-
-    @field_validator("host")
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        value = value.strip()
-        try:
-            ipaddress.ip_address(value)
-            return canonical_node_host(value)
-        except ValueError:
-            if not value or len(value) > 253 or not all(part and len(part) <= 63 and part.replace("-", "a").isalnum() and not part.startswith("-") and not part.endswith("-") for part in value.rstrip(".").split(".")):
-                raise ValueError("Invalid host or IP address")
-            return canonical_node_host(value)
 
 
 class NodeUpdateBody(NodeBody):
     pass
 
 
-class SSHRelayBody(BaseModel):
-    source_node_id: int = Field(gt=0)
-    destination_node_id: int = Field(gt=0)
-    source_path: str = Field(min_length=2, max_length=4096)
-    destination_path: str = Field(min_length=2, max_length=4096)
-    overwrite: bool = False
-
-    @field_validator("source_path", "destination_path")
-    @classmethod
-    def validate_remote_path(cls, value: str) -> str:
-        return clean_remote_path(value)
 
 
-class IncidentActionBody(BaseModel):
-    action: str = Field(pattern=r"^(acknowledge|resolve|reopen)$")
-    note: str | None = Field(default=None, max_length=4000)
-    root_cause: str | None = Field(default=None, max_length=4000)
-    resolution: str | None = Field(default=None, max_length=4000)
 
 
-class IncidentNoteBody(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
-    event_type: str = Field(default="note", pattern=r"^(note|diagnostic|action)$")
 
 
-class MonitorBody(BaseModel):
-    name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,64}$")
-    node_id: int = Field(gt=0)
-    kind: str = Field(pattern=r"^(icmp|tcp|http|https|dns|tls|snmp)$")
-    target: str = Field(min_length=1, max_length=512)
-    port: int | None = Field(default=None, ge=1, le=65535)
-    interval_seconds: int = Field(default=60, ge=15, le=86400)
-    timeout_seconds: int = Field(default=5, ge=1, le=60)
-    expected_status: int | None = Field(default=None, ge=100, le=599)
-    snmp_community: str | None = Field(default=None, min_length=1, max_length=256)
-    snmp_oid: str | None = Field(default=None, pattern=r"^\.?[0-9]+(?:\.[0-9]+)+$")
-    enabled: bool = True
-
-    @field_validator("target")
-    @classmethod
-    def validate_monitor_target(cls, value: str) -> str:
-        value = value.strip()
-        if not value or any(ord(char) < 32 for char in value):
-            raise ValueError("Invalid monitor target")
-        return value
 
 
-class FleetOperationBody(BaseModel):
-    name: str = Field(pattern=r"^[A-Za-z0-9_.() -]{2,80}$")
-    node_ids: list[int] = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|logs|configure_autoheal|sync_agent|upgrade_agents)$")
-    service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.@-]{1,128}$")
-    payload: dict[str, Any] = Field(default_factory=dict)
-    scheduled_at: int | None = Field(default=None, ge=0)
 
 
-class SSHFileActionBody(BaseModel):
-    action: str = Field(pattern=r"^(mkdir|rename|delete|chmod)$")
-    path: str = Field(min_length=2, max_length=4096)
-    destination: str | None = Field(default=None, min_length=2, max_length=4096)
-    mode: str | None = Field(default=None, pattern=r"^[0-7]{3,4}$")
-
-    @field_validator("path", "destination")
-    @classmethod
-    def validate_file_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return clean_remote_path(value)
 
 
-class SSHFileWriteBody(BaseModel):
-    path: str = Field(min_length=2, max_length=4096)
-    content: str = Field(max_length=16_777_216)
-    overwrite: bool = False
-
-    @field_validator("path")
-    @classmethod
-    def validate_write_path(cls, value: str) -> str:
-        return clean_remote_path(value)
 
 
-class JobBody(BaseModel):
-    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|speed_test|logs|plugin_deploy|plugin_remove|plugin_install|tunnel_control|configure_autoheal)$")
-    service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.@-]{1,128}$")
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class PluginDeployBody(BaseModel):
-    name: str = Field(pattern=r"^[A-Za-z0-9_-]{1,24}$")
-    iran_node_id: int = Field(gt=0)
-    kharej_node_id: int = Field(gt=0)
-    iran_endpoint: str = Field(min_length=1, max_length=253)
-    tunnel_port: int = Field(default=3080, ge=1, le=65535)
-    user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
-    restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
-    certificate_id: int | None = Field(default=None, gt=0)
-    target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
-    port_mappings: list[str] = Field(default_factory=list, max_length=256)
-    tls_domain: str | None = Field(default=None, max_length=253)
-    tls_insecure: bool = False
-    sni: str | None = Field(default=None, max_length=253)
-    alpn: str | None = Field(default=None, max_length=128)
-    ws_host: str | None = Field(default=None, max_length=253)
-    ws_path: str | None = Field(default=None, max_length=128)
-    ws_mask: str = Field(default="skipped", pattern=r"^(skipped|fixed|standard)$")
-
-    @field_validator("iran_endpoint", "target_host")
-    @classmethod
-    def validate_endpoint(cls, value: str) -> str:
-        normalized = NodeBody.validate_host(value)
-        try:
-            if ipaddress.ip_address(normalized).version != 4:
-                raise ValueError("DARK tunnel automation currently requires IPv4 or a hostname")
-        except ValueError as exc:
-            if "currently requires" in str(exc):
-                raise
-        return normalized
 
 
-class PairCodeDeployBody(BaseModel):
-    name: str = Field(pattern=r"^[A-Za-z0-9_-]{1,24}$")
-    iran_node_id: int = Field(gt=0)
-    iran_endpoint: str = Field(min_length=1, max_length=253)
-    remote_label: str = Field(default="KHAREJ", pattern=r"^[A-Za-z0-9_.() -]{2,48}$")
-    kharej_endpoint: str | None = Field(default=None, min_length=1, max_length=253)
-    tunnel_port: int = Field(default=3080, ge=1, le=65535)
-    user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
-    restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
-    certificate_id: int | None = Field(default=None, gt=0)
-    target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
-    port_mappings: list[str] = Field(default_factory=list, max_length=256)
-    tls_domain: str | None = Field(default=None, max_length=253)
-    tls_insecure: bool = False
-    sni: str | None = Field(default=None, max_length=253)
-    alpn: str | None = Field(default=None, max_length=128)
-    ws_host: str | None = Field(default=None, max_length=253)
-    ws_path: str | None = Field(default=None, max_length=128)
-    ws_mask: str = Field(default="skipped", pattern=r"^(skipped|fixed|standard)$")
-
-    @field_validator("iran_endpoint", "target_host")
-    @classmethod
-    def validate_endpoint(cls, value: str) -> str:
-        return PluginDeployBody.validate_endpoint(value)
-
-    @field_validator("kharej_endpoint")
-    @classmethod
-    def validate_kharej_endpoint(cls, value: str | None) -> str | None:
-        return PluginDeployBody.validate_endpoint(value) if value else None
 
 
-class TunnelActionBody(BaseModel):
-    action: str = Field(pattern=r"^(start|stop|restart|logs|status|test|install)$")
 
 
-class TunnelReconfigureBody(BaseModel):
-    user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(pattern=r"^(stable|balanced|lowping|turbo)$")
-    restart_every: str = Field(pattern=r"^(off|1h|6h|12h|24h)$")
-    certificate_id: int | None = Field(default=None, gt=0)
 
 
-class CertificateBody(BaseModel):
-    node_id: int = Field(gt=0)
-    domain: str = Field(min_length=4, max_length=253, pattern=r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
 
 
-class AgentPulse(BaseModel):
-    agent_version: str = Field(default="unknown", min_length=1, max_length=64)
-    agent_loop_ts: int | None = Field(default=None, ge=0)
-    telemetry_status: str = Field(default="unknown", max_length=32)
-    telemetry_age_seconds: int | None = Field(default=None, ge=0)
-    inventory_error: str | None = Field(default=None, max_length=1000)
 
 
-class AgentReport(BaseModel):
-    metrics: dict[str, Any]
-    services: list[dict[str, Any]] = Field(default_factory=list, max_length=512)
-    tunnels: list[dict[str, Any]] = Field(default_factory=list, max_length=512)
-    agent_version: str = "unknown"
-    autoheal: dict[str, Any] = Field(default_factory=dict)
-    plugins: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("metrics")
-    @classmethod
-    def validate_metrics(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if len(json.dumps(value, default=str)) > 65_536:
-            raise ValueError("Metrics payload is too large")
-        for key in ("cpu", "ram", "swap", "disk", "load1", "rx_bps", "tx_bps", "uptime", "connections"):
-            if key not in value or value[key] is None:
-                continue
-            try:
-                number = float(value[key])
-            except (TypeError, ValueError):
-                raise ValueError(f"Invalid numeric metric: {key}")
-            if not math.isfinite(number) or number < 0 or (key in {"cpu", "ram", "swap", "disk"} and number > 100):
-                raise ValueError(f"Metric out of range: {key}")
-        return value
-
-    @field_validator("services", "tunnels")
-    @classmethod
-    def validate_report_lists(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if len(json.dumps(value, default=str)) > 512_000:
-            raise ValueError("Telemetry list is too large")
-        return value
 
 
-class JobResult(BaseModel):
-    job_id: int
-    status: str = Field(pattern=r"^(completed|failed)$")
-    output: str = Field(max_length=200_000)
 
 
 @app.post("/api/agent/local-enroll")
