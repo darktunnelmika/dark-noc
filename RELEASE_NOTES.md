@@ -1,3 +1,17 @@
+# DARK NOC v2.9.43 — FastAPI Dependency Hardening
+
+- Upgrade the Hub API framework from `fastapi==0.115.6` to `fastapi==0.141.1`.
+- Keep the dependency exactly pinned so production and CI use the same API framework release.
+- Validate APIRouter registration, Pydantic request bodies, path parameters, Header/Cookie dependencies, HTTPException responses and WebSocket routing under FastAPI 0.141.1.
+- Exercise the complete Hub/Auth/API/WebSocket/Agent regression suite and reproducible release build with no other direct dependency changes.
+- No API contract, Agent, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+پکیج `FastAPI` هاب از نسخه 0.115.6 به 0.141.1 ارتقا داده شد؛ Routerها، مدل‌های درخواست، Auth dependencyها، خطاهای HTTP و WebSocket با تست کامل بررسی می‌شوند و هیچ dependency مستقیم دیگری تغییر نمی‌کند.
+
+---
+
 # DARK NOC v2.9.42 — Uvicorn Dependency Hardening
 
 - Upgrade the Hub ASGI runtime from `uvicorn[standard]==0.34.0` to `uvicorn[standard]==0.52.4`.

@@ -94,6 +94,7 @@ jobs:
           python tests/dependency_asyncssh_contract.py
           python tests/dependency_psutil_contract.py
           python tests/dependency_uvicorn_contract.py
+          python tests/dependency_fastapi_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh

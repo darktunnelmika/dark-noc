@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             "/api/agent/pulse",
             headers=auth,
             json={
-                "agent_version": "2.9.42",
+                "agent_version": "2.9.43",
                 "agent_loop_ts": app.utc_ts(),
                 "telemetry_status": "collecting",
                 "telemetry_age_seconds": 0,
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             assert pulsed["status"] == "online" and int(pulsed["last_seen"] or 0) > 0
 
         full_report = {
-            "agent_version": "2.9.42",
+            "agent_version": "2.9.43",
             "metrics": {
                 "cpu": 1, "ram": 2, "swap": 0, "disk": 3, "load1": 0.1,
                 "rx_bps": 10, "tx_bps": 20, "uptime": 30, "connections": 4,
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
 
         # A liveness-only heartbeat must preserve the last authoritative inventory.
         incomplete = {
-            "agent_version": "2.9.42",
+            "agent_version": "2.9.43",
             "metrics": {
                 "cpu": 5, "ram": 6, "disk": 7, "telemetry_status": "collecting",
                 "inventory_complete": False, "inventory_snapshot_at": 0,
