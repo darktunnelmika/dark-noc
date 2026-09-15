@@ -27,5 +27,5 @@ for mutation_marker, owner in [
     ('@router.post("/api/incidents/{incident_id}/action")', incidents),
 ]:
     assert mutation_marker in owner
-assert 'VERSION = "2.9.35"' in app
+assert 'VERSION = "2.9.36"' in app
 print('Monitor/Incident repository query boundary passed')
