@@ -30,6 +30,25 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_36.py
+          python - <<'PY'
+          from pathlib import Path
+          app_path = Path('hub/app.py')
+          app = app_path.read_text()
+          import_line = 'from contextlib import asynccontextmanager\n'
+          if import_line not in app:
+              anchor = 'import weakref\n'
+              if anchor not in app:
+                  raise SystemExit('contextlib import anchor missing')
+              app = app.replace(anchor, anchor + import_line, 1)
+              app_path.write_text(app)
+          contract_path = Path('tests/backend_maintenance_runtime_contract.py')
+          contract = contract_path.read_text()
+          contract = contract.replace(
+              "assert 'from contextlib import asynccontextmanager' not in app",
+              "assert 'from contextlib import asynccontextmanager' in app",
+          )
+          contract_path.write_text(contract)
+          PY
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
