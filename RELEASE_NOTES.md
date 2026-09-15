@@ -1,3 +1,17 @@
+# DARK NOC v2.9.32 — Backend Router Split: Auth, Dashboard & System
+
+- Continue backend route modularization by extracting Authentication routes into `hub/auth_router.py`.
+- Extract Dashboard routes into `hub/dashboard_router.py` and public health/readiness/index routes into `hub/system_router.py`.
+- Preserve login throttling, secure session cookie behavior, dashboard metrics/limits, health/readiness checks, static mounting, API paths and response contracts.
+- Keep SSH/File Transfer, Agent control plane, generic Job reads, Live WebSocket and all frontend/Live Matrix behavior unchanged.
+- Add permanent Auth/Dashboard/System router-boundary regression coverage.
+
+## فارسی
+
+Routeهای Auth، Dashboard و System health/index از `hub/app.py` به Routerهای مستقل منتقل شدند؛ Session، Dashboard، health check، SSH، Agent و ظاهر پنل بدون تغییر رفتاری باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.31 — Backend Router Split: Deployments, Certificates & Fleet
 
 - Continue backend route modularization by extracting Plugin Deployment routes into `hub/plugin_deployments_router.py`.

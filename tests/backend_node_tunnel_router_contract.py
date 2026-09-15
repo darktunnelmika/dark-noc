@@ -10,5 +10,5 @@ for path in ['/api/tunnels', '/api/tunnels/{tunnel_id}/operations', '/api/tunnel
 assert '@app.get("/api/nodes")' not in app and '@app.get("/api/tunnels")' not in app
 assert 'def ssh_upload_file' in app and 'def agent_heartbeat' in app
 assert 'background.add_task(get_provision_node(),' in nodes
-assert 'VERSION = "2.9.31"' in app
+assert 'VERSION = "2.9.32"' in app
 print('Node/Tunnel router boundary passed')

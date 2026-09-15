@@ -627,7 +627,7 @@ def test_installer_and_release_guards() -> None:
     assert 'DARK_NOC_PUBLIC_PORT="${DARK_NOC_PUBLIC_PORT:-443}"' in server_cli
     assert 'Get / renew panel SSL' in server_cli
     assert 'certbot certonly --webroot' in server_cli
-    assert 'Account changes are server-only' in (ROOT / "hub" / "app.py").read_text(encoding="utf-8")
+    assert 'Account changes are server-only' in (ROOT / "hub" / "auth_router.py").read_text(encoding="utf-8")
 
     upgrader = (ROOT / "upgrade.sh").read_text(encoding="utf-8")
     assert 'hub_data_dir="$(validate_data_dir "$existing_data_dir")"' in upgrader
