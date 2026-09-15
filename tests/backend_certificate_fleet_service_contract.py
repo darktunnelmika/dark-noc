@@ -3,6 +3,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 app = (root / "hub/app.py").read_text()
+agent_control = (root / "hub/agent_control_router.py").read_text()
 service = (root / "hub/certificate_fleet_service.py").read_text()
 cert_router = (root / "hub/certificates_router.py").read_text()
 fleet_router = (root / "hub/fleet_router.py").read_text()
@@ -40,7 +41,7 @@ assert "background.add_task(" in fleet_functions["create_fleet_operation"]
 assert "get_provision_node_for_fleet()" in fleet_functions["create_fleet_operation"]
 assert "get_orchestrate_agent_upgrade()" in fleet_functions["create_fleet_operation"]
 assert "get_queue_due_fleet_operations()" in fleet_functions["create_fleet_operation"]
-assert 'if row["kind"] == "certificate_issue":' in app
+assert 'if row["kind"] == "certificate_issue":' in agent_control
 assert "def queue_due_fleet_operations(" in app
-assert 'VERSION = "2.9.34"' in app
+assert 'VERSION = "2.9.35"' in app
 print("Certificate/Fleet service boundary passed")

@@ -28,7 +28,7 @@ assert 'SSH_UPLOAD_LIMIT' in dashboard and 'open_incidents' in dashboard
 assert 'Hub is not ready' in system and 'FileResponse(STATIC_DIR / "index.html")' in system
 assert 'Depends(current_user)' in system and 'metric_raw_retention_days' in system
 assert 'app.mount("/static"' in app
-assert '@app.websocket("/ws/live")' in app
-assert 'def agent_heartbeat' in app and 'def agent_job_result' in app
-assert 'VERSION = "2.9.34"' in app
+assert "with_name('live_router.py')" in app
+assert "with_name('agent_control_router.py')" in app and "with_name('agent_control_router.py')" in app
+assert 'VERSION = "2.9.35"' in app
 print('Auth/Dashboard/System router boundary passed')

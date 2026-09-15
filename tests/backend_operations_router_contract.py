@@ -24,5 +24,5 @@ assert 'def plugin_pair_code(' in app and 'def plugin_job_payload(' in app
 assert 'lambda: queue_due_fleet_operations' in app
 assert 'lambda: provision_node_for_fleet' in app
 assert 'lambda: orchestrate_agent_upgrade' in app
-assert 'def agent_heartbeat' in app and "with_name('ssh_terminal_router.py')" in app
+assert "with_name('agent_control_router.py')" in app and "with_name('ssh_terminal_router.py')" in app
 print('Plugin/Certificate/Fleet router boundary passed')

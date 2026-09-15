@@ -1,3 +1,19 @@
+# DARK NOC v2.9.35 — Agent Control Plane & Live Router Split
+
+- Extract local Agent enrollment, liveness pulse, full heartbeat and Agent job poll/result/lease routes into `hub/agent_control_router.py`.
+- Extract authenticated `/ws/live` telemetry WebSocket into `hub/live_router.py`.
+- Preserve Agent authentication, inventory freshness semantics, Incident/Monitor/Fleet/Plugin result transitions, heartbeat broadcasts, local enrollment recovery and job idempotency.
+- Preserve runtime callback/live-client lookup so shared state and test/runtime overrides remain compatible.
+- Keep shared Agent/WebSocket state-machine primitives and Hub lifecycle loops centralized in `hub/app.py`.
+- Add permanent Agent Control Plane/Live router-boundary regression coverage.
+- No frontend or Live Matrix visual changes.
+
+## فارسی
+
+Routeهای Agent Control Plane شامل enrollment، pulse، heartbeat، job poll/result/lease و WebSocket زنده `/ws/live` به Routerهای مستقل منتقل شدند؛ منطق state machine، Incident/Fleet/Plugin، Session و ظاهر پنل بدون تغییر رفتاری باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.34 — Backend Router Split: Generic Jobs & System Status
 
 - Extract authenticated Generic Job read routes into `hub/jobs_router.py`.
