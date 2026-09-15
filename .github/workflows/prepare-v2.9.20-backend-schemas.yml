@@ -34,44 +34,59 @@ jobs:
           text=app.read_text()
           tree=ast.parse(text)
           model_nodes=[]
+          top_funcs={node.name: node for node in tree.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))}
           for node in tree.body:
               if isinstance(node, ast.ClassDef):
-                  is_model=False
-                  for base in node.bases:
-                      if isinstance(base, ast.Name) and base.id=='BaseModel':
-                          is_model=True
-                      elif isinstance(base, ast.Attribute) and base.attr=='BaseModel':
-                          is_model=True
+                  is_model=any(
+                      (isinstance(base, ast.Name) and base.id=='BaseModel') or
+                      (isinstance(base, ast.Attribute) and base.attr=='BaseModel')
+                      for base in node.bases
+                  )
                   if is_model:
                       model_nodes.append(node)
           assert model_nodes, 'No Pydantic models found'
 
           lines=text.splitlines(True)
-          remove=set()
-          blocks=[]
-          names=[]
+          remove=set(); blocks=[]; names=[]
           for node in model_nodes:
               start=min([d.lineno for d in node.decorator_list], default=node.lineno)
               end=node.end_lineno
               remove.update(range(start-1,end))
               blocks.append(''.join(lines[start-1:end]).rstrip()+'\n')
               names.append(node.name)
-          new_text=''.join(line for i,line in enumerate(lines) if i not in remove)
 
+          # Preserve pure validation helpers referenced by schema validators. We copy
+          # them into schemas.py while leaving their existing app.py ownership intact
+          # for non-schema call sites; a later backend-services split can deduplicate.
+          needed=[]; seen=set(); queue=[]
+          for model in model_nodes:
+              queue.extend(n.id for n in ast.walk(model) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load))
+          while queue:
+              name=queue.pop(0)
+              if name in seen or name not in top_funcs:
+                  continue
+              seen.add(name); needed.append(name)
+              fn=top_funcs[name]
+              queue.extend(n.id for n in ast.walk(fn) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load))
+          helper_blocks=[]
+          for name in needed:
+              node=top_funcs[name]
+              start=min([d.lineno for d in node.decorator_list], default=node.lineno)
+              helper_blocks.append(''.join(lines[start-1:node.end_lineno]).rstrip()+'\n')
+
+          new_text=''.join(line for i,line in enumerate(lines) if i not in remove)
           schemas=(
               'from __future__ import annotations\n\n'
-              'import ipaddress\nimport json\nimport re\nimport secrets\n\n'
+              'import ipaddress\nimport json\nimport posixpath\nimport re\nimport secrets\n\n'
               'from typing import Any\n\n'
               'from pydantic import BaseModel, Field, field_validator\n\n'
-              + '\n'.join(blocks)
+              + '\n'.join(helper_blocks + blocks)
           )
           Path('hub/schemas.py').write_text(schemas)
 
-          old='from pydantic import BaseModel, Field, field_validator\n'
-          assert old in new_text
+          old='from pydantic import BaseModel, Field, field_validator\n'; assert old in new_text
           new_text=new_text.replace(old,'',1)
-          anchor="del _runtime_name\n"
-          assert anchor in new_text
+          anchor="del _runtime_name\n"; assert anchor in new_text
           loader=(
               "\n_SCHEMAS_PATH = Path(__file__).resolve().with_name('schemas.py')\n"
               "_schemas_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_schemas', _SCHEMAS_PATH)\n"
@@ -92,6 +107,7 @@ jobs:
               "app=(root/'hub/app.py').read_text()\n"
               "schemas=(root/'hub/schemas.py').read_text()\n"
               "assert 'BaseModel' in schemas\n"
+              "assert 'def clean_remote_path(' in schemas\n"
               "assert \"with_name('schemas.py')\" in app\n"
               "assert '_schemas_spec.loader.exec_module' in app\n"
               "assert 'from pydantic import BaseModel, Field, field_validator' not in app\n"
