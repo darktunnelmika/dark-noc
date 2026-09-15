@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.28 — Certificate and Fleet Operations service layer
+
+- Extract Certificate issue/renew and Fleet Operation create/cancel write transactions into hub/certificate_fleet_service.py.
+- Preserve FastAPI routes, audit logs, BackgroundTasks orchestration, rollout behavior and API contracts.
+- Add permanent service-boundary regression coverage.
+
+
 ## 2.9.27 — Monitor and Incident mutation service layer
 
 - Extract Monitor create/update/delete/run and Incident note/action write transactions into hub/monitor_incident_service.py.

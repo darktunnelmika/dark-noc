@@ -25,5 +25,5 @@ for mutation_marker in [
     '@app.post("/api/incidents/{incident_id}/action")',
 ]:
     assert mutation_marker in app
-assert 'VERSION = "2.9.27"' in app
+assert 'VERSION = "2.9.28"' in app
 print('Monitor/Incident repository query boundary passed')
