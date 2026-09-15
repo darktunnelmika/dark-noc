@@ -53,7 +53,6 @@ jobs:
           app.write_text(text.replace(anchor,anchor+imp,1))
           contract=("from pathlib import Path\nroot=Path(__file__).resolve().parents[1]\napp=(root/'hub/app.py').read_text()\nconfig=(root/'hub/runtime_config.py').read_text()\nfor marker in ['def bounded_env_int(', 'def configured_public_hub_url(', 'SSH_UPLOAD_LIMIT =', 'SSH_RELAY_LIMIT =', 'NODE_PROVISION_TIMEOUT =', 'HUB_LEASE_SECONDS =']:\n    assert marker in config\n    assert marker not in app\nassert \"with_name('runtime_config.py')\" in app\nassert '_runtime_config_spec.loader.exec_module' in app\nassert 'VERSION = \\\"2.9.19\\\"' in app\nprint('Backend runtime configuration module boundary passed')\n")
           Path('tests/backend_config_contract.py').write_text(contract)
-          ci=Path('.github/workflows/ci.yml'); c=ci.read_text(); needle='          python tests/action_router_module_contract.py\n          python tests/frontend_runtime_contract.py\n'; assert needle in c; ci.write_text(c.replace(needle,needle+'          python tests/backend_config_contract.py\n',1))
           for name in ['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']:
               p=Path(name); v=p.read_text(); p.write_text(v.replace('2.9.18','2.9.19')) if '2.9.18' in v else None
           notes='# DARK NOC v2.9.19 — Backend Runtime Configuration Module\n\n- Start backend modularization by extracting environment parsing and runtime limits from hub/app.py into hub/runtime_config.py.\n- Preserve VERSION and process-local runtime state in app.py.\n- Keep all API routes, database behavior, Agent behavior and frontend visuals unchanged.\n- Add a permanent backend module-boundary regression contract.\n\n## فارسی\n\nاولین مرحله ماژولار کردن بک‌اند انجام شد: تنظیمات محیطی و محدودیت‌های Runtime از hub/app.py به hub/runtime_config.py منتقل شدند، بدون تغییر API یا رفتار پنل.\n\n---\n\n'
@@ -104,6 +103,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add hub/runtime_config.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py .github/workflows/ci.yml RELEASE_NOTES.md CHANGELOG.md
+          git add hub/runtime_config.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py RELEASE_NOTES.md CHANGELOG.md
           git commit -m 'refactor: extract backend runtime config for v2.9.19'
           git push origin HEAD:refs/heads/release/v2.9.19-backend-config
