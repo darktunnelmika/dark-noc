@@ -30,6 +30,51 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_35.py
+          python - <<'PY'
+          from pathlib import Path
+
+          # Earlier contracts intentionally pinned control-plane ownership to app.py.
+          # Follow the new router boundary while retaining specific state-machine checks.
+          for path in Path('tests').glob('*.py'):
+              text = path.read_text()
+              for stale in [
+                  "assert '@app.get(\"/api/agent/jobs\")' in app",
+                  "assert '@app.post(\"/api/agent/jobs/result\")' in app",
+                  "assert '@app.post(\"/api/agent/jobs/{job_id}/lease\")' in app",
+              ]:
+                  text = text.replace(stale, "assert \"with_name('agent_control_router.py')\" in app")
+              path.write_text(text)
+
+          cert = Path('tests/backend_certificate_fleet_service_contract.py')
+          text = cert.read_text()
+          needle = 'app = (root / "hub/app.py").read_text()\n'
+          if needle not in text:
+              raise SystemExit('certificate/fleet contract app anchor not found')
+          text = text.replace(
+              needle,
+              needle + 'agent_control = (root / "hub/agent_control_router.py").read_text()\n',
+              1,
+          )
+          old = 'assert \'if row["kind"] == "certificate_issue":\' in app'
+          new = 'assert \'if row["kind"] == "certificate_issue":\' in agent_control'
+          if old not in text:
+              raise SystemExit('certificate result ownership assertion not found')
+          cert.write_text(text.replace(old, new, 1))
+
+          agent_contract = Path('tests/backend_agent_control_router_contract.py')
+          text = agent_contract.read_text()
+          marker = "assert '/ws/live' in live\n"
+          if marker not in text:
+              raise SystemExit('Agent control contract marker not found')
+          text = text.replace(
+              marker,
+              marker + "assert 'if row[\"kind\"] == \"certificate_issue\":' in agent\n"
+                       + "assert 'if row[\"kind\"] == \"monitor_run\":' in agent\n"
+                       + "assert 'plugin_deployments' in agent and 'fleet_operation_items' in agent\n",
+              1,
+          )
+          agent_contract.write_text(text)
+          PY
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
