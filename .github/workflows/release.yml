@@ -144,7 +144,7 @@ jobs:
           printf 'publish=true\ntag=%s\nrelease_id=%s\ntarget_sha=%s\nmarker=%s\n' \
             "$release_tag" "$release_id" "$target_sha" "$marker" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.version.outputs.publish == 'true'
         with:
           python-version: "3.12"
