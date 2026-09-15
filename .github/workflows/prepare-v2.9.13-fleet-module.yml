@@ -1,0 +1,139 @@
+name: Prepare v2.9.13 Fleet modularization
+
+on:
+  push:
+    branches: [automation/v2.9.13-fleet-module]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract Fleet Operations module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app=Path('hub/static/app.js')
+          text=app.read_text()
+
+          # Render/runtime block.
+          start=text.index('function renderFleetOperations(){')
+          end=text.index('function openMonitorEditor(', start)
+          render_block=text[start:end].rstrip()+'\n\n'
+          assert 'function renderFleetOperations(){' in render_block
+          assert 'function renderVersionCompliance(){' in render_block
+          text=text[:start]+text[end:]
+
+          # Fleet editor.
+          start=text.index('function openFleetEditor(){')
+          end=text.index('function tunnelHistoryChart(', start)
+          editor_block=text[start:end].rstrip()+'\n\n'
+          assert 'function openFleetEditor(){' in editor_block
+          text=text[:start]+text[end:]
+
+          # Dedicated Fleet form bindings. Delegated output/cancel clicks remain in app.js.
+          start=text.index("$('#add-fleet-operation').addEventListener('click',openFleetEditor);")
+          end=text.index("$('#incident-note-form').addEventListener", start)
+          binding_block=text[start:end].rstrip()+'\n'
+          for marker in ["$('#add-fleet-operation').addEventListener", "$('#fleet-form [name=\"kind\"]').addEventListener", "$('#fleet-form').addEventListener('submit'"]:
+              assert marker in binding_block, marker
+          text=text[:start]+text[end:]
+          app.write_text(text)
+
+          Path('hub/static/fleet-operations.js').write_text('// DARK NOC Fleet Operations runtime. Classic-script globals are intentional.\n'+render_block+editor_block+binding_block)
+
+          index=Path('hub/static/index.html')
+          html=index.read_text()
+          needle='  <script src="/static/file-transfer.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.12"></script>'
+          assert needle in html
+          index.write_text(html.replace(needle,'  <script src="/static/file-transfer.js?v=1.0.0"></script>\n  <script src="/static/fleet-operations.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.13"></script>',1))
+
+          contract=(
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/static/app.js').read_text()\n"
+              "fleet=(root/'hub/static/fleet-operations.js').read_text()\n"
+              "index=(root/'hub/static/index.html').read_text()\n"
+              "for marker in ['function renderFleetOperations(){','function renderVersionCompliance(){','function openFleetEditor(){',\"$('#add-fleet-operation').addEventListener\",\"$('#fleet-form').addEventListener('submit'\"]:\n"
+              "    assert marker in fleet\n"
+              "    assert marker not in app\n"
+              "assert 'data-fleet-output' in app and 'fleetCancel' in app\n"
+              "assert index.index('file-transfer.js') < index.index('fleet-operations.js') < index.index('app.js')\n"
+              "print('Fleet Operations module boundary passed')\n"
+          )
+          Path('tests/fleet_operations_module_contract.py').write_text(contract)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.12' in value: p.write_text(value.replace('2.9.12','2.9.13'))
+
+          notes='# DARK NOC v2.9.13 — Fleet Operations Module Extraction\n\n- Extract Fleet Operations rendering, version compliance, fleet editor and fleet form runtime from app.js into fleet-operations.js.\n- Preserve controlled Agent rollouts, canary selection, Auto-Heal configuration, scheduled jobs and service playbooks.\n- Keep delegated fleet output/cancel actions, SSH, File Manager, Matrix, APIs and Agent behavior unchanged.\n- Add permanent module-boundary regression coverage.\n\n## فارسی\n\nمرحله پنجم ماژولار کردن فرانت‌اند انجام شد: منطق Fleet Operations از app.js به fleet-operations.js منتقل شد، بدون تغییر ظاهر یا رفتار پنل.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.13 — Fleet Operations module extraction\n\n- Extract Fleet Operations rendering/editor/form runtime into fleet-operations.js.\n- Preserve rollouts, canary selection, Auto-Heal and scheduled operations.\n- Add permanent module-boundary regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/file-transfer.js
+          node --check hub/static/fleet-operations.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.13.tar.gz > /tmp/darknoc-hub-files
+          grep -q 'fleet-operations.js' /tmp/darknoc-hub-files
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/fleet-operations.js hub/static/app.js hub/static/index.html tests/fleet_operations_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract Fleet Operations runtime for v2.9.13'
+          git push origin HEAD:refs/heads/release/v2.9.13-fleet-module
