@@ -1,3 +1,17 @@
+# DARK NOC v2.9.41 — psutil Dependency Hardening
+
+- Upgrade `psutil` from `6.1.1` to `7.2.2` in both Hub and Agent requirement sets.
+- Keep the dependency exactly pinned so production and CI use the same telemetry runtime.
+- Validate the Agent APIs used for CPU, RAM, swap, disk, boot time, network/disk I/O, socket inventory, process trees and temperature telemetry.
+- Exercise the complete Agent heartbeat/inventory regression suite and reproducible release build with no other dependency changes.
+- No API, tunnel, frontend or Live Matrix behavior changes.
+
+## فارسی
+
+پکیج `psutil` در Hub و Agent از نسخه 6.1.1 به 7.2.2 ارتقا داده شد؛ مسیرهای Telemetry، Socket/Process inventory و Agent heartbeat با تست کامل بررسی می‌شوند و هیچ dependency دیگری تغییر نمی‌کند.
+
+---
+
 # DARK NOC v2.9.40 — AsyncSSH Dependency Hardening
 
 - Upgrade the Hub SSH runtime from `asyncssh==2.19.0` to `asyncssh==2.24.0`.
