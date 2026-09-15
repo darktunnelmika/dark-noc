@@ -1,0 +1,100 @@
+name: Prepare v2.9.11 SSH terminal modularization fixed
+
+on:
+  push:
+    branches: [automation/v2.9.11-ssh-module]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract SSH terminal module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          app=Path('hub/static/app.js'); text=app.read_text()
+          start=text.index('function activeTerminalSlot() {')
+          end=text.index("$('#login-form').addEventListener('submit', async event => {", start)
+          block=text[start:end].rstrip()+'\n'
+          required=['function activeTerminalSlot()','function ensureTerminal(slot)','function closeSocket(slot)','function connectSSH(nodeId, slot = null, options = {})','function savedSnippets()','function startTerminalReplay()']
+          for marker in required: assert marker in block, marker
+          Path('hub/static/ssh-terminal.js').write_text('// DARK NOC SSH terminal runtime. Classic-script globals are intentional.\n'+block)
+          app.write_text(text[:start]+text[end:])
+          index=Path('hub/static/index.html'); html=index.read_text()
+          needle='  <script src="/static/topology.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.10"></script>'
+          assert needle in html
+          index.write_text(html.replace(needle,'  <script src="/static/topology.js?v=1.0.0"></script>\n  <script src="/static/ssh-terminal.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.11"></script>',1))
+          contract="from pathlib import Path\nroot=Path(__file__).resolve().parents[1]\napp=(root/'hub/static/app.js').read_text()\nssh=(root/'hub/static/ssh-terminal.js').read_text()\nindex=(root/'hub/static/index.html').read_text()\nmarkers=['function activeTerminalSlot()','function ensureTerminal(slot)','function closeSocket(slot)','function connectSSH(nodeId, slot = null, options = {})','function savedSnippets()','function startTerminalReplay()']\nfor marker in markers:\n    assert marker in ssh\n    assert marker not in app\nassert \"$('#ssh-connect').addEventListener\" in app\nassert 'connectSSH(nodeId)' in app\nassert index.index('core.js') < index.index('topology.js') < index.index('ssh-terminal.js') < index.index('app.js')\nprint('SSH terminal module boundary passed')\n"
+          Path('tests/ssh_terminal_module_contract.py').write_text(contract)
+          ci=Path('.github/workflows/ci.yml'); s=ci.read_text()
+          s=s.replace('          node --check hub/static/topology.js\n','          node --check hub/static/topology.js\n          node --check hub/static/ssh-terminal.js\n',1)
+          s=s.replace('          python tests/topology_module_contract.py\n','          python tests/topology_module_contract.py\n          python tests/ssh_terminal_module_contract.py\n',1)
+          ci.write_text(s)
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.10' in value: p.write_text(value.replace('2.9.10','2.9.11'))
+          notes='# DARK NOC v2.9.11 — SSH Terminal Module Extraction\n\n- Extract the browser SSH terminal runtime from app.js into ssh-terminal.js.\n- Preserve terminal panes, reconnect logic, xterm addons, clipboard handling, snippets and replay behavior.\n- Keep upload/relay/file-manager handlers and all UI behavior unchanged.\n- Add permanent CI syntax and module-boundary regression coverage.\n- No API, Agent, tunnel configuration or database behavior changes beyond version synchronization.\n\n## فارسی\n\nمرحله سوم ماژولار کردن فرانت‌اند انجام شد: موتور ترمینال SSH از app.js به ssh-terminal.js منتقل شد، بدون تغییر ظاهر یا رفتار SSH و پنل.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.11 — SSH terminal module extraction\n\n- Extract browser SSH terminal runtime into ssh-terminal.js.\n- Preserve reconnect, panes, snippets, replay and xterm behavior.\n- Add permanent module-boundary CI coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.11.tar.gz | grep -q 'ssh-terminal.js'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/ssh-terminal.js hub/static/app.js hub/static/index.html .github/workflows/ci.yml tests/ssh_terminal_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract SSH terminal runtime for v2.9.11'
+          git push origin HEAD:refs/heads/release/v2.9.11-ssh-module
