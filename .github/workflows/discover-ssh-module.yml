@@ -1,0 +1,30 @@
+name: Discover SSH module boundaries
+
+on:
+  push:
+    branches: [automation/v2.9.11-ssh-module]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: List SSH-related functions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('hub/static/app.js')
+          lines=p.read_text().splitlines()
+          for i,line in enumerate(lines,1):
+              if re.match(r'^function ', line) and re.search(r'SSH|Socket|Terminal|File|Upload|Relay|transfer|socket|terminal|file|upload|relay', line):
+                  print(f'{i}: {line}')
+          print('--- EVENT BINDINGS ---')
+          for i,line in enumerate(lines,1):
+              if any(token in line for token in ['ssh-', 'file-manager', 'upload-', 'relay-', 'server-ssh']):
+                  if 'addEventListener' in line or '.onclick' in line or "$('#" in line:
+                      print(f'{i}: {line[:240]}')
+          PY
