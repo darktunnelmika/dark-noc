@@ -8,7 +8,7 @@ fi
 
 echo ""
 echo "  DARK NOC // NODE PREREQUISITES"
-echo "  Zero-touch Node v2.9.37"
+echo "  Zero-touch Node v2.9.38"
 echo ""
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq

@@ -1,3 +1,8 @@
+## v2.9.38
+- Dependency hardening: pin `python-multipart` at 0.0.32 instead of 0.0.20.
+- Add permanent dependency pin regression coverage.
+- Preserve multipart upload/auth/size-limit behavior and all existing UI/API contracts.
+
 ## v2.9.37
 - Performance: active-view frontend fetch scheduling replaces broad periodic polling.
 - WebSocket catch-up now refreshes only the active view dependencies.

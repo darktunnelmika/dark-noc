@@ -7,5 +7,5 @@ for marker in ['def bounded_env_int(', 'def configured_public_hub_url(', 'SSH_UP
     assert marker not in app
 assert "with_name('runtime_config.py')" in app
 assert '_runtime_config_spec.loader.exec_module' in app
-assert 'VERSION = \"2.9.37\"' in app
+assert 'VERSION = \"2.9.38\"' in app
 print('Backend runtime configuration module boundary passed')
