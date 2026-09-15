@@ -29,6 +29,7 @@ jobs:
           node --check hub/static/topology.js
           node --check hub/static/ssh-terminal.js
           node --check hub/static/file-transfer.js
+          node --check hub/static/fleet-operations.js
           node --check hub/static/app.js
           node --check hub/static/live-matrix.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
@@ -52,6 +53,7 @@ jobs:
           python tests/topology_module_contract.py
           python tests/ssh_terminal_module_contract.py
           python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
