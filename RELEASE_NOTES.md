@@ -1,3 +1,18 @@
+# DARK NOC v2.9.18 — Frontend Runtime Core Split
+
+- Extract shared frontend state into state.js.
+- Extract API and remote job helpers into api-client.js.
+- Extract cached/live refresh orchestration into refresh-runtime.js.
+- Extract authentication termination, boot and live WebSocket lifecycle into session-runtime.js.
+- Keep app.js focused on UI rendering/bindings while preserving behavior and the approved Live Matrix visuals.
+- Update regression contracts for the new ownership boundaries.
+
+## فارسی
+
+State، API، Refresh و Boot/WebSocket از app.js جدا شدند تا هسته فرانت سبک‌تر و قابل نگهداری‌تر شود؛ ظاهر و رفتار فعلی پنل تغییر نکرده است.
+
+---
+
 # DARK NOC v2.9.17 — Delegated Action Router Split
 
 - Architecture review found the monolithic document click dispatcher to be the largest remaining frontend regression hotspot.
