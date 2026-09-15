@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.21 — Backend database core module
+
+- Extract SQLite path, connection policy and schema DDL into hub/database.py.
+- Preserve bootstrap migrations, APIs and transaction behavior.
+- Add database-core ownership regression coverage.
+
+
 ## 2.9.20 — Backend request schemas module
 
 - Extract Pydantic request and validation models from hub/app.py into hub/schemas.py.
