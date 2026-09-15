@@ -1,3 +1,16 @@
+# DARK NOC v2.9.9 — Frontend Core Modularization
+
+- First safe modularization step: extract stable, dependency-free frontend helpers from app.js into core.js.
+- Keep all UI behavior and Live tunnel matrix visuals unchanged.
+- Load core.js before app.js and add regression coverage for the module boundary.
+- No API, tunnel, Agent, installer or database behavior changes beyond version synchronization.
+
+## فارسی
+
+اولین مرحله ماژولار کردن فرانت‌اند انجام شد: توابع پایه و مستقل از app.js به core.js منتقل شدند، بدون تغییر ظاهر یا رفتار پنل.
+
+---
+
 # DARK NOC v2.9.8 — Runtime Hardening & View-Aware Rendering
 
 - Port the verified Realm IPv6 listener and UFW ownership fixes onto current main.
