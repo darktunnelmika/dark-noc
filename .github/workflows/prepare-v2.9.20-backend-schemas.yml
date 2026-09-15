@@ -75,7 +75,7 @@ jobs:
           rebuild='\nfor _schema_model in ['+', '.join(names)+']:\n    _schema_model.model_rebuild()\ndel _schema_model\n'
           schemas=(
               'from __future__ import annotations\n\n'
-              'import ipaddress\nimport json\nimport posixpath\nimport re\nimport secrets\n\n'
+              'import ipaddress\nimport json\nimport math\nimport posixpath\nimport re\nimport secrets\n\n'
               'from typing import Any\n\n'
               'from pydantic import BaseModel, Field, field_validator\n\n'
               + '\n'.join(helper_blocks + blocks)
