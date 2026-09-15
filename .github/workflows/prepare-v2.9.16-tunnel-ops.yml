@@ -1,0 +1,143 @@
+name: Prepare v2.9.16 Tunnel Operations modularization
+
+on:
+  push:
+    branches: [automation/v2.9.16-tunnel-ops-workflow]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v2.9.16-tunnel-ops
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract Tunnel Operations module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app=Path('hub/static/app.js')
+          text=app.read_text()
+
+          start=text.index('function tunnelHistoryChart(samples){')
+          end=text.index('function topologyRouteVisual(', start)
+          runtime_block=text[start:end].rstrip()+'\n\n'
+          for marker in ['function tunnelHistoryChart(samples){','async function openTunnelManager(tunnel){']:
+              assert marker in runtime_block, marker
+          text=text[:start]+text[end:]
+
+          start=text.index("$('#tunnel-edit-form').addEventListener('submit'")
+          end=text.index("$('#plugin-form').addEventListener('submit'", start)
+          binding_block=text[start:end].rstrip()+'\n'
+          for marker in ["$('#tunnel-edit-form').addEventListener", "$('#tunnel-delete').addEventListener"]:
+              assert marker in binding_block, marker
+          text=text[:start]+text[end:]
+          app.write_text(text)
+
+          Path('hub/static/tunnel-operations.js').write_text('// DARK NOC Tunnel Operations cockpit runtime. Classic-script globals are intentional.\n'+runtime_block+binding_block)
+
+          index=Path('hub/static/index.html')
+          html=index.read_text()
+          needle='  <script src="/static/incident-management.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.15"></script>'
+          assert needle in html
+          index.write_text(html.replace(needle,'  <script src="/static/incident-management.js?v=1.0.0"></script>\n  <script src="/static/tunnel-operations.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.16"></script>',1))
+
+          contract=(
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/static/app.js').read_text()\n"
+              "module=(root/'hub/static/tunnel-operations.js').read_text()\n"
+              "index=(root/'hub/static/index.html').read_text()\n"
+              "for marker in ['function tunnelHistoryChart(samples){','async function openTunnelManager(tunnel){',\"$('#tunnel-edit-form').addEventListener\",\"$('#tunnel-delete').addEventListener\"]:\n"
+              "    assert marker in module\n"
+              "    assert marker not in app\n"
+              "for marker in ['manageTunnel','tunnelAction','tunnelSSH']:\n"
+              "    assert marker in app\n"
+              "assert index.index('incident-management.js') < index.index('tunnel-operations.js') < index.index('app.js')\n"
+              "print('Tunnel Operations module boundary passed')\n"
+          )
+          Path('tests/tunnel_operations_module_contract.py').write_text(contract)
+
+          ci=Path('.github/workflows/ci.yml')
+          ci_text=ci.read_text()
+          ci_text=ci_text.replace('          node --check hub/static/incident-management.js\n          node --check hub/static/app.js','          node --check hub/static/incident-management.js\n          node --check hub/static/tunnel-operations.js\n          node --check hub/static/app.js')
+          ci_text=ci_text.replace('          python tests/incident_management_module_contract.py\n','          python tests/incident_management_module_contract.py\n          python tests/tunnel_operations_module_contract.py\n')
+          ci.write_text(ci_text)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.15' in value: p.write_text(value.replace('2.9.15','2.9.16'))
+
+          notes='# DARK NOC v2.9.16 — Tunnel Operations Module Extraction\n\n- Architecture review identified tunnel cockpit/runtime as the highest-risk remaining feature block in app.js.\n- Extract 24h tunnel history rendering, operations cockpit loading, tunnel edit/redeploy and delete bindings into tunnel-operations.js.\n- Preserve delegated Start/Stop/Restart/Status/Logs/Test/SSH actions in the central event router unchanged.\n- Keep Live Matrix, Incident, Monitoring, Fleet, SSH, File Manager, APIs and Agent behavior unchanged.\n- Add permanent syntax/module-boundary CI coverage.\n\n## فارسی\n\nپس از بازبینی معماری، بخش پرریسک مدیریت تونل از app.js جدا و به tunnel-operations.js منتقل شد؛ ظاهر و رفتار پنل تغییر نکرده است.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.16 — Tunnel Operations module extraction\n\n- Extract tunnel cockpit/history/edit/delete runtime into tunnel-operations.js.\n- Preserve delegated tunnel action routing and all existing behavior.\n- Add permanent module-boundary CI coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/file-transfer.js
+          node --check hub/static/fleet-operations.js
+          node --check hub/static/monitoring.js
+          node --check hub/static/incident-management.js
+          node --check hub/static/tunnel-operations.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.16.tar.gz > /tmp/darknoc-hub-files
+          grep -q 'tunnel-operations.js' /tmp/darknoc-hub-files
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/tunnel-operations.js hub/static/app.js hub/static/index.html tests/tunnel_operations_module_contract.py .github/workflows/ci.yml hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract Tunnel Operations runtime for v2.9.16'
+          git push origin HEAD:refs/heads/release/v2.9.16-tunnel-ops
