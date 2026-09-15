@@ -71,6 +71,7 @@ jobs:
           python tests/action_router_module_contract.py
           python tests/frontend_runtime_contract.py
           python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh

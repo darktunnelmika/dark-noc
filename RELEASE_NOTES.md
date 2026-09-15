@@ -1,3 +1,16 @@
+# DARK NOC v2.9.20 — Backend Request Schemas Module
+
+- Continue backend modularization by extracting Pydantic request/validation models from hub/app.py into hub/schemas.py.
+- Preserve all route paths, payload contracts, validators, database behavior, Agent behavior and frontend visuals.
+- Load schemas through the same importlib-safe pattern used by the Hub test harness.
+- Add a permanent backend schema ownership regression contract.
+
+## فارسی
+
+مدل‌های Pydantic و اعتبارسنجی درخواست‌ها از hub/app.py به hub/schemas.py منتقل شدند؛ قرارداد API و رفتار پنل تغییر نکرده است.
+
+---
+
 # DARK NOC v2.9.19 — Backend Runtime Configuration Module
 
 - Start backend modularization by extracting environment parsing and runtime limits from hub/app.py into hub/runtime_config.py.
