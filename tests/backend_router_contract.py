@@ -15,12 +15,13 @@ routers = {
     'system': (root / "hub/system_router.py").read_text(),
     'ssh_files': (root / "hub/ssh_file_router.py").read_text(),
     'ssh_terminal': (root / "hub/ssh_terminal_router.py").read_text(),
+    'jobs': (root / "hub/jobs_router.py").read_text(),
 }
 for marker in [
     'register_monitoring_router', 'register_incidents_router', 'register_nodes_router', 'register_tunnels_router',
     'register_plugin_deployments_router', 'register_certificates_router', 'register_fleet_router',
     'register_auth_router', 'register_dashboard_router', 'register_system_router',
-    'register_ssh_file_router', 'register_ssh_terminal_router',
+    'register_ssh_file_router', 'register_ssh_terminal_router', 'register_jobs_router',
 ]:
     assert marker in app, marker
 for owner in routers.values():
@@ -30,6 +31,7 @@ for marker in [
     '@app.get("/api/plugins")', '@app.get("/api/certificates")', '@app.get("/api/fleet/operations")',
     '@app.post("/api/auth/login")', '@app.get("/api/dashboard")', '@app.get("/healthz")',
     '@app.post("/api/ssh/relay")', '@app.websocket("/ws/ssh/{node_id}")',
+    '@app.get("/api/jobs")', '@app.get("/api/system/status")',
 ]:
     assert marker not in app, marker
 assert 'def agent_heartbeat' in app and 'def agent_job_result' in app

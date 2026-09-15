@@ -1,3 +1,17 @@
+# DARK NOC v2.9.34 — Backend Router Split: Generic Jobs & System Status
+
+- Extract authenticated Generic Job read routes into `hub/jobs_router.py`.
+- Move `/api/system/status` into `hub/system_router.py`.
+- Preserve job payload redaction, response limits, retention/status counters and API contracts.
+- Keep Agent job queue/result/lease, heartbeat state machine and Live WebSocket in `hub/app.py` for the final control-plane phase.
+- Add permanent Generic Jobs/System Status router-boundary regression coverage.
+
+## فارسی
+
+Routeهای عمومی Job و `/api/system/status` از `hub/app.py` جدا شدند؛ Agent job state machine، heartbeat و Live WebSocket بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.33 — Backend Router Split: SSH & File Transfer
 
 - Extract all SSH File Transfer and File Manager HTTP routes into `hub/ssh_file_router.py`.

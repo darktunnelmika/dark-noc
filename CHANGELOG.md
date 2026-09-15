@@ -1,3 +1,6 @@
+## v2.9.34
+- Split Generic Job reads into `jobs_router.py` and move authenticated System Status into `system_router.py`.
+
 ## v2.9.33
 - Split SSH File Transfer/File Manager and interactive SSH terminal route ownership into dedicated backend routers.
 

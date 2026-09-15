@@ -45,5 +45,5 @@ assert 'def agent_heartbeat' in app and 'def agent_job_result' in app
 # Compatibility aliases are retained for regression tests and internal callers.
 assert 'globals()[_ssh_file_name] = _ssh_file_handler' in app
 assert 'globals()[_ssh_terminal_name] = _ssh_terminal_handler' in app
-assert 'VERSION = "2.9.33"' in app
+assert 'VERSION = "2.9.34"' in app
 print('SSH/File Transfer router boundary passed')
