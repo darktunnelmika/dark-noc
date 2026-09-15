@@ -1,3 +1,17 @@
+# DARK NOC v2.9.29 — Backend Router Split: Monitoring & Incidents
+
+- Complete a backend architecture audit after the Repository + Service modularization wave.
+- Start route-registration modularization by extracting Monitoring routes into `hub/monitoring_router.py` and Incident routes into `hub/incidents_router.py`.
+- Use FastAPI `APIRouter` modules with explicit dependency injection while preserving API paths, request schemas, HTTP status/details and audit behavior.
+- Keep telemetry-driven Incident automation, Agent heartbeat/job-result state machines, SSH/File Transfer, Live WebSocket and frontend visuals unchanged.
+- Add a permanent backend router-boundary regression contract and architecture audit document.
+
+## فارسی
+
+Audit نهایی بک‌اند انجام شد و مرحله Routerها شروع شد: Routeهای Monitoring و Incident از `hub/app.py` به Routerهای مستقل منتقل شدند، بدون تغییر API، Agent یا ظاهر پنل.
+
+---
+
 # DARK NOC v2.9.28 — Certificate & Fleet Operations Service Layer
 
 - Continue backend write/service modularization by extracting Certificate issue/renew transactions and Fleet Operation create/cancel transactions from `hub/app.py` into `hub/certificate_fleet_service.py`.

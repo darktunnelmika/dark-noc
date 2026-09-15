@@ -171,6 +171,22 @@ for _certificate_fleet_service_name in [
     globals()[_certificate_fleet_service_name] = getattr(_certificate_fleet_service_module, _certificate_fleet_service_name)
 del _certificate_fleet_service_name
 
+_MONITORING_ROUTER_PATH = Path(__file__).resolve().with_name('monitoring_router.py')
+_monitoring_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_monitoring_router', _MONITORING_ROUTER_PATH)
+if _monitoring_router_spec is None or _monitoring_router_spec.loader is None:
+    raise ImportError(f'Could not load Monitoring router: {_MONITORING_ROUTER_PATH}')
+_monitoring_router_module = _realm_support_importlib_util.module_from_spec(_monitoring_router_spec)
+_monitoring_router_spec.loader.exec_module(_monitoring_router_module)
+register_monitoring_router = _monitoring_router_module.register_monitoring_router
+
+_INCIDENTS_ROUTER_PATH = Path(__file__).resolve().with_name('incidents_router.py')
+_incidents_router_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_incidents_router', _INCIDENTS_ROUTER_PATH)
+if _incidents_router_spec is None or _incidents_router_spec.loader is None:
+    raise ImportError(f'Could not load Incidents router: {_INCIDENTS_ROUTER_PATH}')
+_incidents_router_module = _realm_support_importlib_util.module_from_spec(_incidents_router_spec)
+_incidents_router_spec.loader.exec_module(_incidents_router_module)
+register_incidents_router = _incidents_router_module.register_incidents_router
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -179,7 +195,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.28"
+VERSION = "2.9.29"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2617,78 +2633,15 @@ def remove_plugin_deployment(deployment_id: int, request: Request, user: sqlite3
     return {"deployment_id": deployment_id, "status": "queued", "jobs": jobs}
 
 
-@app.get("/api/monitors")
-def list_monitors(_: sqlite3.Row = Depends(current_user)):
-    rows = fetch_monitor_inventory(db)
-    return [public_monitor(row) for row in rows]
-
-
-@app.post("/api/monitors", status_code=201)
-def create_monitor(body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    now = utc_ts()
-    try:
-        monitor_id, target = create_monitor_mutation(
-            db, body, user["id"], now, monitor_values=monitor_values,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "monitor_create", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
-    return {"id": monitor_id, "status": "pending"}
-
-
-@app.put("/api/monitors/{monitor_id}")
-def update_monitor(monitor_id: int, body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        target = update_monitor_mutation(
-            db, monitor_id, body, user["id"], utc_ts(),
-            monitor_values=monitor_values, resolve_incident=resolve_incident,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "monitor_update", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
-    return {"ok": True}
-
-
-@app.delete("/api/monitors/{monitor_id}")
-def delete_monitor(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row = delete_monitor_mutation(
-            db, monitor_id, user["id"], resolve_incident=resolve_incident,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "monitor_delete", row["name"], str(monitor_id), request.client.host if request.client else None)
-    return {"ok": True}
-
-
-@app.post("/api/monitors/{monitor_id}/run", status_code=202)
-def run_monitor_now(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        monitor, job_id = queue_monitor_run_mutation(
-            db, monitor_id, user["id"], utc_ts(),
-            node_stale_after=NODE_STALE_AFTER, decrypt=decrypt,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "monitor_run", monitor["name"], str(job_id), request.client.host if request.client else None)
-    return {"job_id": job_id, "status": "queued"}
-
-
-@app.get("/api/monitors/{monitor_id}/results")
-def monitor_results(monitor_id: int, limit: int = 200, _: sqlite3.Row = Depends(current_user)):
-    limit = min(max(limit, 1), 2000)
-    exists, rows = fetch_monitor_result_rows(db, monitor_id, limit)
-    if not exists:
-        raise HTTPException(404, "Monitor not found")
-    result = []
-    for row in rows:
-        item = dict(row)
-        try:
-            item["detail"] = json.loads(item.get("detail") or "{}")
-        except (TypeError, ValueError):
-            item["detail"] = {"message": str(item.get("detail") or "")[:1000]}
-        result.append(item)
-    return result
+register_monitoring_router(
+    app,
+    current_user=current_user, db=db, MonitorBody=MonitorBody, fetch_monitor_inventory=fetch_monitor_inventory,
+    public_monitor=public_monitor, create_monitor_mutation=create_monitor_mutation,
+    update_monitor_mutation=update_monitor_mutation, delete_monitor_mutation=delete_monitor_mutation,
+    queue_monitor_run_mutation=queue_monitor_run_mutation, MonitorIncidentServiceError=MonitorIncidentServiceError,
+    monitor_values=monitor_values, resolve_incident=resolve_incident, utc_ts=utc_ts, decrypt=decrypt, audit=audit,
+    fetch_monitor_result_rows=fetch_monitor_result_rows, node_stale_after=NODE_STALE_AFTER,
+)
 
 
 @app.get("/api/fleet/operations")
@@ -2778,52 +2731,14 @@ def cancel_fleet_operation(operation_id: int, request: Request, user: sqlite3.Ro
     return {"ok": True}
 
 
-@app.get("/api/incidents")
-def list_incidents(_: sqlite3.Row = Depends(current_user)):
-    rows = fetch_incident_inventory(db)
-    now = utc_ts()
-    result = []
-    for row in rows:
-        item = dict(row)
-        item["downtime_seconds"] = max(0, int(item.get("resolved_at") or now) - int(item["opened_at"]))
-        result.append(item)
-    return result
-
-
-@app.get("/api/incidents/{incident_id}")
-def incident_detail(incident_id: int, _: sqlite3.Row = Depends(current_user)):
-    row, events = fetch_incident_detail_rows(db, incident_id)
-    if not row:
-        raise HTTPException(404, "Incident not found")
-    item = dict(row)
-    item["downtime_seconds"] = max(0, int(item.get("resolved_at") or utc_ts()) - int(item["opened_at"]))
-    item["events"] = [dict(event) for event in events]
-    return item
-
-
-@app.post("/api/incidents/{incident_id}/notes", status_code=201)
-def add_incident_note(incident_id: int, body: IncidentNoteBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        add_incident_note_mutation(
-            db, incident_id, body, user["id"], utc_ts(), append_incident_event=append_incident_event,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], "incident_note", str(incident_id), body.message, request.client.host if request.client else None)
-    return {"ok": True}
-
-
-@app.post("/api/incidents/{incident_id}/action")
-def incident_action(incident_id: int, body: IncidentActionBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    try:
-        row = incident_action_mutation(
-            db, incident_id, body, user["id"], utc_ts(),
-            append_incident_event=append_incident_event, resolve_incident=resolve_incident,
-        )
-    except MonitorIncidentServiceError as exc:
-        raise HTTPException(exc.status_code, exc.detail) from exc
-    audit(user["id"], f"incident_{body.action}", str(incident_id), row["title"], request.client.host if request.client else None)
-    return {"ok": True, "action": body.action}
+register_incidents_router(
+    app,
+    current_user=current_user, db=db, IncidentNoteBody=IncidentNoteBody, IncidentActionBody=IncidentActionBody,
+    fetch_incident_inventory=fetch_incident_inventory, fetch_incident_detail_rows=fetch_incident_detail_rows,
+    add_incident_note_mutation=add_incident_note_mutation, incident_action_mutation=incident_action_mutation,
+    MonitorIncidentServiceError=MonitorIncidentServiceError, append_incident_event=append_incident_event,
+    resolve_incident=resolve_incident, utc_ts=utc_ts, audit=audit,
+)
 
 
 @app.post("/api/nodes/{node_id}/jobs", status_code=202)
