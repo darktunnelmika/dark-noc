@@ -32,13 +32,21 @@ jobs:
           python /tmp/prepare_v2_9_33.py
           python - <<'PY'
           from pathlib import Path
-          path = Path('tests/backend_node_tunnel_router_contract.py')
-          text = path.read_text()
-          old = "assert 'def ssh_upload_file' in app and 'def agent_heartbeat' in app"
-          new = "assert \"with_name('ssh_file_router.py')\" in app and 'def agent_heartbeat' in app"
-          if old not in text:
-              raise SystemExit('Node/Tunnel SSH ownership guard not found')
-          path.write_text(text.replace(old, new, 1))
+          replacements = {
+              Path('tests/backend_node_tunnel_router_contract.py'): (
+                  "assert 'def ssh_upload_file' in app and 'def agent_heartbeat' in app",
+                  "assert \"with_name('ssh_file_router.py')\" in app and 'def agent_heartbeat' in app",
+              ),
+              Path('tests/backend_operations_router_contract.py'): (
+                  "assert 'def agent_heartbeat' in app and '@app.websocket(\"/ws/ssh/{node_id}\")' in app",
+                  "assert 'def agent_heartbeat' in app and \"with_name('ssh_terminal_router.py')\" in app",
+              ),
+          }
+          for path, (old, new) in replacements.items():
+              text = path.read_text()
+              if old not in text:
+                  raise SystemExit(f'Expected SSH ownership guard not found in {path}')
+              path.write_text(text.replace(old, new, 1))
           PY
           git diff --check
       - name: Install dependencies
