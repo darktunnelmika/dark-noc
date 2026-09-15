@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.9 — Frontend core modularization
+
+- Extract stable frontend helpers into core.js.
+- Preserve current UI and topology behavior.
+- Add module-boundary regression coverage.
+
+
 ## 2.9.8 — Runtime hardening and render efficiency
 
 - Realm listener/UFW ownership regression fix ported to current main.
