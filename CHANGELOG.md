@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.12 — Secure file transfer module extraction
+
+- Extract File Manager, browser Upload and Hub Relay runtime into file-transfer.js.
+- Preserve transfer progress/cancel/limits and remote file actions.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.11 — SSH terminal module extraction
 
 - Extract browser SSH terminal runtime into ssh-terminal.js.

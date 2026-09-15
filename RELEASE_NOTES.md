@@ -1,3 +1,16 @@
+# DARK NOC v2.9.12 — Secure File Transfer Module Extraction
+
+- Extract SFTP file-manager runtime plus browser upload and Hub relay bindings from app.js into file-transfer.js.
+- Preserve upload progress, cancellation, size limits, authentication handling, relay behavior and remote file actions.
+- Keep SSH terminal, Live tunnel matrix, API, Agent and tunnel behavior unchanged.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+مرحله چهارم ماژولار کردن فرانت‌اند انجام شد: File Manager، Upload و Relay از app.js به file-transfer.js منتقل شدند، بدون تغییر ظاهر یا رفتار پنل.
+
+---
+
 # DARK NOC v2.9.11 — SSH Terminal Module Extraction
 
 - Extract the browser SSH terminal runtime from app.js into ssh-terminal.js.
