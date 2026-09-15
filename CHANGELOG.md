@@ -1,5 +1,13 @@
 # DARK NOC v2.9.5
 
+## 2.9.8 — Runtime hardening and render efficiency
+
+- Realm listener/UFW ownership regression fix ported to current main.
+- Active-view-only rendering on full refresh; hidden pages no longer rebuild.
+- CI now checks live-matrix.js and runs Realm/topology/view regression contracts.
+- No visual redesign.
+
+
 ## 2.9.7 — Smooth Live Matrix Refresh
 
 - Keep the existing matrix visuals unchanged.
