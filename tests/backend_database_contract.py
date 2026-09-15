@@ -8,5 +8,5 @@ assert 'def db()' not in app
 assert 'SCHEMA = """' not in app
 assert "with_name('database.py')" in app
 assert '_database_spec.loader.exec_module' in app
-assert 'VERSION = \"2.9.25\"' in app
+assert 'VERSION = \"2.9.26\"' in app
 print('Backend database core module boundary passed')

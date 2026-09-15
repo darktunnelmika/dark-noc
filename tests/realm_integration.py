@@ -106,8 +106,8 @@ def main() -> None:
     assert "DARK Realm Pro" in agent_source
     assert "dark-realm" in frontend
     assert "plugin-realm" in index
-    assert 'VERSION = "2.9.25"' in app_source
-    assert 'VERSION = "2.9.25"' in agent_source
+    assert 'VERSION = "2.9.26"' in app_source
+    assert 'VERSION = "2.9.26"' in agent_source
     assert "_remove_ufw_rules(firewall_rules)" in (ROOT / "agent" / "realm_plugin.py").read_text()
 
     commands = []

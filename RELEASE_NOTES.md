@@ -1,3 +1,16 @@
+# DARK NOC v2.9.26 — Plugin Deployment Service Layer
+
+- Continue the backend write/service layer by extracting Managed and Pair-Code plugin deployment creation plus deployment recovery/retry/remove transactions from `hub/app.py` into `hub/plugin_deployment_service.py`.
+- Keep FastAPI routes, deployment list rendering, audit logging and response shaping in `hub/app.py`.
+- Preserve transaction boundaries, Pair Code compatibility, Realm/Packet/Backhaul/Ghost behavior, Agent behavior and frontend visuals.
+- Add permanent Plugin Deployment service-boundary regression coverage.
+
+## فارسی
+
+عملیات ساخت، Retry و Remove دیپلوی‌های Managed و Pair-Code از `hub/app.py` به `hub/plugin_deployment_service.py` منتقل شدند؛ Routeها، Audit و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.25 — Node & Tunnel Mutation Service Layer
 
 - Start the backend write/service layer by extracting Node create/provision/update/delete/fingerprint mutations and Tunnel control/install/reconfigure/remove transactions from `hub/app.py` into `hub/node_tunnel_service.py`.
