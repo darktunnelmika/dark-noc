@@ -96,8 +96,8 @@ fleet_src = render_router(
     ['VERSION = deps["version"]'],
 )
 fleet_src = fleet_src.replace('queue_due_fleet_operations=queue_due_fleet_operations,', 'queue_due_fleet_operations=get_queue_due_fleet_operations(),')
-fleet_src = fleet_src.replace('background.add_task(\n                    provision_node_for_fleet,', 'background.add_task(\n                    get_provision_node_for_fleet(),')
-fleet_src = fleet_src.replace('background.add_task(\n            orchestrate_agent_upgrade,', 'background.add_task(\n            get_orchestrate_agent_upgrade(),')
+fleet_src = fleet_src.replace('provision_node_for_fleet,', 'get_provision_node_for_fleet(),')
+fleet_src = fleet_src.replace('orchestrate_agent_upgrade,', 'get_orchestrate_agent_upgrade(),')
 (ROOT / 'hub/fleet_router.py').write_text(fleet_src)
 
 # Remove route blocks from app.py while preserving helpers and orchestration state machines.
