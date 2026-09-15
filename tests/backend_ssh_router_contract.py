@@ -40,10 +40,10 @@ for helper in [
 ]:
     assert helper in app, helper
 assert 'request.url.path.startswith("/api/ssh/upload/")' in app
-assert '@app.websocket("/ws/live")' in app
-assert 'def agent_heartbeat' in app and 'def agent_job_result' in app
+assert "with_name('live_router.py')" in app
+assert "with_name('agent_control_router.py')" in app and "with_name('agent_control_router.py')" in app
 # Compatibility aliases are retained for regression tests and internal callers.
 assert 'globals()[_ssh_file_name] = _ssh_file_handler' in app
 assert 'globals()[_ssh_terminal_name] = _ssh_terminal_handler' in app
-assert 'VERSION = "2.9.34"' in app
+assert 'VERSION = "2.9.35"' in app
 print('SSH/File Transfer router boundary passed')

@@ -1,3 +1,6 @@
+## v2.9.35
+- Split Agent Control Plane HTTP routes and the Live telemetry WebSocket into dedicated APIRouter modules while preserving shared state-machine ownership.
+
 ## v2.9.34
 - Split Generic Job reads into `jobs_router.py` and move authenticated System Status into `system_router.py`.
 
