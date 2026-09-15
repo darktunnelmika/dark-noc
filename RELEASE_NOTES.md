@@ -1,3 +1,16 @@
+# DARK NOC v2.9.14 — Synthetic Monitoring Module Extraction
+
+- Extract monitor rendering, editor and form runtime from app.js into monitoring.js.
+- Preserve ICMP/TCP/HTTP/HTTPS/DNS/TLS/SNMP checks, run-all behavior and monitor configuration.
+- Keep delegated monitor actions, incidents, Fleet, SSH, File Manager, Matrix, APIs and Agent behavior unchanged.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+مرحله ششم ماژولار کردن فرانت‌اند انجام شد: منطق Synthetic Monitoring از app.js به monitoring.js منتقل شد، بدون تغییر ظاهر یا رفتار پنل.
+
+---
+
 # DARK NOC v2.9.13 — Fleet Operations Module Extraction
 
 - Extract Fleet Operations rendering, version compliance, fleet editor and fleet form runtime from app.js into fleet-operations.js.
