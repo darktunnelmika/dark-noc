@@ -470,7 +470,17 @@ def _configure_timer(name: str, schedule: str) -> None:
 
 def _port_listening(port: int) -> bool:
     code, output = _run(["ss", "-H", "-lnt"], timeout=10)
-    return code == 0 and re.search(fr":{port}\b", output) is not None
+    if code != 0:
+        return False
+    expected = str(port)
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[0] != "LISTEN":
+            continue
+        _, separator, local_port = fields[3].rpartition(":")
+        if separator and local_port == expected:
+            return True
+    return False
 
 
 def _configure_ufw(directory: Path, role: str, mappings: list[tuple[int, int, int]]) -> list[str]:
@@ -479,17 +489,38 @@ def _configure_ufw(directory: Path, role: str, mappings: list[tuple[int, int, in
     code, status = _run(["ufw", "status"], timeout=15)
     if code != 0 or "Status: active" not in status:
         return []
+
+    ownership_path = directory / "ufw-created.json"
+    previous: list[str] = []
+    if ownership_path.exists():
+        try:
+            saved = json.loads(ownership_path.read_text(encoding="utf-8"))
+            if not isinstance(saved, list) or any(
+                not isinstance(rule, str)
+                or re.fullmatch(r"[0-9]{1,5}/tcp", rule) is None
+                or not 1 <= int(rule.split("/", 1)[0]) <= 65535
+                for rule in saved
+            ):
+                raise ValueError("Expected a list of owned TCP port rules")
+            previous = list(dict.fromkeys(saved))
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError("Cannot read Realm UFW ownership; refusing to overwrite it") from exc
+
     ports = [public for public, _, _ in mappings] if role == "edge" else [backbone for _, _, backbone in mappings]
     created: list[str] = []
-    for port in ports:
-        rule = f"{port}/tcp"
-        code, output = _run(["ufw", "allow", rule, "comment", "DARK-NOC-REALM"], timeout=20)
-        if code != 0:
-            _remove_ufw_rules(created)
-            raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")
-        if "Rule added" in output:
-            created.append(rule)
-    _atomic_text(directory / "ufw-created.json", json.dumps(created), 0o600)
+    try:
+        for port in ports:
+            rule = f"{port}/tcp"
+            code, output = _run(["ufw", "allow", rule, "comment", "DARK-NOC-REALM"], timeout=20)
+            if code != 0:
+                raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")
+            if "Rule added" in output:
+                created.append(rule)
+        owned = list(dict.fromkeys([*previous, *created]))
+        _atomic_text(ownership_path, json.dumps(owned), 0o600)
+    except Exception:
+        _remove_ufw_rules(created)
+        raise
     return created
 
 

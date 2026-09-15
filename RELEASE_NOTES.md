@@ -1,3 +1,17 @@
+# DARK NOC v2.9.8 — Runtime Hardening & View-Aware Rendering
+
+- Port the verified Realm IPv6 listener and UFW ownership fixes onto current main.
+- Preserve prior Realm-owned UFW rules across redeploys and roll back only newly-created rules on failure.
+- Keep the v2.9.7 Live tunnel matrix visuals unchanged.
+- Stop full refreshes from rebuilding every hidden page; only the active view is rendered from refreshed state.
+- Add syntax coverage for live-matrix.js and permanent Realm, topology-refresh and view-render regression tests to CI.
+
+## فارسی
+
+این نسخه ظاهر پنل را تغییر نمی‌دهد. باگ‌های Realm در تشخیص پورت IPv6 و مالکیت UFW رفع شده و رفرش کامل دیگر صفحه‌های مخفی را بی‌دلیل دوباره رندر نمی‌کند. تست‌های دائمی برای Matrix و Realm نیز به CI اضافه شده‌اند.
+
+---
+
 # DARK NOC v2.9.7 — Smooth Live Matrix Refresh
 
 This maintenance release keeps the current Live tunnel matrix design intact while removing full SVG rebuilds on normal telemetry updates.

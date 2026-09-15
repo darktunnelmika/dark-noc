@@ -26,6 +26,7 @@ jobs:
         run: |
           python -m compileall -q hub agent tests
           node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
           bash -n darknoc
       - name: Tests
@@ -36,10 +37,13 @@ jobs:
           python tests/noc_features.py
           python tests/server_cli.py
           python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
           python tests/local_hub_recovery.py
           python tests/installer_contracts.py
           python tests/agent_heartbeat_resilience.py
           python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
