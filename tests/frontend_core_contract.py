@@ -6,5 +6,5 @@ assert "window.DarkNocCore=Object.freeze" in core
 assert "const { $, $$, esc, bytesPerSecond, fileSize, displayHost, relativeTime, duration, elapsedDuration } = window.DarkNocCore;" in app
 assert "function esc(value)" not in app
 assert "function bytesPerSecond(value)" not in app
-assert index.index("/static/core.js?v=1.0.0") < index.index("/static/app.js?v=2.9.9")
+assert index.index("/static/core.js") < index.index("/static/topology.js") < index.index("/static/app.js")
 print("Frontend core modularization contract passed")
