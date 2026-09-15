@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.15 — Incident Command module extraction
+
+- Extract Incident rendering, detail loading, operator notes and report export into incident-management.js.
+- Preserve acknowledge/resolve/reopen and SSH takeover behavior.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.14 — Synthetic Monitoring module extraction
 
 - Extract monitor rendering/editor/form runtime into monitoring.js.

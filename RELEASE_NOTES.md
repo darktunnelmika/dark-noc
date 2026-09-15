@@ -1,3 +1,16 @@
+# DARK NOC v2.9.15 — Incident Command Module Extraction
+
+- Extract Incident Command rendering, detail loading, timeline notes and report export from app.js into incident-management.js.
+- Preserve acknowledge, resolve, reopen, SSH takeover and delegated incident actions.
+- Keep Synthetic Monitoring, Fleet, SSH, File Manager, Matrix, APIs and Agent behavior unchanged.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+مرحله هفتم ماژولار کردن فرانت‌اند انجام شد: منطق Incident Command از app.js به incident-management.js منتقل شد، بدون تغییر ظاهر یا رفتار مدیریت رخدادها.
+
+---
+
 # DARK NOC v2.9.14 — Synthetic Monitoring Module Extraction
 
 - Extract monitor rendering, editor and form runtime from app.js into monitoring.js.
