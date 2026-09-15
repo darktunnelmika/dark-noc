@@ -156,7 +156,10 @@ jobs:
 
       - name: Install test dependencies
         if: steps.version.outputs.publish == 'true'
-        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+        run: |
+          pip install --disable-pip-version-check --require-hashes -r hub/requirements.lock
+          pip install --disable-pip-version-check --require-hashes -r agent/requirements.lock
+          pip check
 
       - name: Test release source
         if: steps.version.outputs.publish == 'true'
@@ -173,6 +176,7 @@ jobs:
           python tests/realm_integration.py
           python tests/local_hub_recovery.py
           python tests/installer_contracts.py
+          python tests/dependency_lock_contract.py
 
       - name: Build reproducible packages
         if: steps.version.outputs.publish == 'true'
