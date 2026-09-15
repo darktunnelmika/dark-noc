@@ -1,3 +1,16 @@
+# DARK NOC v2.9.21 — Backend Database Core Module
+
+- Start database-layer modularization by extracting SQLite data path, connection policy and schema DDL from hub/app.py into hub/database.py.
+- Keep bootstrap migrations and feature-specific query flows in app.py for the next safe database-service split.
+- Preserve all API routes, existing migrations, transaction behavior, Agent behavior and frontend visuals.
+- Add permanent database-core ownership regression coverage.
+
+## فارسی
+
+هسته دیتابیس شامل مسیر SQLite، تنظیمات اتصال و Schema از hub/app.py به hub/database.py منتقل شد؛ Migrationهای Bootstrap و Queryهای فیچرها فعلاً بدون تغییر باقی ماندند تا مرحله‌ای و کم‌ریسک ادامه بدهیم.
+
+---
+
 # DARK NOC v2.9.20 — Backend Request Schemas Module
 
 - Continue backend modularization by extracting Pydantic request/validation models from hub/app.py into hub/schemas.py.
