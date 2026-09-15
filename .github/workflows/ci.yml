@@ -91,6 +91,7 @@ jobs:
           python tests/backend_maintenance_runtime_contract.py
           python tests/dependency_python_multipart_contract.py
           python tests/dependency_cryptography_contract.py
+          python tests/dependency_asyncssh_contract.py
       - name: Verify reproducible release builder
         run: |
           scripts/build-release.sh
