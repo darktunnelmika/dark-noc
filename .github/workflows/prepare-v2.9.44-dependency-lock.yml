@@ -1,0 +1,124 @@
+name: Prepare v2.9.44 Dependency Lock Hardening
+
+on:
+  push:
+    branches: [automation/v2.9.44-dependency-lock]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve preparation source
+        run: cp scripts/prepare_v2_9_44.py /tmp/prepare_v2_9_44.py
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply supply-chain hardening
+        run: |
+          set -Eeuo pipefail
+          python /tmp/prepare_v2_9_44.py
+          git diff --check
+      - name: Generate SHA256 dependency locks
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --disable-pip-version-check pip-tools==7.6.1
+          pip-compile --generate-hashes --resolver=backtracking --strip-extras --no-header --no-annotate --no-emit-index-url --output-file=hub/requirements.lock hub/requirements.txt
+          pip-compile --generate-hashes --resolver=backtracking --strip-extras --no-header --no-annotate --no-emit-index-url --output-file=agent/requirements.lock agent/requirements.txt
+          test -s hub/requirements.lock
+          test -s agent/requirements.lock
+          grep -q -- '--hash=sha256:' hub/requirements.lock
+          grep -q -- '--hash=sha256:' agent/requirements.lock
+      - name: Install locked runtime dependencies
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes -r hub/requirements.lock
+          python -m pip install --disable-pip-version-check --require-hashes -r agent/requirements.lock
+          python -m pip check
+      - name: Verify source
+        run: |
+          set -Eeuo pipefail
+          python -m compileall -q hub agent tests
+          for js in hub/static/*.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+          python tests/frontend_fetch_contract.py
+          python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
+          python tests/backend_database_contract.py
+          python tests/backend_bootstrap_contract.py
+          python tests/backend_node_tunnel_repository_contract.py
+          python tests/backend_monitor_incident_repository_contract.py
+          python tests/backend_node_tunnel_service_contract.py
+          python tests/backend_plugin_deployment_service_contract.py
+          python tests/backend_monitor_incident_service_contract.py
+          python tests/backend_certificate_fleet_service_contract.py
+          python tests/backend_router_contract.py
+          python tests/backend_node_tunnel_router_contract.py
+          python tests/backend_operations_router_contract.py
+          python tests/backend_auth_dashboard_system_router_contract.py
+          python tests/backend_ssh_router_contract.py
+          python tests/backend_jobs_system_router_contract.py
+          python tests/backend_agent_control_router_contract.py
+          python tests/backend_maintenance_runtime_contract.py
+          python tests/dependency_python_multipart_contract.py
+          python tests/dependency_cryptography_contract.py
+          python tests/dependency_asyncssh_contract.py
+          python tests/dependency_psutil_contract.py
+          python tests/dependency_uvicorn_contract.py
+          python tests/dependency_fastapi_contract.py
+          python tests/dependency_lock_contract.py
+      - name: Verify reproducible release
+        run: |
+          set -Eeuo pipefail
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.44.tar.gz | grep -q 'hub/requirements.lock'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.44.tar.gz | grep -q 'agent/requirements.lock'
+          tar -tzf dist/DARK-NOC-NODE-v2.9.44.tar.gz | grep -q 'agent/requirements.lock'
+      - name: Commit verified candidate
+        run: |
+          set -Eeuo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub agent tests install-hub.sh install-node.sh upgrade.sh darknoc RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'deps: lock dependency graph for v2.9.44'
+          git push --force origin HEAD:refs/heads/release/v2.9.44-dependency-lock
