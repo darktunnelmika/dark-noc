@@ -1,3 +1,16 @@
+# DARK NOC v2.9.23 — Node & Tunnel Repository Query Layer
+
+- Start the backend repository/query layer by extracting Node inventory, SSH endpoint-conflict lookup, Tunnel inventory and Tunnel Operations read queries from `hub/app.py` into `hub/node_tunnel_repository.py`.
+- Keep response shaping, topology resolution, API routes and all mutation transactions in `hub/app.py` to preserve behavior and keep this split low-risk.
+- Preserve SQLite transaction semantics, Agent behavior and frontend visuals.
+- Add permanent Node/Tunnel repository ownership regression coverage.
+
+## فارسی
+
+Queryهای خواندنی Node و Tunnel از `hub/app.py` به `hub/node_tunnel_repository.py` منتقل شدند؛ Routeها، پاسخ API، عملیات تغییردهنده دیتابیس و ظاهر پنل بدون تغییر باقی مانده‌اند.
+
+---
+
 # DARK NOC v2.9.22 — Database Bootstrap & Migrations Module
 
 - Continue database-layer modularization by extracting Hub database bootstrap, migrations and startup recovery into `hub/database_bootstrap.py`.

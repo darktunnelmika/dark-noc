@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.23 — Node and Tunnel repository query layer
+
+- Extract Node/Tunnel inventory and operations read queries into hub/node_tunnel_repository.py.
+- Preserve API response shaping and mutation transactions in hub/app.py.
+- Add repository boundary regression coverage.
+
+
 ## 2.9.22 — Database bootstrap and migrations module
 
 - Extract database bootstrap, ALTER TABLE migrations and startup recovery into hub/database_bootstrap.py.
