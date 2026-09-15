@@ -142,6 +142,21 @@ for _plugin_deployment_service_name in [
     globals()[_plugin_deployment_service_name] = getattr(_plugin_deployment_service_module, _plugin_deployment_service_name)
 del _plugin_deployment_service_name
 
+
+_MONITOR_INCIDENT_SERVICE_PATH = Path(__file__).resolve().with_name('monitor_incident_service.py')
+_monitor_incident_service_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_monitor_incident_service', _MONITOR_INCIDENT_SERVICE_PATH)
+if _monitor_incident_service_spec is None or _monitor_incident_service_spec.loader is None:
+    raise ImportError(f'Could not load Monitor/Incident service: {_MONITOR_INCIDENT_SERVICE_PATH}')
+_monitor_incident_service_module = _realm_support_importlib_util.module_from_spec(_monitor_incident_service_spec)
+_monitor_incident_service_spec.loader.exec_module(_monitor_incident_service_module)
+for _monitor_incident_service_name in [
+    'MonitorIncidentServiceError', 'create_monitor_mutation', 'update_monitor_mutation',
+    'delete_monitor_mutation', 'queue_monitor_run_mutation', 'add_incident_note_mutation',
+    'incident_action_mutation',
+]:
+    globals()[_monitor_incident_service_name] = getattr(_monitor_incident_service_module, _monitor_incident_service_name)
+del _monitor_incident_service_name
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -150,7 +165,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.26"
+VERSION = "2.9.27"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -2602,106 +2617,51 @@ def list_monitors(_: sqlite3.Row = Depends(current_user)):
 
 @app.post("/api/monitors", status_code=201)
 def create_monitor(body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    target, port, secret, oid = monitor_values(body)
     now = utc_ts()
     try:
-        with db() as conn:
-            node = conn.execute("SELECT name FROM nodes WHERE id=?", (body.node_id,)).fetchone()
-            if not node:
-                raise HTTPException(404, "Node not found")
-            monitor_id = conn.execute(
-                """INSERT INTO monitors(node_id,name,kind,target,port,secret_enc,snmp_oid,interval_seconds,
-                       timeout_seconds,expected_status,enabled,status,next_run_at,created_by,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (body.node_id, body.name, body.kind, target, port, secret, oid, body.interval_seconds,
-                 body.timeout_seconds, body.expected_status, 1 if body.enabled else 0, "pending", now,
-                 user["id"], now, now),
-            ).lastrowid
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(409, "A monitor with this name already exists on the selected Node") from exc
+        monitor_id, target = create_monitor_mutation(
+            db, body, user["id"], now, monitor_values=monitor_values,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], "monitor_create", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
     return {"id": monitor_id, "status": "pending"}
 
 
 @app.put("/api/monitors/{monitor_id}")
 def update_monitor(monitor_id: int, body: MonitorBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    now = utc_ts()
     try:
-        with db() as conn:
-            current = conn.execute("SELECT * FROM monitors WHERE id=?", (monitor_id,)).fetchone()
-            if not current:
-                raise HTTPException(404, "Monitor not found")
-            if not conn.execute("SELECT 1 FROM nodes WHERE id=?", (body.node_id,)).fetchone():
-                raise HTTPException(404, "Node not found")
-            target, port, secret, oid = monitor_values(body, current["secret_enc"])
-            old_title = f"Monitor {current['name']} is down"
-            old_incidents = conn.execute(
-                "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
-                (current["node_id"], old_title),
-            ).fetchall()
-            for incident in old_incidents:
-                resolve_incident(conn, incident["id"], "Monitor configuration changed", actor_id=user["id"])
-            conn.execute(
-                """UPDATE monitors SET node_id=?,name=?,kind=?,target=?,port=?,secret_enc=?,snmp_oid=?,
-                       interval_seconds=?,timeout_seconds=?,expected_status=?,enabled=?,status='pending',
-                       failure_streak=0,next_run_at=?,updated_at=? WHERE id=?""",
-                (body.node_id, body.name, body.kind, target, port, secret, oid, body.interval_seconds,
-                 body.timeout_seconds, body.expected_status, 1 if body.enabled else 0, now, now, monitor_id),
-            )
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(409, "A monitor with this name already exists on the selected Node") from exc
+        target = update_monitor_mutation(
+            db, monitor_id, body, user["id"], utc_ts(),
+            monitor_values=monitor_values, resolve_incident=resolve_incident,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], "monitor_update", body.name, f"{body.kind}:{target}", request.client.host if request.client else None)
     return {"ok": True}
 
 
 @app.delete("/api/monitors/{monitor_id}")
 def delete_monitor(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        row = conn.execute("SELECT node_id,name FROM monitors WHERE id=?", (monitor_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Monitor not found")
-        title = f"Monitor {row['name']} is down"
-        active = conn.execute(
-            "SELECT id FROM incidents WHERE node_id=? AND tunnel_id IS NULL AND title=? AND status IN ('open','acknowledged')",
-            (row["node_id"], title),
-        ).fetchall()
-        for incident in active:
-            resolve_incident(conn, incident["id"], "Monitor was removed by the operator", actor_id=user["id"])
-        conn.execute("DELETE FROM monitors WHERE id=?", (monitor_id,))
+    try:
+        row = delete_monitor_mutation(
+            db, monitor_id, user["id"], resolve_incident=resolve_incident,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], "monitor_delete", row["name"], str(monitor_id), request.client.host if request.client else None)
     return {"ok": True}
 
 
 @app.post("/api/monitors/{monitor_id}/run", status_code=202)
 def run_monitor_now(monitor_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):
-    now = utc_ts()
-    with db() as conn:
-        monitor = conn.execute(
-            "SELECT monitors.*,nodes.last_seen FROM monitors JOIN nodes ON nodes.id=monitors.node_id WHERE monitors.id=?",
-            (monitor_id,),
-        ).fetchone()
-        if not monitor:
-            raise HTTPException(404, "Monitor not found")
-        if not monitor["last_seen"] or monitor["last_seen"] < now - NODE_STALE_AFTER:
-            raise HTTPException(409, "Agent is offline")
-        active = conn.execute("SELECT 1 FROM jobs WHERE id=? AND status IN ('queued','running')", (monitor["job_id"],)).fetchone() if monitor["job_id"] else None
-        if active:
-            raise HTTPException(409, "Monitor check is already running")
-        payload = {
-            "monitor_id": monitor["id"], "kind": monitor["kind"], "target": monitor["target"],
-            "port": monitor["port"], "timeout_seconds": monitor["timeout_seconds"],
-            "expected_status": monitor["expected_status"], "snmp_oid": monitor["snmp_oid"],
-        }
-        if monitor["kind"] == "snmp":
-            try:
-                payload["snmp_community"] = decrypt(monitor["secret_enc"])
-            except Exception as exc:
-                raise HTTPException(409, "Encrypted SNMP community cannot be read; edit and save the monitor again") from exc
-        job_id = conn.execute(
-            "INSERT INTO jobs(node_id,kind,payload,created_by,created_at) VALUES(?,?,?,?,?)",
-            (monitor["node_id"], "monitor_run", json.dumps(payload), user["id"], now),
-        ).lastrowid
-        conn.execute("UPDATE monitors SET job_id=?,next_run_at=?,updated_at=? WHERE id=?", (job_id, now + monitor["interval_seconds"], now, monitor_id))
+    try:
+        monitor, job_id = queue_monitor_run_mutation(
+            db, monitor_id, user["id"], utc_ts(),
+            node_stale_after=NODE_STALE_AFTER, decrypt=decrypt,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], "monitor_run", monitor["name"], str(job_id), request.client.host if request.client else None)
     return {"job_id": job_id, "status": "queued"}
 
@@ -2909,47 +2869,25 @@ def incident_detail(incident_id: int, _: sqlite3.Row = Depends(current_user)):
 
 @app.post("/api/incidents/{incident_id}/notes", status_code=201)
 def add_incident_note(incident_id: int, body: IncidentNoteBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        row = conn.execute("SELECT title FROM incidents WHERE id=?", (incident_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Incident not found")
-        append_incident_event(conn, incident_id, body.event_type, body.message, actor_id=user["id"])
-        conn.execute("UPDATE incidents SET last_changed_at=? WHERE id=?", (utc_ts(), incident_id))
+    try:
+        add_incident_note_mutation(
+            db, incident_id, body, user["id"], utc_ts(), append_incident_event=append_incident_event,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], "incident_note", str(incident_id), body.message, request.client.host if request.client else None)
     return {"ok": True}
 
 
 @app.post("/api/incidents/{incident_id}/action")
 def incident_action(incident_id: int, body: IncidentActionBody, request: Request, user: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Incident not found")
-        now = utc_ts()
-        if body.action == "acknowledge":
-            if row["status"] != "open":
-                raise HTTPException(409, "Only an open incident can be acknowledged")
-            conn.execute(
-                "UPDATE incidents SET status='acknowledged',acknowledged_at=?,last_changed_at=?,root_cause=COALESCE(?,root_cause) WHERE id=?",
-                (now, now, body.root_cause, incident_id),
-            )
-            append_incident_event(conn, incident_id, "acknowledged", body.note or "Operator acknowledged the incident", actor_id=user["id"], created_at=now)
-        elif body.action == "resolve":
-            if row["status"] == "resolved":
-                raise HTTPException(409, "Incident is already resolved")
-            conn.execute("UPDATE incidents SET root_cause=COALESCE(?,root_cause) WHERE id=?", (body.root_cause, incident_id))
-            resolve_incident(
-                conn, incident_id, body.note or "Operator resolved the incident",
-                actor_id=user["id"], resolution=body.resolution,
-            )
-        else:
-            if row["status"] != "resolved":
-                raise HTTPException(409, "Only a resolved incident can be reopened")
-            conn.execute(
-                "UPDATE incidents SET status='open',resolved_at=NULL,last_changed_at=?,resolution=NULL WHERE id=?",
-                (now, incident_id),
-            )
-            append_incident_event(conn, incident_id, "reopened", body.note or "Operator reopened the incident", actor_id=user["id"], created_at=now)
+    try:
+        row = incident_action_mutation(
+            db, incident_id, body, user["id"], utc_ts(),
+            append_incident_event=append_incident_event, resolve_incident=resolve_incident,
+        )
+    except MonitorIncidentServiceError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     audit(user["id"], f"incident_{body.action}", str(incident_id), row["title"], request.client.host if request.client else None)
     return {"ok": True, "action": body.action}
 
