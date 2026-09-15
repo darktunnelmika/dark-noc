@@ -1,0 +1,177 @@
+name: Prepare v2.9.21 Backend Database modularization
+
+on:
+  push:
+    branches: [automation/v2.9.21-backend-database]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract database core
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+
+          app = Path('hub/app.py')
+          text = app.read_text()
+          tree = ast.parse(text)
+          lines = text.splitlines(True)
+
+          targets = {}
+          db_node = None
+          for node in tree.body:
+              if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                  names = []
+                  if isinstance(node, ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target, ast.Name):
+                              names.append(target.id)
+                  elif isinstance(node.target, ast.Name):
+                      names.append(node.target.id)
+                  for name in names:
+                      if name in {'DATA_DIR', 'DB_PATH', 'SCHEMA'}:
+                          targets[name] = node
+              elif isinstance(node, ast.FunctionDef) and node.name == 'db':
+                  db_node = node
+
+          assert set(targets) == {'DATA_DIR', 'DB_PATH', 'SCHEMA'}, targets.keys()
+          assert db_node is not None
+
+          def block(node):
+              start = min([d.lineno for d in getattr(node, 'decorator_list', [])], default=node.lineno)
+              return ''.join(lines[start - 1:node.end_lineno]).rstrip() + '\n'
+
+          remove = set()
+          for node in [targets['DATA_DIR'], targets['DB_PATH'], db_node, targets['SCHEMA']]:
+              start = min([d.lineno for d in getattr(node, 'decorator_list', [])], default=node.lineno)
+              remove.update(range(start - 1, node.end_lineno))
+
+          db_module = (
+              'from __future__ import annotations\n\n'
+              'import os\nimport sqlite3\nfrom pathlib import Path\n\n'
+              + block(targets['DATA_DIR'])
+              + block(targets['DB_PATH'])
+              + '\n'
+              + block(db_node)
+              + '\n'
+              + block(targets['SCHEMA'])
+          )
+          Path('hub/database.py').write_text(db_module)
+
+          new_text = ''.join(line for i, line in enumerate(lines) if i not in remove)
+          anchor = "del _schema_name\n"
+          assert anchor in new_text
+          loader = (
+              "\n_DATABASE_MODULE_PATH = Path(__file__).resolve().with_name('database.py')\n"
+              "_database_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_database', _DATABASE_MODULE_PATH)\n"
+              "if _database_spec is None or _database_spec.loader is None:\n"
+              "    raise ImportError(f'Could not load database core: {_DATABASE_MODULE_PATH}')\n"
+              "_database_module = _realm_support_importlib_util.module_from_spec(_database_spec)\n"
+              "_database_spec.loader.exec_module(_database_module)\n"
+              "for _database_name in ['DATA_DIR', 'DB_PATH', 'SCHEMA', 'db']:\n"
+              "    globals()[_database_name] = getattr(_database_module, _database_name)\n"
+              "del _database_name\n"
+          )
+          new_text = new_text.replace(anchor, anchor + loader, 1)
+          app.write_text(new_text)
+
+          contract = (
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/app.py').read_text()\n"
+              "database=(root/'hub/database.py').read_text()\n"
+              "for marker in ['DATA_DIR =', 'DB_PATH =', 'def db()', 'SCHEMA =']:\n"
+              "    assert marker in database\n"
+              "assert 'def db()' not in app\n"
+              "assert 'SCHEMA = \"\"\"' not in app\n"
+              "assert \"with_name('database.py')\" in app\n"
+              "assert '_database_spec.loader.exec_module' in app\n"
+              "assert 'VERSION = \\\"2.9.21\\\"' in app\n"
+              "print('Backend database core module boundary passed')\n"
+          )
+          Path('tests/backend_database_contract.py').write_text(contract)
+
+          version_files = [
+              'hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh',
+              'hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py',
+              'tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py',
+              'tests/topology_inventory_regression.py','tests/backend_config_contract.py',
+              'tests/backend_schemas_contract.py'
+          ]
+          for name in version_files:
+              p=Path(name); v=p.read_text()
+              if '2.9.20' in v:
+                  p.write_text(v.replace('2.9.20','2.9.21'))
+
+          notes = '# DARK NOC v2.9.21 — Backend Database Core Module\n\n- Start database-layer modularization by extracting SQLite data path, connection policy and schema DDL from hub/app.py into hub/database.py.\n- Keep bootstrap migrations and feature-specific query flows in app.py for the next safe database-service split.\n- Preserve all API routes, existing migrations, transaction behavior, Agent behavior and frontend visuals.\n- Add permanent database-core ownership regression coverage.\n\n## فارسی\n\nهسته دیتابیس شامل مسیر SQLite، تنظیمات اتصال و Schema از hub/app.py به hub/database.py منتقل شد؛ Migrationهای Bootstrap و Queryهای فیچرها فعلاً بدون تغییر باقی ماندند تا مرحله‌ای و کم‌ریسک ادامه بدهیم.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes + p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n')
+          p.write_text(first + sep + '\n## 2.9.21 — Backend database core module\n\n- Extract SQLite path, connection policy and schema DDL into hub/database.py.\n- Preserve bootstrap migrations, APIs and transaction behavior.\n- Add database-core ownership regression coverage.\n\n' + rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          for js in hub/static/*.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+          python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
+          python tests/backend_database_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"; cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.21.tar.gz | grep -q 'database.py'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/database.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract backend database core for v2.9.21'
+          git push origin HEAD:refs/heads/release/v2.9.21-backend-database
