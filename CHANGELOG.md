@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.13 — Fleet Operations module extraction
+
+- Extract Fleet Operations rendering/editor/form runtime into fleet-operations.js.
+- Preserve rollouts, canary selection, Auto-Heal and scheduled operations.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.12 — Secure file transfer module extraction
 
 - Extract File Manager, browser Upload and Hub Relay runtime into file-transfer.js.

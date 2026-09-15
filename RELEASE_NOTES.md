@@ -1,3 +1,16 @@
+# DARK NOC v2.9.13 — Fleet Operations Module Extraction
+
+- Extract Fleet Operations rendering, version compliance, fleet editor and fleet form runtime from app.js into fleet-operations.js.
+- Preserve controlled Agent rollouts, canary selection, Auto-Heal configuration, scheduled jobs and service playbooks.
+- Keep delegated fleet output/cancel actions, SSH, File Manager, Matrix, APIs and Agent behavior unchanged.
+- Add permanent module-boundary regression coverage.
+
+## فارسی
+
+مرحله پنجم ماژولار کردن فرانت‌اند انجام شد: منطق Fleet Operations از app.js به fleet-operations.js منتقل شد، بدون تغییر ظاهر یا رفتار پنل.
+
+---
+
 # DARK NOC v2.9.12 — Secure File Transfer Module Extraction
 
 - Extract SFTP file-manager runtime plus browser upload and Hub relay bindings from app.js into file-transfer.js.
