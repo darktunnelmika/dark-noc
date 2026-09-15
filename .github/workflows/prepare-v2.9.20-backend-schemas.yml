@@ -1,0 +1,159 @@
+name: Prepare v2.9.20 Backend Schemas modularization
+
+on:
+  push:
+    branches: [automation/v2.9.20-backend-schemas]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract Pydantic request schemas
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+
+          app=Path('hub/app.py')
+          text=app.read_text()
+          tree=ast.parse(text)
+          model_nodes=[]
+          for node in tree.body:
+              if isinstance(node, ast.ClassDef):
+                  is_model=False
+                  for base in node.bases:
+                      if isinstance(base, ast.Name) and base.id=='BaseModel':
+                          is_model=True
+                      elif isinstance(base, ast.Attribute) and base.attr=='BaseModel':
+                          is_model=True
+                  if is_model:
+                      model_nodes.append(node)
+          assert model_nodes, 'No Pydantic models found'
+
+          lines=text.splitlines(True)
+          remove=set()
+          blocks=[]
+          names=[]
+          for node in model_nodes:
+              start=min([d.lineno for d in node.decorator_list], default=node.lineno)
+              end=node.end_lineno
+              remove.update(range(start-1,end))
+              blocks.append(''.join(lines[start-1:end]).rstrip()+'\n')
+              names.append(node.name)
+          new_text=''.join(line for i,line in enumerate(lines) if i not in remove)
+
+          schemas=(
+              'from __future__ import annotations\n\n'
+              'import ipaddress\nimport json\nimport re\nimport secrets\n\n'
+              'from typing import Any\n\n'
+              'from pydantic import BaseModel, Field, field_validator\n\n'
+              + '\n'.join(blocks)
+          )
+          Path('hub/schemas.py').write_text(schemas)
+
+          old='from pydantic import BaseModel, Field, field_validator\n'
+          assert old in new_text
+          new_text=new_text.replace(old,'',1)
+          anchor="del _runtime_name\n"
+          assert anchor in new_text
+          loader=(
+              "\n_SCHEMAS_PATH = Path(__file__).resolve().with_name('schemas.py')\n"
+              "_schemas_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_schemas', _SCHEMAS_PATH)\n"
+              "if _schemas_spec is None or _schemas_spec.loader is None:\n"
+              "    raise ImportError(f'Could not load request schemas: {_SCHEMAS_PATH}')\n"
+              "_schemas_module = _realm_support_importlib_util.module_from_spec(_schemas_spec)\n"
+              "_schemas_spec.loader.exec_module(_schemas_module)\n"
+              f"for _schema_name in {names!r}:\n"
+              "    globals()[_schema_name] = getattr(_schemas_module, _schema_name)\n"
+              "del _schema_name\n"
+          )
+          new_text=new_text.replace(anchor,anchor+loader,1)
+          app.write_text(new_text)
+
+          contract=(
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/app.py').read_text()\n"
+              "schemas=(root/'hub/schemas.py').read_text()\n"
+              "assert 'BaseModel' in schemas\n"
+              "assert \"with_name('schemas.py')\" in app\n"
+              "assert '_schemas_spec.loader.exec_module' in app\n"
+              "assert 'from pydantic import BaseModel, Field, field_validator' not in app\n"
+              "assert 'VERSION = \\\"2.9.20\\\"' in app\n"
+              "print('Backend schemas module boundary passed')\n"
+          )
+          Path('tests/backend_schemas_contract.py').write_text(contract)
+
+          for name in ['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','hub/static/index.html','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']:
+              p=Path(name); v=p.read_text()
+              if '2.9.19' in v:
+                  p.write_text(v.replace('2.9.19','2.9.20'))
+
+          notes='# DARK NOC v2.9.20 — Backend Request Schemas Module\n\n- Continue backend modularization by extracting Pydantic request/validation models from hub/app.py into hub/schemas.py.\n- Preserve all route paths, payload contracts, validators, database behavior, Agent behavior and frontend visuals.\n- Load schemas through the same importlib-safe pattern used by the Hub test harness.\n- Add a permanent backend schema ownership regression contract.\n\n## فارسی\n\nمدل‌های Pydantic و اعتبارسنجی درخواست‌ها از hub/app.py به hub/schemas.py منتقل شدند؛ قرارداد API و رفتار پنل تغییر نکرده است.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.20 — Backend request schemas module\n\n- Extract Pydantic request and validation models from hub/app.py into hub/schemas.py.\n- Preserve API payload contracts and behavior.\n- Add backend schema ownership regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          for js in hub/static/*.js; do node --check "$js"; done
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+          python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"; cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.20.tar.gz | grep -q 'schemas.py'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/schemas.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract backend request schemas for v2.9.20'
+          git push origin HEAD:refs/heads/release/v2.9.20-backend-schemas
