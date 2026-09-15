@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.26 — Plugin Deployment service layer
+
+- Extract Managed/Pair-Code deployment create, recover, retry and remove transactions into hub/plugin_deployment_service.py.
+- Preserve FastAPI route orchestration, audit behavior and frontend/API contracts.
+- Add service-boundary regression coverage.
+
+
 ## 2.9.25 — Node and Tunnel mutation service layer
 
 - Extract Node CRUD/provision mutations and Tunnel control/reconfigure/remove writes into hub/node_tunnel_service.py.
