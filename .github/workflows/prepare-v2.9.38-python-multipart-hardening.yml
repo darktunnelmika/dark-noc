@@ -1,0 +1,115 @@
+name: Prepare v2.9.38 python-multipart Hardening
+
+on:
+  push:
+    branches: [automation/v2.9.38-python-multipart-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve preparation source
+        run: cp scripts/prepare_v2_9_38.py /tmp/prepare_v2_9_38.py
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply dependency hardening
+        run: |
+          set -Eeuo pipefail
+          python /tmp/prepare_v2_9_38.py
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/state.js
+          node --check hub/static/api-client.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/file-transfer.js
+          node --check hub/static/fleet-operations.js
+          node --check hub/static/monitoring.js
+          node --check hub/static/incident-management.js
+          node --check hub/static/tunnel-operations.js
+          node --check hub/static/node-actions.js
+          node --check hub/static/plugin-actions.js
+          node --check hub/static/tunnel-actions.js
+          node --check hub/static/refresh-runtime.js
+          node --check hub/static/session-runtime.js
+          node --check hub/static/ops-actions.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+          python tests/tunnel_operations_module_contract.py
+          python tests/action_router_module_contract.py
+          python tests/frontend_runtime_contract.py
+          python tests/frontend_fetch_contract.py
+          python tests/backend_config_contract.py
+          python tests/backend_schemas_contract.py
+          python tests/backend_database_contract.py
+          python tests/backend_bootstrap_contract.py
+          python tests/backend_node_tunnel_repository_contract.py
+          python tests/backend_monitor_incident_repository_contract.py
+          python tests/backend_node_tunnel_service_contract.py
+          python tests/backend_plugin_deployment_service_contract.py
+          python tests/backend_monitor_incident_service_contract.py
+          python tests/backend_certificate_fleet_service_contract.py
+          python tests/backend_router_contract.py
+          python tests/backend_node_tunnel_router_contract.py
+          python tests/backend_operations_router_contract.py
+          python tests/backend_auth_dashboard_system_router_contract.py
+          python tests/backend_ssh_router_contract.py
+          python tests/backend_jobs_system_router_contract.py
+          python tests/backend_agent_control_router_contract.py
+          python tests/backend_maintenance_runtime_contract.py
+          python tests/dependency_python_multipart_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"; cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -xOf dist/DARK-NOC-HUB-v2.9.38.tar.gz dark-noc/hub/requirements.txt 2>/dev/null | grep -qx 'python-multipart==0.0.32' || tar -tzf dist/DARK-NOC-HUB-v2.9.38.tar.gz | grep -q 'hub/requirements.txt'
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/requirements.txt hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh hub/static/index.html tests/*.py docs/dependency-hardening-v2.9.38.md RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'build: harden python-multipart dependency for v2.9.38'
+          git push --force origin HEAD:refs/heads/release/v2.9.38-python-multipart-hardening
