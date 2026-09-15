@@ -90,6 +90,17 @@ _database_bootstrap_module = _realm_support_importlib_util.module_from_spec(_dat
 _database_bootstrap_spec.loader.exec_module(_database_bootstrap_module)
 bootstrap_database = _database_bootstrap_module.bootstrap_database
 
+
+_NODE_TUNNEL_REPOSITORY_PATH = Path(__file__).resolve().with_name('node_tunnel_repository.py')
+_node_tunnel_repository_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_node_tunnel_repository', _NODE_TUNNEL_REPOSITORY_PATH)
+if _node_tunnel_repository_spec is None or _node_tunnel_repository_spec.loader is None:
+    raise ImportError(f'Could not load Node/Tunnel repository: {_NODE_TUNNEL_REPOSITORY_PATH}')
+_node_tunnel_repository_module = _realm_support_importlib_util.module_from_spec(_node_tunnel_repository_spec)
+_node_tunnel_repository_spec.loader.exec_module(_node_tunnel_repository_module)
+for _repository_name in ['find_node_endpoint_conflict', 'fetch_node_inventory', 'fetch_tunnel_inventory', 'fetch_tunnel_operation_rows']:
+    globals()[_repository_name] = getattr(_node_tunnel_repository_module, _repository_name)
+del _repository_name
+
 ROOT = Path(__file__).resolve().parent
 KEY_PATH = DATA_DIR / "master.key"
 STATIC_DIR = ROOT / "static"
@@ -98,7 +109,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.22"
+VERSION = "2.9.23"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -179,15 +190,7 @@ def canonical_node_host(value: Any) -> str:
 
 
 def node_endpoint_conflict(conn: sqlite3.Connection, host: str, ssh_port: int, exclude_id: int | None = None) -> sqlite3.Row | None:
-    canonical_host = canonical_node_host(host)
-    rows = conn.execute("SELECT id,name,host FROM nodes WHERE ssh_port=?", (ssh_port,)).fetchall()
-    return next(
-        (
-            row for row in rows
-            if row["id"] != exclude_id and canonical_node_host(row["host"]) == canonical_host
-        ),
-        None,
-    )
+    return find_node_endpoint_conflict(conn, host, ssh_port, canonical_node_host, exclude_id)
 
 
 def provision_endpoint_lock(host: str, ssh_port: int) -> asyncio.Lock:
@@ -1420,23 +1423,18 @@ def dashboard_traffic(minutes: int = 60, _: sqlite3.Row = Depends(current_user))
 
 @app.get("/api/nodes")
 def list_nodes(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute("""SELECT * FROM nodes
-            ORDER BY CASE role WHEN 'hub' THEN 0 WHEN 'edge' THEN 1 WHEN 'exit' THEN 2 ELSE 3 END,
-                     CASE WHEN last_seen>=? THEN 0 WHEN last_seen IS NULL THEN 2 ELSE 1 END,
-                     name COLLATE NOCASE""", (utc_ts() - NODE_STALE_AFTER,)).fetchall()
-        result = []
-        for row in rows:
-            metric = conn.execute("SELECT * FROM metrics WHERE node_id=? ORDER BY ts DESC LIMIT 1", (row["id"],)).fetchone()
-            item = public_node(row, metric)
-            try:
-                item["plugins"] = json.loads(row["plugin_inventory"] or "{}")
-            except (TypeError, ValueError):
-                item["plugins"] = {}
-            item["services"] = [dict(service) for service in conn.execute("SELECT name,status,last_check FROM node_services WHERE node_id=? ORDER BY name", (row["id"],)).fetchall()]
-            if not row["last_seen"] or row["last_seen"] < utc_ts() - NODE_STALE_AFTER:
-                item["status"] = "pending" if not row["last_seen"] else "offline"
-            result.append(item)
+    records = fetch_node_inventory(db, utc_ts() - NODE_STALE_AFTER)
+    result = []
+    for row, metric, services in records:
+        item = public_node(row, metric)
+        try:
+            item["plugins"] = json.loads(row["plugin_inventory"] or "{}")
+        except (TypeError, ValueError):
+            item["plugins"] = {}
+        item["services"] = [dict(service) for service in services]
+        if not row["last_seen"] or row["last_seen"] < utc_ts() - NODE_STALE_AFTER:
+            item["status"] = "pending" if not row["last_seen"] else "offline"
+        result.append(item)
     return result
 
 
@@ -2087,18 +2085,7 @@ def tunnel_health_score(item: dict[str, Any]) -> int:
 
 @app.get("/api/tunnels")
 def list_tunnels(_: sqlite3.Row = Depends(current_user)):
-    with db() as conn:
-        rows = conn.execute("""SELECT tunnels.*,nodes.name node_name,nodes.host node_host,
-            nodes.observed_ip node_observed_ip,nodes.region,nodes.role node_role,
-            nodes.last_seen node_last_seen,nodes.status node_agent_status,
-            CASE WHEN nodes.ssh_password_enc IS NOT NULL OR nodes.ssh_key_enc IS NOT NULL THEN 1 ELSE 0 END node_ssh_configured
-            FROM tunnels JOIN nodes ON nodes.id=tunnels.node_id ORDER BY tunnels.status DESC,tunnels.name""").fetchall()
-        nodes = conn.execute("""SELECT id,name,host,observed_ip,region,role,status,last_seen,
-            CASE WHEN ssh_password_enc IS NOT NULL OR ssh_key_enc IS NOT NULL THEN 1 ELSE 0 END ssh_configured FROM nodes""").fetchall()
-        deployments = conn.execute(
-            """SELECT id,name,iran_node_id,kharej_node_id FROM plugin_deployments
-               WHERE lifecycle NOT IN ('removed','rolled_back') ORDER BY id DESC"""
-        ).fetchall()
+    rows, nodes, deployments = fetch_tunnel_inventory(db)
     now = utc_ts()
     node_index = {row["id"]: dict(row) for row in nodes}
     deployment_index: dict[tuple[str, int], dict[str, Any]] = {}
@@ -2224,27 +2211,13 @@ def tunnel_operations(
     node_ids = [int(tunnel["node_id"])]
     if tunnel.get("peer_node_id"):
         node_ids.append(int(tunnel["peer_node_id"]))
-    with db() as conn:
-        samples = conn.execute(
-            """SELECT ts,status,latency_ms,packet_loss,sessions,rx_bps,tx_bps,
-                      service_uptime,process_ok,path_ok
-               FROM tunnel_samples WHERE tunnel_id=? AND ts>=? ORDER BY ts LIMIT 10000""",
-            (tunnel_id, cutoff),
-        ).fetchall()
-        placeholders = ",".join("?" for _ in node_ids)
-        job_rows = conn.execute(
-            f"SELECT jobs.*,nodes.name node_name FROM jobs JOIN nodes ON nodes.id=jobs.node_id "
-            f"WHERE jobs.node_id IN ({placeholders}) ORDER BY jobs.id DESC LIMIT 100",
-            node_ids,
-        ).fetchall()
-        managed = conn.execute(
-            "SELECT id,plugin_id,lifecycle,created_at,settings FROM plugin_deployments WHERE name=? AND lifecycle!='removed' ORDER BY id DESC LIMIT 1",
-            (tunnel["name"],),
-        ).fetchone()
-        hybrid = conn.execute(
-            "SELECT id,plugin_id,lifecycle,created_at,settings,remote_label FROM hybrid_deployments WHERE name=? AND lifecycle!='removed' ORDER BY id DESC LIMIT 1",
-            (tunnel["name"],),
-        ).fetchone()
+    samples, job_rows, managed, hybrid = fetch_tunnel_operation_rows(
+        db,
+        tunnel_id=tunnel_id,
+        cutoff=cutoff,
+        node_ids=node_ids,
+        tunnel_name=tunnel["name"],
+    )
     recent_jobs: list[dict[str, Any]] = []
     for row in job_rows:
         try:
