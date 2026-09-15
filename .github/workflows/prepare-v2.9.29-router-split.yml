@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Preserve preparation source
-        run: cp scripts/prepare_v2_9_29.py /tmp/prepare_v2_9_29.py
+        run: |
+          cp scripts/prepare_v2_9_29.py /tmp/prepare_v2_9_29.py
+          cp scripts/patch_v2_9_29_contracts.py /tmp/patch_v2_9_29_contracts.py
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -30,6 +32,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python /tmp/prepare_v2_9_29.py
+          python /tmp/patch_v2_9_29_contracts.py
           git diff --check
       - name: Install dependencies
         run: pip install -r hub/requirements.txt -r agent/requirements.txt
