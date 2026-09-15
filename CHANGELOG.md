@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.18 — Frontend runtime core split
+
+- Split shared state, API/jobs, refresh orchestration and session/WebSocket lifecycle from app.js.
+- Preserve current UI and behavior.
+- Update regression contracts for the new module ownership.
+
+
 ## 2.9.17 — Delegated action router split
 
 - Split the monolithic delegated click router into Node, Plugin, Tunnel and cross-feature action handlers.

@@ -1,75 +1,5 @@
 const { $, $$, esc, bytesPerSecond, fileSize, displayHost, relativeTime, duration, elapsedDuration } = window.DarkNocCore;
 const viewTitles = { overview: 'Network Command', servers: 'Server Fleet', tunnels: 'Tunnel Matrix', monitors: 'Synthetic Monitoring', fleet: 'Fleet Operations', certificates: 'TLS Vault', incidents: 'Incident Command', terminal: 'SSH Command' };
-let state = {
-  nodes: [], tunnels: [], incidents: [], plugins: [], deployments: [], certificates: [], traffic: [], monitors: [], fleetOperations: [],
-  limits: { ssh_upload_bytes: null, ssh_relay_bytes: null }, sockets: new Map(), terminals: new Map(),
-  hubVersion: null, paneCounter: 2, replayTimer: null,
-  selectedNode: null, selectedTunnel: null, selectedIncident: null, selectedPlugin: 'dark-backhaul',
-  nodeFilter: 'all', topologyFilter: 'all', topologySearch: '', editingNode: null, editingMonitor: null,
-  files: { nodeId: null, path: '/root', parent: '/', entries: [], selected: null, editingPath: null }
-};
-let refreshInFlight = false;
-let liveRefreshInFlight = false;
-let liveSocket = null;
-let activeUpload = null;
-let activeRelay = null;
-let authenticatedActivityTerminated = false;
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
-  });
-  if (response.status === 401 && path !== '/api/auth/login') {
-    terminateAuthenticatedActivity();
-    throw new Error('Authentication required');
-  }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail=Array.isArray(payload.detail)?payload.detail.map(item=>item.msg||JSON.stringify(item)).join(' · '):payload.detail;
-    throw new Error(typeof detail==='string'?detail:`Request failed (${response.status})`);
-  }
-  return payload;
-}
-
-function terminateAuthenticatedActivity({showLoginGate = true, transferMessage = 'AUTHENTICATION EXPIRED · Sign in again', terminalStatus = '● AUTH EXPIRED'} = {}) {
-  if (showLoginGate) $('#login-gate').classList.remove('hidden');
-  clearTimeout(connectLive.reconnectTimer);
-  clearTimeout(connectLive.refreshTimer);
-  if (authenticatedActivityTerminated) return;
-  authenticatedActivityTerminated = true;
-
-  if (liveSocket) {
-    const socket = liveSocket;
-    liveSocket = null;
-    socket.intentionalClose = true;
-    clearInterval(socket.keepaliveTimer);
-    try { socket.close(); } catch {}
-  }
-
-  [...state.sockets.keys()].forEach(closeSocket);
-  $$('.ssh-online').forEach(status => { status.textContent = terminalStatus; });
-
-  if (activeUpload) {
-    const upload = activeUpload;
-    activeUpload = null;
-    try { upload.abort(); } catch {}
-    const form = $('#ssh-upload-form');
-    if (form) setTransferControls(form, false);
-    transferStatus('#upload-progress', 'error', transferMessage, 0);
-  }
-
-  if (activeRelay) {
-    const relay = activeRelay;
-    activeRelay = null;
-    try { relay.abort(); } catch {}
-    const form = $('#ssh-relay-form');
-    if (form) setTransferControls(form, false);
-    transferStatus('#relay-progress', 'error', transferMessage, 0);
-  }
-}
-
 function transferStatus(selector, stateName, message, percent = null) {
   const element=$(selector);if(!element)return;
   element.className=`transfer-progress ${stateName||''}`.trim();
@@ -85,14 +15,6 @@ function setTransferControls(form, running) {
   const submit=$('button[type="submit"]',form),cancel=$('.transfer-cancel',form);
   submit.disabled=running;submit.setAttribute('aria-disabled',String(running));
   cancel.hidden=!running;cancel.disabled=!running;
-}
-
-function dashboardLimits(summary) {
-  const limits=summary.limits||{};
-  return {
-    ssh_upload_bytes:Number(limits.ssh_upload_bytes??summary.ssh_upload_limit??summary.ssh_upload_bytes)||null,
-    ssh_relay_bytes:Number(limits.ssh_relay_bytes??summary.ssh_relay_limit??summary.ssh_relay_bytes)||null
-  };
 }
 
 function renderTransferLimits() {
@@ -385,85 +307,6 @@ function updateOverview(summary) {
   const footer=$$('.topology-footer b');if(footer.length>=4){footer[0].textContent=state.tunnels.filter(t=>t.status==='healthy').length;footer[1].textContent=state.tunnels.filter(t=>t.status==='degraded').length;footer[2].textContent=state.tunnels.filter(t=>t.status==='stale').length;footer[3].textContent=state.tunnels.filter(t=>['down','offline'].includes(t.status)).length;}
 }
 
-async function refreshLive() {
-  if (liveRefreshInFlight || refreshInFlight || document.hidden) return;
-  liveRefreshInFlight = true;
-  try {
-    const [summary,nodes,tunnels] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels')]);
-    state = { ...state, nodes, tunnels, hubVersion:summary.version||state.hubVersion, limits:dashboardLimits(summary) };
-    renderLiveTopology();
-    updateOverview(summary);
-    const active=$('.view.active')?.id;
-    if(active==='view-servers'){renderNodes();populateSSHServers();}
-    else if(active==='view-tunnels')renderTunnels();
-    $('#sync-time').textContent='NOW';
-  } catch (error) {
-    if (error.message !== 'Authentication required') $('#connection-banner').innerHTML = '<span class="offline-source">HUB CONNECTION LOST</span> Retrying automatically.';
-  } finally { liveRefreshInFlight = false; }
-}
-
-function updateNavigationCounts() {
-  $('#monitor-count').textContent=state.monitors.length;
-  $('#cert-count').textContent=state.certificates.filter(item=>item.status==='valid').length;
-  const openIncidents=state.incidents.filter(item=>['open','acknowledged'].includes(item.status)).length;
-  $$('.nav-item b.danger').forEach(item=>item.textContent=openIncidents);
-}
-
-function renderCachedView(name = $('.view.active')?.id?.replace(/^view-/, '') || 'overview') {
-  if(name==='overview'){renderLiveTopology();renderLiveIncident();renderNodeHealth();renderTrafficChart();return;}
-  if(name==='servers'){renderNodes();return;}
-  if(name==='tunnels'){renderTunnels();renderPlugins();return;}
-  if(name==='certificates'){renderCertificates();return;}
-  if(name==='monitors'){renderMonitors();return;}
-  if(name==='fleet'){renderFleetOperations();renderVersionCompliance();return;}
-  if(name==='incidents'){renderIncidents();return;}
-  if(name==='terminal'){populateSSHServers();renderTransferLimits();}
-}
-
-async function refresh() {
-  if (refreshInFlight) return;
-  refreshInFlight = true;
-  try {
-    const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic,monitors,fleetOperations] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60'),api('/api/monitors'),api('/api/fleet/operations?limit=50')]);
-    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, hubVersion:summary.version||state.hubVersion, limits:dashboardLimits(summary) };
-    populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);
-    renderCachedView();
-    if(state.selectedIncident&&$('.view.active')?.id==='view-incidents')loadIncidentDetail(state.selectedIncident);
-    $('#sync-time').textContent = 'NOW';
-  } catch (error) {
-    if (error.message !== 'Authentication required') {
-      $('#connection-banner').innerHTML = '<span class="offline-source">HUB CONNECTION LOST</span> Retrying automatically.';
-    }
-  } finally {
-    refreshInFlight = false;
-  }
-}
-
-async function createJob(nodeId, kind, service = null, payload = {}, showOutput = false) {
-  const job = await api(`/api/nodes/${nodeId}/jobs`, { method:'POST', body:JSON.stringify({kind,service,payload}) });
-  showToast('COMMAND QUEUED', `Job #${job.job_id} will run through the secure Agent channel.`);
-  if (showOutput) waitForJob(job.job_id);
-  return job;
-}
-
-async function waitForJob(jobId) {
-  $('#job-output').textContent = `Waiting for Agent to execute job #${jobId}…`;
-  openModal('#output-modal');
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    try {
-      const job = await api(`/api/jobs/${jobId}`);
-      if (job.status === 'completed' || job.status === 'failed') {
-        $('#output-title').textContent = `${job.kind} · ${job.status.toUpperCase()}`;
-        $('#job-output').textContent = job.output || 'Command completed without output.';
-        return;
-      }
-      $('#job-output').textContent = `Job #${jobId}\nStatus: ${job.status}\nWaiting for Agent response…`;
-    } catch (error) { $('#job-output').textContent = error.message; return; }
-  }
-  $('#job-output').textContent = 'No terminal result after 4.5 minutes. The job may still be running; check Remote job history.';
-}
-
 $('#login-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form = new FormData(event.target);
@@ -478,23 +321,6 @@ $('#login-form').addEventListener('submit', async event => {
     await refresh();
   } catch (error) { $('#login-error').textContent = error.message; }
 });
-
-async function boot() {
-  try { const me=await api('/api/auth/me'); authenticatedActivityTerminated=false;$('.operator strong').textContent=me.username; $('#login-gate').classList.add('hidden'); await refresh(); connectLive(); }
-  catch { $('#login-gate').classList.remove('hidden'); }
-}
-
-function connectLive(){
-  if(!$('#login-gate').classList.contains('hidden'))return;
-  if(liveSocket&&liveSocket.readyState<WebSocket.CLOSING)return;
-  clearTimeout(connectLive.reconnectTimer);
-  const protocol=location.protocol==='https:'?'wss:':'ws:';
-  const socket=new WebSocket(`${protocol}//${location.host}/ws/live`);
-  socket.intentionalClose=false;liveSocket=socket;
-  socket.onopen=()=>{if(liveSocket!==socket)return;socket.keepaliveTimer=setInterval(()=>{if(liveSocket===socket&&socket.readyState===WebSocket.OPEN)socket.send('ping');},25000);};
-  socket.onmessage=event=>{if(liveSocket!==socket)return;let message={};try{message=JSON.parse(event.data)}catch{}if(message.type==='telemetry'){clearTimeout(connectLive.refreshTimer);connectLive.refreshTimer=setTimeout(refreshLive,350);const now=Date.now();if(now-(connectLive.lastFullRefresh||0)>=30000){connectLive.lastFullRefresh=now;clearTimeout(connectLive.fullRefreshTimer);connectLive.fullRefreshTimer=setTimeout(refresh,1200);}}};
-  socket.onclose=event=>{clearInterval(socket.keepaliveTimer);if(liveSocket===socket)liveSocket=null;if(event.code===4401){terminateAuthenticatedActivity();return;}if(!socket.intentionalClose&&$('#login-gate').classList.contains('hidden'))connectLive.reconnectTimer=setTimeout(connectLive,3000);};
-}
 
 $$('.nav-item').forEach(button => button.addEventListener('click',()=>switchView(button.dataset.view)));
 $('#menu-toggle').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
