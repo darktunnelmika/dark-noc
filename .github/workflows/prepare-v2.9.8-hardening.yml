@@ -1,0 +1,118 @@
+name: Prepare v2.9.8 hardening
+
+on:
+  push:
+    branches: [automation/v2.9.8-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fcb717e036f418b29bf4e9720b9d394ca48e3610
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply Realm, CI and render hardening
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Port the already-reviewed Realm runtime fixes onto current main.
+          p = Path('agent/realm_plugin.py')
+          s = p.read_text()
+          old = '''def _port_listening(port: int) -> bool:\n    code, output = _run(["ss", "-H", "-lnt"], timeout=10)\n    return code == 0 and re.search(fr":{port}\\b", output) is not None\n\n\ndef _configure_ufw(directory: Path, role: str, mappings: list[tuple[int, int, int]]) -> list[str]:\n    if shutil.which("ufw") is None:\n        return []\n    code, status = _run(["ufw", "status"], timeout=15)\n    if code != 0 or "Status: active" not in status:\n        return []\n    ports = [public for public, _, _ in mappings] if role == "edge" else [backbone for _, _, backbone in mappings]\n    created: list[str] = []\n    for port in ports:\n        rule = f"{port}/tcp"\n        code, output = _run(["ufw", "allow", rule, "comment", "DARK-NOC-REALM"], timeout=20)\n        if code != 0:\n            _remove_ufw_rules(created)\n            raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")\n        if "Rule added" in output:\n            created.append(rule)\n    _atomic_text(directory / "ufw-created.json", json.dumps(created), 0o600)\n    return created\n'''
+          new = '''def _port_listening(port: int) -> bool:\n    code, output = _run(["ss", "-H", "-lnt"], timeout=10)\n    if code != 0:\n        return False\n    expected = str(port)\n    for line in output.splitlines():\n        fields = line.split()\n        if len(fields) < 5 or fields[0] != "LISTEN":\n            continue\n        _, separator, local_port = fields[3].rpartition(":")\n        if separator and local_port == expected:\n            return True\n    return False\n\n\ndef _configure_ufw(directory: Path, role: str, mappings: list[tuple[int, int, int]]) -> list[str]:\n    if shutil.which("ufw") is None:\n        return []\n    code, status = _run(["ufw", "status"], timeout=15)\n    if code != 0 or "Status: active" not in status:\n        return []\n\n    ownership_path = directory / "ufw-created.json"\n    previous: list[str] = []\n    if ownership_path.exists():\n        try:\n            saved = json.loads(ownership_path.read_text(encoding="utf-8"))\n            if not isinstance(saved, list) or any(\n                not isinstance(rule, str)\n                or re.fullmatch(r"[0-9]{1,5}/tcp", rule) is None\n                or not 1 <= int(rule.split("/", 1)[0]) <= 65535\n                for rule in saved\n            ):\n                raise ValueError("Expected a list of owned TCP port rules")\n            previous = list(dict.fromkeys(saved))\n        except (OSError, TypeError, ValueError) as exc:\n            raise RuntimeError("Cannot read Realm UFW ownership; refusing to overwrite it") from exc\n\n    ports = [public for public, _, _ in mappings] if role == "edge" else [backbone for _, _, backbone in mappings]\n    created: list[str] = []\n    try:\n        for port in ports:\n            rule = f"{port}/tcp"\n            code, output = _run(["ufw", "allow", rule, "comment", "DARK-NOC-REALM"], timeout=20)\n            if code != 0:\n                raise RuntimeError(f"Could not open Realm UFW rule {rule}: {output[-500:]}")\n            if "Rule added" in output:\n                created.append(rule)\n        owned = list(dict.fromkeys([*previous, *created]))\n        _atomic_text(ownership_path, json.dumps(owned), 0o600)\n    except Exception:\n        _remove_ufw_rules(created)\n        raise\n    return created\n'''
+          assert old in s, 'Realm baseline changed unexpectedly'
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) Reduce hidden-view DOM churn while retaining the existing data contract.
+          p = Path('hub/static/app.js')
+          s = p.read_text()
+          switch_old = '''  $('#sidebar').classList.remove('open');\n  scrollTo({ top: 0, behavior: 'smooth' });\n}\n'''
+          switch_new = '''  $('#sidebar').classList.remove('open');\n  scrollTo({ top: 0, behavior: 'smooth' });\n  renderCachedView(name);\n}\n'''
+          assert s.count(switch_old) == 1
+          s = s.replace(switch_old, switch_new, 1)
+
+          refresh_old = '''async function refresh() {\n  if (refreshInFlight) return;\n  refreshInFlight = true;\n  try {\n    const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic,monitors,fleetOperations] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60'),api('/api/monitors'),api('/api/fleet/operations?limit=50')]);\n    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, hubVersion:summary.version||state.hubVersion, limits:dashboardLimits(summary) };\n    renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors(); renderFleetOperations(); renderVersionCompliance(); renderIncidents(); renderLiveTopology(); renderLiveIncident(); renderNodeHealth(); renderTrafficChart(); updateOverview(summary);\n    if(state.selectedIncident)loadIncidentDetail(state.selectedIncident);\n    $('#sync-time').textContent = 'NOW';\n  } catch (error) {\n    if (error.message !== 'Authentication required') {\n      $('#connection-banner').innerHTML = '<span class="offline-source">HUB CONNECTION LOST</span> Retrying automatically.';\n    }\n  } finally {\n    refreshInFlight = false;\n  }\n}\n'''
+          refresh_new = '''function updateNavigationCounts() {\n  $('#monitor-count').textContent=state.monitors.length;\n  $('#cert-count').textContent=state.certificates.filter(item=>item.status==='valid').length;\n  const openIncidents=state.incidents.filter(item=>['open','acknowledged'].includes(item.status)).length;\n  $$('.nav-item b.danger').forEach(item=>item.textContent=openIncidents);\n}\n\nfunction renderCachedView(name = $('.view.active')?.id?.replace(/^view-/, '') || 'overview') {\n  if(name==='overview'){renderLiveTopology();renderLiveIncident();renderNodeHealth();renderTrafficChart();return;}\n  if(name==='servers'){renderNodes();return;}\n  if(name==='tunnels'){renderTunnels();renderPlugins();return;}\n  if(name==='certificates'){renderCertificates();return;}\n  if(name==='monitors'){renderMonitors();return;}\n  if(name==='fleet'){renderFleetOperations();renderVersionCompliance();return;}\n  if(name==='incidents'){renderIncidents();return;}\n  if(name==='terminal'){populateSSHServers();renderTransferLimits();}\n}\n\nasync function refresh() {\n  if (refreshInFlight) return;\n  refreshInFlight = true;\n  try {\n    const [summary,nodes,tunnels,incidents,plugins,deployments,certificates,traffic,monitors,fleetOperations] = await Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels'),api('/api/incidents'),api('/api/plugins'),api('/api/plugin-deployments'),api('/api/certificates'),api('/api/dashboard/traffic?minutes=60'),api('/api/monitors'),api('/api/fleet/operations?limit=50')]);\n    state = { ...state, nodes, tunnels, incidents, plugins, deployments, certificates, traffic, monitors, fleetOperations, hubVersion:summary.version||state.hubVersion, limits:dashboardLimits(summary) };\n    populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);\n    renderCachedView();\n    if(state.selectedIncident&&$('.view.active')?.id==='view-incidents')loadIncidentDetail(state.selectedIncident);\n    $('#sync-time').textContent = 'NOW';\n  } catch (error) {\n    if (error.message !== 'Authentication required') {\n      $('#connection-banner').innerHTML = '<span class="offline-source">HUB CONNECTION LOST</span> Retrying automatically.';\n    }\n  } finally {\n    refreshInFlight = false;\n  }\n}\n'''
+          assert refresh_old in s, 'refresh baseline changed unexpectedly'
+          p.write_text(s.replace(refresh_old, refresh_new, 1))
+
+          # 3) Add regression tests.
+          Path('tests/realm_runtime_regression.py').write_text('''"""Realm listener/UFW regression coverage; all OS commands are mocked."""\nfrom __future__ import annotations\nimport importlib.util, json, tempfile, unittest\nfrom pathlib import Path\nfrom unittest.mock import patch\nROOT=Path(__file__).resolve().parents[1]\nspec=importlib.util.spec_from_file_location("realm_runtime_regression_module",ROOT/"agent"/"realm_plugin.py"); assert spec and spec.loader\nrealm=importlib.util.module_from_spec(spec); spec.loader.exec_module(realm)\nclass ListenerTests(unittest.TestCase):\n def listening(self,port,output,code=0):\n  with patch.object(realm,"_run",return_value=(code,output)): return realm._port_listening(port)\n def test_listener_parsing(self):\n  self.assertTrue(self.listening(443,"LISTEN 0 4096 [2001:db8::1]:443 *:*\\n")); self.assertFalse(self.listening(443,"LISTEN 0 4096 [2001:db8:443::1]:8443 [::]:*\\n")); self.assertFalse(self.listening(443,"LISTEN 0 4096 127.0.0.1:8443 192.0.2.1:443\\n"))\nclass FirewallTests(unittest.TestCase):\n def setUp(self):\n  self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.directory=Path(self.tmp.name); self.ownership=self.directory/"ufw-created.json"; self.commands=[]; self.allow={}\n def fake(self,command,timeout=30):\n  self.commands.append(command)\n  if command==["ufw","status"]: return 0,"Status: active"\n  if command[:2]==["ufw","allow"]: return self.allow.get(command[2],(0,"Skipping adding existing rule"))\n  if command[:4]==["ufw","--force","delete","allow"]: return 0,"Rule deleted"\n  raise AssertionError(command)\n def configure(self,mappings):\n  with patch.object(realm.shutil,"which",return_value="/usr/sbin/ufw"),patch.object(realm,"_run",side_effect=self.fake): return realm._configure_ufw(self.directory,"edge",mappings)\n def test_redeploy_preserves_ownership(self):\n  self.ownership.write_text('["443/tcp"]'); self.assertEqual(self.configure([(443,8000,3080)]),[]); self.assertEqual(json.loads(self.ownership.read_text()),["443/tcp"])\n def test_new_only_rollback(self):\n  self.ownership.write_text('["443/tcp"]'); self.allow["8443/tcp"]=(0,"Rule added"); self.allow["9443/tcp"]=(1,"failure")\n  with self.assertRaises(RuntimeError): self.configure([(443,8000,3080),(8443,8000,3081),(9443,8000,3082)])\n  self.assertEqual(json.loads(self.ownership.read_text()),["443/tcp"]); self.assertIn(["ufw","--force","delete","allow","8443/tcp"],self.commands); self.assertNotIn(["ufw","--force","delete","allow","443/tcp"],self.commands)\n def test_corrupt_ownership_refused(self):\n  self.ownership.write_text('{')\n  with self.assertRaises(RuntimeError): self.configure([(443,8000,3080)])\nif __name__=="__main__": unittest.main(verbosity=2)\n''')
+          Path('tests/view_render_contract.py').write_text('''from pathlib import Path\ns=Path("hub/static/app.js").read_text()\nassert "function renderCachedView" in s\nassert "renderCachedView(name);" in s\nassert "populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);" in s\nassert "renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors();" not in s\nprint("View-aware render contract passed")\n''')
+
+          # 4) CI hardening: include the matrix enhancer syntax + tests that were missing.
+          p=Path('.github/workflows/ci.yml'); s=p.read_text()
+          s=s.replace('          node --check hub/static/app.js\n','          node --check hub/static/app.js\n          node --check hub/static/live-matrix.js\n',1)
+          s=s.replace('          python tests/realm_integration.py\n','          python tests/realm_integration.py\n          python tests/realm_runtime_regression.py\n',1)
+          s=s.replace('          python tests/topology_inventory_regression.py\n','          python tests/topology_inventory_regression.py\n          python tests/topology_refresh_contract.py\n          python tests/view_render_contract.py\n',1)
+          p.write_text(s)
+
+          # 5) Release identity synchronization only; runtime behavior above is the intended change.
+          version_files=['hub/app.py','agent/agent.py','darknoc','hub/static/index.html','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); text=p.read_text();
+              if '2.9.7' in text: p.write_text(text.replace('2.9.7','2.9.8'))
+          notes='''# DARK NOC v2.9.8 — Runtime Hardening & View-Aware Rendering\n\n- Port the verified Realm IPv6 listener and UFW ownership fixes onto current main.\n- Preserve prior Realm-owned UFW rules across redeploys and roll back only newly-created rules on failure.\n- Keep the v2.9.7 Live tunnel matrix visuals unchanged.\n- Stop full refreshes from rebuilding every hidden page; only the active view is rendered from refreshed state.\n- Add syntax coverage for live-matrix.js and permanent Realm, topology-refresh and view-render regression tests to CI.\n\n## فارسی\n\nاین نسخه ظاهر پنل را تغییر نمی‌دهد. باگ‌های Realm در تشخیص پورت IPv6 و مالکیت UFW رفع شده و رفرش کامل دیگر صفحه‌های مخفی را بی‌دلیل دوباره رندر نمی‌کند. تست‌های دائمی برای Matrix و Realm نیز به CI اضافه شده‌اند.\n\n---\n\n'''
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); text=p.read_text(); first,sep,rest=text.partition('\n'); entry='''\n## 2.9.8 — Runtime hardening and render efficiency\n\n- Realm listener/UFW ownership regression fix ported to current main.\n- Active-view-only rendering on full refresh; hidden pages no longer rebuild.\n- CI now checks live-matrix.js and runs Realm/topology/view regression contracts.\n- No visual redesign.\n\n'''; p.write_text(first+sep+entry+rest)
+          PY
+          git diff --check
+
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+
+      - name: Run full checks
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.8.tar.gz | grep -q 'live-matrix.js'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.8.tar.gz | grep -q 'realm_runtime_regression.py'
+
+      - name: Commit verified candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add agent/realm_plugin.py hub/static/app.js .github/workflows/ci.yml tests/realm_runtime_regression.py tests/view_render_contract.py hub/app.py agent/agent.py darknoc hub/static/index.html install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'fix: harden Realm and make full refresh view-aware for v2.9.8'
+          git push origin HEAD:refs/heads/release/v2.9.8-hardening
