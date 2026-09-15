@@ -40,7 +40,6 @@ jobs:
               text=text[:start]+text[end:]
               return block.rstrip()+"\n"
 
-          # State and lifecycle flags.
           state_start=text.index('let state = {')
           state_end=text.index('async function api(',state_start)
           state_block=text[state_start:state_end].rstrip()+"\n"
@@ -52,7 +51,6 @@ jobs:
           refresh_block=extract('async function refreshLive()', 'async function createJob(')
           jobs_block=extract('async function createJob(', "$('#login-form').addEventListener")
           boot_block=extract('async function boot()', "$$('.nav-item').forEach")
-
           app.write_text(text)
 
           Path('hub/static/state.js').write_text('// DARK NOC shared frontend state. Classic-script globals are intentional.\n'+state_block)
@@ -70,53 +68,57 @@ jobs:
           html=html.replace(needle2,'  <script src="/static/refresh-runtime.js?v=1.0.0"></script>\n  <script src="/static/session-runtime.js?v=1.0.0"></script>\n  <script src="/static/ops-actions.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.18"></script>',1)
           index.write_text(html)
 
-          # Update contracts which intentionally followed the old ownership boundary.
-          Path('tests/view_render_contract.py').write_text("""from pathlib import Path
-s=Path('hub/static/refresh-runtime.js').read_text()
-assert 'function renderCachedView' in s
-assert 'renderCachedView(name);' in s
-assert 'populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);' in s
-assert 'renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors();' not in s
-print('View-aware render contract passed')
-""")
+          view_contract=(
+              "from pathlib import Path\n"
+              "s=Path('hub/static/refresh-runtime.js').read_text()\n"
+              "assert 'function renderCachedView' in s\n"
+              "assert 'renderCachedView(name);' in s\n"
+              "assert 'populateSSHServers();renderTransferLimits();updateNavigationCounts();updateOverview(summary);' in s\n"
+              "assert 'renderNodes(); populateSSHServers(); renderTransferLimits(); renderTunnels(); renderPlugins(); renderCertificates(); renderMonitors();' not in s\n"
+              "print('View-aware render contract passed')\n"
+          )
+          Path('tests/view_render_contract.py').write_text(view_contract)
 
-          Path('tests/topology_refresh_contract.py').write_text("""from pathlib import Path
-app=Path('hub/static/app.js').read_text()
-refresh=Path('hub/static/refresh-runtime.js').read_text()
-session=Path('hub/static/session-runtime.js').read_text()
-assert 'function syncLiveTopologyRoutes' in app
-assert 'topology.dataset.topologySignature===structureSignature' in app
-assert 'setTimeout(refreshLive,350)' in session
-assert 'now-(connectLive.lastFullRefresh||0)>=30000' in session
-assert 'setTimeout(refresh,250)' not in session
-assert "Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels')])" in refresh
-print('Topology refresh contract passed')
-""")
+          topo_contract=(
+              "from pathlib import Path\n"
+              "app=Path('hub/static/app.js').read_text()\n"
+              "refresh=Path('hub/static/refresh-runtime.js').read_text()\n"
+              "session=Path('hub/static/session-runtime.js').read_text()\n"
+              "assert 'function syncLiveTopologyRoutes' in app\n"
+              "assert 'topology.dataset.topologySignature===structureSignature' in app\n"
+              "assert 'setTimeout(refreshLive,350)' in session\n"
+              "assert 'now-(connectLive.lastFullRefresh||0)>=30000' in session\n"
+              "assert 'setTimeout(refresh,250)' not in session\n"
+              "assert \"Promise.all([api('/api/dashboard'),api('/api/nodes'),api('/api/tunnels')])\" in refresh\n"
+              "print('Topology refresh contract passed')\n"
+          )
+          Path('tests/topology_refresh_contract.py').write_text(topo_contract)
 
-          contract="""from pathlib import Path
-root=Path(__file__).resolve().parents[1]
-app=(root/'hub/static/app.js').read_text()
-state=(root/'hub/static/state.js').read_text()
-api=(root/'hub/static/api-client.js').read_text()
-refresh=(root/'hub/static/refresh-runtime.js').read_text()
-session=(root/'hub/static/session-runtime.js').read_text()
-index=(root/'hub/static/index.html').read_text()
-for marker in ['let state = {','let refreshInFlight = false;','let liveSocket = null;']:
-    assert marker in state and marker not in app
-for marker in ['async function api(','function dashboardLimits(','async function createJob(','async function waitForJob(']:
-    assert marker in api and marker not in app
-for marker in ['async function refreshLive()','function updateNavigationCounts()','function renderCachedView(','async function refresh()']:
-    assert marker in refresh and marker not in app
-for marker in ['function terminateAuthenticatedActivity(','async function boot()','function connectLive()']:
-    assert marker in session and marker not in app
-order=['core.js','state.js','api-client.js','topology.js','refresh-runtime.js','session-runtime.js','ops-actions.js','app.js']
-pos=[index.index(item) for item in order]
-assert pos==sorted(pos)
-assert "$('#login-form').addEventListener" in app
-assert 'boot();' in app
-print('Frontend runtime ownership contract passed')
-"""
-          Path('tests/frontend_runtime_contract.py').write_text(contract)
+          runtime_contract=(
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/static/app.js').read_text()\n"
+              "state=(root/'hub/static/state.js').read_text()\n"
+              "api=(root/'hub/static/api-client.js').read_text()\n"
+              "refresh=(root/'hub/static/refresh-runtime.js').read_text()\n"
+              "session=(root/'hub/static/session-runtime.js').read_text()\n"
+              "index=(root/'hub/static/index.html').read_text()\n"
+              "for marker in ['let state = {','let refreshInFlight = false;','let liveSocket = null;']:\n"
+              "    assert marker in state and marker not in app\n"
+              "for marker in ['async function api(','function dashboardLimits(','async function createJob(','async function waitForJob(']:\n"
+              "    assert marker in api and marker not in app\n"
+              "for marker in ['async function refreshLive()','function updateNavigationCounts()','function renderCachedView(','async function refresh()']:\n"
+              "    assert marker in refresh and marker not in app\n"
+              "for marker in ['function terminateAuthenticatedActivity(','async function boot()','function connectLive()']:\n"
+              "    assert marker in session and marker not in app\n"
+              "order=['core.js','state.js','api-client.js','topology.js','refresh-runtime.js','session-runtime.js','ops-actions.js','app.js']\n"
+              "pos=[index.index(item) for item in order]\n"
+              "assert pos==sorted(pos)\n"
+              "assert \"$('#login-form').addEventListener\" in app\n"
+              "assert 'boot();' in app\n"
+              "print('Frontend runtime ownership contract passed')\n"
+          )
+          Path('tests/frontend_runtime_contract.py').write_text(runtime_contract)
 
           version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
           for name in version_files:
