@@ -1,5 +1,12 @@
 # DARK NOC v2.9.5
 
+## 2.9.16 — Tunnel Operations module extraction
+
+- Extract tunnel cockpit/history/edit/delete runtime into tunnel-operations.js.
+- Preserve delegated tunnel action routing and all existing behavior.
+- Add permanent module-boundary regression coverage.
+
+
 ## 2.9.15 — Incident Command module extraction
 
 - Extract Incident rendering, detail loading, operator notes and report export into incident-management.js.

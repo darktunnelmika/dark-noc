@@ -1,0 +1,35 @@
+// DARK NOC Tunnel Operations cockpit runtime. Classic-script globals are intentional.
+function tunnelHistoryChart(samples){
+  if(!samples.length)return '<text x="450" y="78" text-anchor="middle" fill="#617285" font-size="12">WAITING FOR TUNNEL SAMPLES</text>';
+  const width=900,height=150,maxTraffic=Math.max(...samples.map(item=>Number(item.rx_bps||0)+Number(item.tx_bps||0)),1),step=samples.length===1?0:width/(samples.length-1);
+  const healthValue=item=>item.status==='healthy'?100:item.status==='degraded'?62:item.status==='stale'?35:0;
+  const traffic=samples.map((item,index)=>`${(index*step).toFixed(1)} ${(height-10-(Number(item.rx_bps||0)+Number(item.tx_bps||0))/maxTraffic*105).toFixed(1)}`);
+  const health=samples.map((item,index)=>`${(index*step).toFixed(1)} ${(height-10-healthValue(item)*1.25).toFixed(1)}`);
+  const trafficPath=`M${traffic.join(' L')}`,healthPath=`M${health.join(' L')}`;
+  return `<path class="history-area" d="${trafficPath} L${width} ${height} L0 ${height}Z"/><path class="history-line" d="${trafficPath}"/><path class="history-health" d="${healthPath}"/>`;
+}
+
+async function openTunnelManager(tunnel){
+  if(!tunnel)return;
+  state.selectedTunnel=tunnel;const pluginId=tunnelPluginId(tunnel),plugin=state.plugins.find(item=>item.id===pluginId);
+  $('#tunnel-manage-title').textContent=`${tunnel.name} · ${String(tunnel.status).toUpperCase()}`;
+  $('#tunnel-manage-summary').innerHTML=`<span>${pluginIcon(pluginId)}</span><p><strong>${esc(tunnel.method)} operations cockpit</strong><small>Loading live health, topology path and job history…</small></p>`;
+  $('#tunnel-ops-kpis').innerHTML='<article><span>HEALTH</span><b>…</b></article><article><span>TRAFFIC</span><b>…</b></article><article><span>SESSIONS</span><b>…</b></article><article><span>UPTIME</span><b>…</b></article>';
+  $('#tunnel-path-card').innerHTML='<article><strong>Resolving endpoints…</strong><small>Correlating Agent, SSH and peer telemetry</small></article>';
+  $('#tunnel-history-chart').innerHTML='';$('#tunnel-job-timeline').innerHTML='';openModal('#tunnel-manage-modal');
+  const form=$('#tunnel-edit-form');form.elements.user_ports.value=(tunnel.user_ports||[]).join(', ');form.elements.transport.innerHTML=(plugin?.transports||[tunnel.transport]).map(item=>`<option value="${esc(item)}">${esc(item.toUpperCase())}</option>`).join('');form.elements.transport.value=tunnel.transport;form.elements.profile.value=['stable','balanced','lowping','turbo'].includes(tunnel.profile)?tunnel.profile:'balanced';form.elements.restart_every.value=tunnel.restart_every||'off';
+  try{
+    const operations=await api(`/api/tunnels/${Number(tunnel.id)}/operations?hours=24`);if(Number(state.selectedTunnel?.id)!==Number(tunnel.id))return;
+    const live=operations.tunnel||tunnel,peer=operations.peer,traffic=Number(live.rx_bps||0)+Number(live.tx_bps||0),score=Number(live.health_score||0),tone=score>=85?'ready':score>=55?'amber':'red';
+    state.selectedTunnel={...tunnel,...live};$('#tunnel-manage-title').textContent=`${live.name} · ${String(live.status).toUpperCase()}`;
+    $('#tunnel-manage-summary').innerHTML=`<span>${pluginIcon(pluginId)}</span><p><strong>${esc(live.node_name)} · ${esc(live.tunnel_role||'unknown role')} · ${esc(live.method)}</strong><small>${esc(live.node_host)} · ${esc(live.transport)} · ${esc(live.profile)} · ${live.node_agent_online?'AGENT ONLINE':'AGENT OFFLINE'} · ${operations.deployment?esc(String(operations.deployment.mode).toUpperCase()):'DISCOVERED'}</small></p>`;
+    $('#tunnel-ops-kpis').innerHTML=`<article><span>HEALTH / LOSS</span><b class="${tone}">${score}% · ${live.packet_loss==null?'—':`${Number(live.packet_loss).toFixed(1)}%`}</b></article><article><span>TRAFFIC</span><b>${esc(bytesPerSecond(traffic))}</b></article><article><span>SESSIONS / LATENCY</span><b>${Number(live.sessions||0)} · ${live.latency_ms==null?'—':`${Number(live.latency_ms).toFixed(1)}ms`}</b></article><article><span>SERVICE UPTIME</span><b>${elapsedDuration(live.service_uptime||0)}</b></article>`;
+    const peerName=peer?.node_name||live.peer_name||'REMOTE ENDPOINT',peerHost=peer?.node_host||live.peer_host||'IP UNAVAILABLE';
+    $('#tunnel-path-card').innerHTML=`<article><strong>${esc(live.node_name)}</strong><small>${esc(live.node_host)} · AG ${live.node_agent_online?'ON':'OFF'} · SSH ${live.node_ssh_configured?'READY':'NO'}</small>${live.node_ssh_configured?`<button data-tunnel-ssh-node="${Number(live.node_id)}">›_ OPEN SSH</button>`:''}</article><span>${esc(live.transport||live.method)} →</span><article><strong>${esc(peerName)}</strong><small>${esc(peerHost)} · AG ${live.peer_agent_online?'ON':'OFF'} · SSH ${live.peer_ssh_configured?'READY':'NO'}</small>${live.peer_ssh_configured?`<button data-tunnel-ssh-node="${Number(live.peer_node_id)}">›_ OPEN SSH</button>`:''}</article>`;
+    const samples=operations.samples||[];$('#tunnel-sample-count').textContent=`${samples.length} SAMPLES`;$('#tunnel-history-chart').innerHTML=tunnelHistoryChart(samples);
+    const jobs=operations.recent_jobs||[];$('#tunnel-job-timeline').innerHTML=jobs.length?jobs.slice(0,10).map(job=>`<article class="${esc(job.status)}"><strong>#${Number(job.id)} · ${esc(job.kind.toUpperCase().replaceAll('_',' '))}</strong><small>${esc(job.node_name||'NODE')} · ${esc(job.status.toUpperCase())} · ${relativeTime(job.finished_at||job.created_at)}</small></article>`).join(''):'<article><strong>NO RECENT JOBS</strong><small>Actions from this cockpit will appear here.</small></article>';
+  }catch(error){$('#tunnel-manage-summary').innerHTML=`<span>!</span><p><strong>Operations data unavailable</strong><small>${esc(error.message)}</small></p>`;}
+}
+
+$('#tunnel-edit-form').addEventListener('submit',async event=>{event.preventDefault();if(!state.selectedTunnel)return;const values=Object.fromEntries(new FormData(event.target));values.user_ports=String(values.user_ports).split(/[ ,]+/).filter(Boolean).map(Number);try{const result=await api(`/api/tunnels/${state.selectedTunnel.id}`,{method:'PUT',body:JSON.stringify(values)});closeModal($('#tunnel-manage-modal'));if(result.pair_code){$('#output-title').textContent='UPDATED PAIR CODE';$('#job-output').textContent=`Iran update queued. Apply this NEW code on KHAREJ:\n\n${result.pair_code}`;openModal('#output-modal');}else showToast('REDEPLOY QUEUED','Updated configuration is being applied to both managed sides.');await refresh();}catch(error){showToast('TUNNEL UPDATE FAILED',error.message,true);}});
+$('#tunnel-delete').addEventListener('click',async()=>{if(!state.selectedTunnel||!confirm(`Permanently remove ${state.selectedTunnel.method||'DARK'} tunnel “${state.selectedTunnel.name}”?`))return;try{const result=await api(`/api/tunnels/${state.selectedTunnel.id}`,{method:'DELETE'});closeModal($('#tunnel-manage-modal'));showToast('REMOVAL QUEUED',result.foreign_action_required?'Iran removal queued; remove KHAREJ manually.':'Managed tunnel removal queued.');await refresh();}catch(error){showToast('TUNNEL REMOVAL FAILED',error.message,true);}});
