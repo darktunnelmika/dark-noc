@@ -1,0 +1,138 @@
+name: Prepare v2.9.15 Incident modularization
+
+on:
+  push:
+    branches: [automation/v2.9.14-monitoring-module]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract Incident Command module
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app=Path('hub/static/app.js')
+          text=app.read_text()
+
+          start=text.index('function renderIncidentDetail(incident) {')
+          end=text.index('function tunnelHistoryChart(', start)
+          runtime=text[start:end].rstrip()+'\n\n'
+          for marker in ['function renderIncidentDetail(incident) {','async function loadIncidentDetail(','function renderIncidentList(){','function renderIncidents() {']:
+              assert marker in runtime, marker
+          text=text[:start]+text[end:]
+
+          note="$('#incident-note-form').addEventListener('submit',async event=>{event.preventDefault();const incidentId=Number(event.target.dataset.incidentId);if(!incidentId)return;const message=event.target.elements.message.value.trim();try{await api(`/api/incidents/${incidentId}/notes`,{method:'POST',body:JSON.stringify({message,event_type:'note'})});event.target.elements.message.value='';showToast('TIMELINE UPDATED','Operator note was recorded.');await loadIncidentDetail(incidentId);await refresh();}catch(error){showToast('NOTE FAILED',error.message,true);}});\n\n"
+          assert note in text
+          text=text.replace(note,'',1)
+
+          export="$('#export-incidents').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(state.incidents,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`dark-noc-incidents-${Date.now()}.json`;a.click();URL.revokeObjectURL(a.href);});\n"
+          assert export in text
+          text=text.replace(export,'',1)
+          app.write_text(text)
+
+          module='// DARK NOC Incident Command runtime. Classic-script globals are intentional.\n'+runtime+note+export
+          Path('hub/static/incident-management.js').write_text(module)
+
+          index=Path('hub/static/index.html')
+          html=index.read_text()
+          needle='  <script src="/static/monitoring.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.14"></script>'
+          assert needle in html
+          replacement='  <script src="/static/monitoring.js?v=1.0.0"></script>\n  <script src="/static/incident-management.js?v=1.0.0"></script>\n  <script src="/static/app.js?v=2.9.15"></script>'
+          index.write_text(html.replace(needle,replacement,1))
+
+          contract=(
+              "from pathlib import Path\n"
+              "root=Path(__file__).resolve().parents[1]\n"
+              "app=(root/'hub/static/app.js').read_text()\n"
+              "incident=(root/'hub/static/incident-management.js').read_text()\n"
+              "index=(root/'hub/static/index.html').read_text()\n"
+              "for marker in ['function renderIncidentDetail(incident) {','async function loadIncidentDetail(','function renderIncidentList(){','function renderIncidents() {',\"$('#incident-note-form').addEventListener\",\"$('#export-incidents').addEventListener\"]:\n"
+              "    assert marker in incident\n"
+              "    assert marker not in app\n"
+              "for marker in ['incidentAck','incidentResolve','incidentReopen','incidentSelect']:\n"
+              "    assert marker in app\n"
+              "assert index.index('monitoring.js') < index.index('incident-management.js') < index.index('app.js')\n"
+              "print('Incident Command module boundary passed')\n"
+          )
+          Path('tests/incident_management_module_contract.py').write_text(contract)
+
+          version_files=['hub/app.py','agent/agent.py','darknoc','install-hub.sh','install-node.sh','upgrade.sh','tests/agent_heartbeat_resilience.py','tests/installer_contracts.py','tests/local_hub_recovery.py','tests/realm_integration.py','tests/smoke.py','tests/topology_inventory_regression.py']
+          for name in version_files:
+              p=Path(name); value=p.read_text()
+              if '2.9.14' in value: p.write_text(value.replace('2.9.14','2.9.15'))
+
+          notes='# DARK NOC v2.9.15 — Incident Command Module Extraction\n\n- Extract Incident Command rendering, detail loading, timeline notes and report export from app.js into incident-management.js.\n- Preserve acknowledge, resolve, reopen, SSH takeover and delegated incident actions.\n- Keep Synthetic Monitoring, Fleet, SSH, File Manager, Matrix, APIs and Agent behavior unchanged.\n- Add permanent module-boundary regression coverage.\n\n## فارسی\n\nمرحله هفتم ماژولار کردن فرانت‌اند انجام شد: منطق Incident Command از app.js به incident-management.js منتقل شد، بدون تغییر ظاهر یا رفتار مدیریت رخدادها.\n\n---\n\n'
+          p=Path('RELEASE_NOTES.md'); p.write_text(notes+p.read_text())
+          p=Path('CHANGELOG.md'); old=p.read_text(); first,sep,rest=old.partition('\n'); p.write_text(first+sep+'\n## 2.9.15 — Incident Command module extraction\n\n- Extract Incident rendering, detail loading, operator notes and report export into incident-management.js.\n- Preserve acknowledge/resolve/reopen and SSH takeover behavior.\n- Add permanent module-boundary regression coverage.\n\n'+rest)
+          PY
+          git diff --check
+      - name: Install dependencies
+        run: pip install -r hub/requirements.txt -r agent/requirements.txt
+      - name: Verify source
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/core.js
+          node --check hub/static/topology.js
+          node --check hub/static/ssh-terminal.js
+          node --check hub/static/file-transfer.js
+          node --check hub/static/fleet-operations.js
+          node --check hub/static/monitoring.js
+          node --check hub/static/incident-management.js
+          node --check hub/static/app.js
+          node --check hub/static/live-matrix.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+          python tests/smoke.py
+          python tests/agent_logic.py
+          python tests/file_ops.py
+          python tests/noc_features.py
+          python tests/server_cli.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/local_hub_recovery.py
+          python tests/installer_contracts.py
+          python tests/agent_heartbeat_resilience.py
+          python tests/topology_inventory_regression.py
+          python tests/topology_refresh_contract.py
+          python tests/view_render_contract.py
+          python tests/frontend_core_contract.py
+          python tests/topology_module_contract.py
+          python tests/ssh_terminal_module_contract.py
+          python tests/file_transfer_module_contract.py
+          python tests/fleet_operations_module_contract.py
+          python tests/monitoring_module_contract.py
+          python tests/incident_management_module_contract.py
+      - name: Verify reproducible release
+        run: |
+          scripts/build-release.sh
+          first="$(mktemp -d)"
+          cp -a dist/. "$first/"
+          scripts/build-release.sh
+          diff -qr "$first" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.15.tar.gz > /tmp/darknoc-hub-files
+          grep -q 'incident-management.js' /tmp/darknoc-hub-files
+      - name: Commit verified candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hub/static/incident-management.js hub/static/app.js hub/static/index.html tests/incident_management_module_contract.py hub/app.py agent/agent.py darknoc install-hub.sh install-node.sh upgrade.sh tests/*.py RELEASE_NOTES.md CHANGELOG.md
+          git commit -m 'refactor: extract Incident Command runtime for v2.9.15'
+          git push --force-with-lease origin HEAD:refs/heads/release/v2.9.15-incidents-module
