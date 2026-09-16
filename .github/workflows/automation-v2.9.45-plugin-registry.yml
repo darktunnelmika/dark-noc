@@ -74,11 +74,17 @@ jobs:
       - name: Publish verified candidate branch
         run: |
           set -Eeuo pipefail
-          git rm .github/workflows/automation-v2.9.45-plugin-registry.yml scripts/prepare-v2.9.45-plugin-registry.py
-          git diff --check
+          candidate_patch="$(mktemp)"
+          git diff --binary origin/main -- . \
+            ':(exclude).github/workflows/automation-v2.9.45-plugin-registry.yml' \
+            ':(exclude).github/workflows/ci.yml' \
+            ':(exclude).github/workflows/release.yml' \
+            ':(exclude)scripts/prepare-v2.9.45-plugin-registry.py' > "$candidate_patch"
+          git checkout -B release/v2.9.45-plugin-registry origin/main
+          git clean -fdx
+          git apply --index "$candidate_patch"
+          git diff --cached --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git checkout -B release/v2.9.45-plugin-registry
-          git add -A
           git commit -m 'DARK NOC v2.9.45 — Plugin Contract v1'
           git push --force-with-lease origin HEAD:refs/heads/release/v2.9.45-plugin-registry
