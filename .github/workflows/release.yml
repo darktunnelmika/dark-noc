@@ -176,6 +176,7 @@ jobs:
           python tests/realm_integration.py
           python tests/local_hub_recovery.py
           python tests/installer_contracts.py
+          python tests/plugin_registry_contract.py
           python tests/dependency_lock_contract.py
           python tests/github_actions_supply_chain_contract.py
 
