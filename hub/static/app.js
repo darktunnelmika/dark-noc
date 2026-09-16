@@ -127,10 +127,13 @@ function renderTunnels() {
   }).join('');
 }
 
-function pluginInventory(node, pluginId){return node.plugins?.[pluginId.replaceAll('-','_')];}
-function pluginMethod(pluginId){return pluginId==='dark-realm'?'DARK Realm Pro':pluginId==='dark-ghostpro'?'DARK Ghost Pro':pluginId==='dark-packetpro'?'DARK Packet Pro':'DARK Backhaul';}
-function pluginIcon(pluginId){return pluginId==='dark-realm'?'DR':pluginId==='dark-ghostpro'?'DG':pluginId==='dark-packetpro'?'DP':'DB';}
-function tunnelPluginId(tunnel){return tunnel.method==='DARK Realm Pro'?'dark-realm':tunnel.method==='DARK Ghost Pro'?'dark-ghostpro':tunnel.method==='DARK Packet Pro'?'dark-packetpro':'dark-backhaul';}
+function pluginSpec(pluginId=state.selectedPlugin){return state.plugins.find(item=>item.id===pluginId)||null;}
+function pluginInventory(node, pluginId){const plugin=pluginSpec(pluginId),key=plugin?.ui?.inventory_key||String(pluginId||'').replaceAll('-','_');return node.plugins?.[key];}
+function pluginMethod(pluginId){const plugin=pluginSpec(pluginId);return plugin?.ui?.method||plugin?.name||pluginId||'DARK Tunnel';}
+function pluginIcon(pluginId){const plugin=pluginSpec(pluginId);return plugin?.ui?.icon||String(plugin?.name||pluginId||'DP').split(/\s+/).map(part=>part[0]||'').join('').slice(0,2).toUpperCase();}
+function pluginFormProfile(pluginId=state.selectedPlugin){return pluginSpec(pluginId)?.ui?.form_profile||'standard';}
+function pluginRuntime(pluginId=state.selectedPlugin){return pluginSpec(pluginId)?.runtime||{};}
+function tunnelPluginId(tunnel){return state.plugins.find(item=>pluginMethod(item.id)===tunnel.method)?.id||state.plugins[0]?.id||'';}
 function renderPlugins() {
   const grid = $('#plugin-grid');
   const onlineNodes=state.nodes.filter(node=>node.status==='online');
@@ -152,12 +155,12 @@ function renderCertificates(){
 }
 
 function realmCertificateNodeId(){
-  const form=$('#plugin-form');
-  return state.selectedPlugin==='dark-realm'?Number(form.elements.kharej_node_id.value):Number(form.elements.iran_node_id.value);
+  const form=$('#plugin-form'),side=pluginRuntime().certificate_side;
+  return side==='kharej'?Number(form.elements.kharej_node_id.value):Number(form.elements.iran_node_id.value);
 }
 
 function updateRealmFields(){
-  const form=$('#plugin-form'),realm=state.selectedPlugin==='dark-realm',transport=form.elements.transport.value;
+  const form=$('#plugin-form'),realm=pluginFormProfile()==='realm',transport=form.elements.transport.value;
   $('#plugin-realm').hidden=!realm;
   $('#plugin-realm-tls').hidden=!realm||!['tls','wss'].includes(transport);
   $('#plugin-realm-ws').hidden=!realm||!['ws','wss'].includes(transport);
@@ -167,22 +170,22 @@ function updateRealmFields(){
 }
 
 function updateTLSSelector(){
-  const form=$('#plugin-form'),transport=form.elements.transport.value,realm=state.selectedPlugin==='dark-realm',pairMode=form.elements.deployment_mode.value==='pair_code',required=['tls','wss','wssmux','h2','grpc','relay+tls','relay+wss','relay+h2','relay+grpc'].includes(transport),nodeId=realmCertificateNodeId(),box=$('#plugin-tls'),select=$('#plugin-certificate');
+  const form=$('#plugin-form'),plugin=pluginSpec(),transport=form.elements.transport.value,realm=pluginFormProfile()==='realm',pairMode=form.elements.deployment_mode.value==='pair_code',required=(plugin?.ui?.tls_transports||[]).includes(transport),hideInPair=Boolean(pluginRuntime().pair_hides_certificate),nodeId=realmCertificateNodeId(),box=$('#plugin-tls'),select=$('#plugin-certificate');
   updateRealmFields();
-  box.hidden=!required||realm&&pairMode;select.required=required&&!(realm&&pairMode);
-  if(!required||realm&&pairMode){select.value='';return;}
+  box.hidden=!required||hideInPair&&pairMode;select.required=required&&!(hideInPair&&pairMode);
+  if(!required||hideInPair&&pairMode){select.value='';return;}
   const valid=state.certificates.filter(c=>Number(c.node_id)===nodeId&&c.status==='valid'&&Number(c.expires_at)>Date.now()/1000+86400);
   select.innerHTML='<option value="">SELECT VALID CERTIFICATE</option>'+valid.map(c=>`<option value="${Number(c.id)}">${esc(c.domain)} · ${Math.ceil((c.expires_at-Date.now()/1000)/86400)} days</option>`).join('');
   if(valid.length===1){select.value=valid[0].id;if(realm){form.elements.tls_domain.value=valid[0].domain;form.elements.sni.value=valid[0].domain;form.elements.ws_host.value=valid[0].domain;form.elements.iran_endpoint.value=valid[0].domain;}else form.elements.iran_endpoint.value=valid[0].domain;}
 }
 
 function updatePluginMode(){
-  const form=$('#plugin-form'),managed=$('#plugin-mode').value==='managed',packet=state.selectedPlugin==='dark-packetpro',realm=state.selectedPlugin==='dark-realm';
+  const form=$('#plugin-form'),plugin=pluginSpec(),managed=$('#plugin-mode').value==='managed',packet=pluginFormProfile()==='packet',realm=pluginFormProfile()==='realm',pairEndpoint=pluginRuntime().pair_endpoint||'iran';
   $('#plugin-kharej-managed').hidden=!managed; $('#plugin-kharej-pair').hidden=managed;
   $('#plugin-kharej-node').required=managed; $('[name="remote_label"]',form).required=!managed;
-  $('#plugin-kharej-endpoint').hidden=managed||!(packet||realm); $('[name="kharej_endpoint"]',form).required=!managed&&(packet||realm);
+  $('#plugin-kharej-endpoint').hidden=managed||pairEndpoint!=='kharej'; $('[name="kharej_endpoint"]',form).required=!managed&&pairEndpoint==='kharej';
   $('#plugin-kharej-endpoint strong')?.remove();
-  $('#plugin-iran-role').textContent=realm?'Edge · exposes public user ports':packet?'Client · exposes local user ports':'Server · accepts tunnel';
+  $('#plugin-iran-role').textContent=plugin?.ui?.iran_role_label||'IRAN side';
   $('#plugin-remote-help').textContent=managed?(realm?'Gateway · native Realm listener':packet?'Server · automatic install':'Client · automatic install'):'Script · paste Pair Code';
   $('#plugin-security-title').textContent=realm?'Native Realm deployment':managed?'Zero-copy pairing':'Offline-capable secure pairing';
   $('#plugin-security-copy').textContent=realm?'DARK NOC keeps Realm TOML native: Iran Edge listens on public ports, Kharej Gateway listens on backbone ports, and TLS certificates stay on the Gateway.':managed?'DARK NOC securely applies matching configuration to both Agents.':'The Hub configures IRAN and generates a compatible code. On KHAREJ select the normal Pair Code flow and paste it.';
@@ -376,8 +379,8 @@ document.addEventListener('click', event => {
 
 $('#plugin-mode').addEventListener('change',updatePluginMode);
 $('#plugin-form').elements.transport.addEventListener('change',updateTLSSelector);
-$('#plugin-kharej-node').addEventListener('change',event=>{if(state.selectedPlugin==='dark-realm'){const node=state.nodes.find(item=>item.id===Number(event.target.value));if(node)$('#plugin-endpoint').value=node.observed_ip||node.host;updateTLSSelector();}});
-$('#plugin-certificate').addEventListener('change',event=>{const cert=state.certificates.find(item=>item.id===Number(event.target.value));if(cert){const form=$('#plugin-form');$('#plugin-endpoint').value=cert.domain;if(state.selectedPlugin==='dark-realm'){form.elements.tls_domain.value=cert.domain;form.elements.sni.value=cert.domain;form.elements.ws_host.value=cert.domain;}}});
+$('#plugin-kharej-node').addEventListener('change',event=>{if(pluginFormProfile()==='realm'){const node=state.nodes.find(item=>item.id===Number(event.target.value));if(node)$('#plugin-endpoint').value=node.observed_ip||node.host;updateTLSSelector();}});
+$('#plugin-certificate').addEventListener('change',event=>{const cert=state.certificates.find(item=>item.id===Number(event.target.value));if(cert){const form=$('#plugin-form');$('#plugin-endpoint').value=cert.domain;if(pluginFormProfile()==='realm'){form.elements.tls_domain.value=cert.domain;form.elements.sni.value=cert.domain;form.elements.ws_host.value=cert.domain;}}});
 function openCertificateModal(){const select=$('#certificate-node');select.innerHTML=state.nodes.filter(n=>n.status==='online').map(n=>`<option value="${Number(n.id)}">${esc(n.role.toUpperCase())} · ${esc(n.name)} · ${esc(n.host)}</option>`).join('');const chosen=realmCertificateNodeId()||Number($('#plugin-iran-node').value);if(chosen)select.value=chosen;openModal('#certificate-modal');}
 $('#add-certificate').addEventListener('click',openCertificateModal);
 $('#plugin-get-certificate').addEventListener('click',openCertificateModal);
@@ -385,14 +388,14 @@ $('#certificate-form').addEventListener('submit',async event=>{event.preventDefa
 $('#plugin-form').addEventListener('submit',async event=>{
   event.preventDefault();
   const form=event.target,values=Object.fromEntries(new FormData(form));
-  const pairMode=values.deployment_mode==='pair_code',realm=state.selectedPlugin==='dark-realm';delete values.deployment_mode;
+  const plugin=pluginSpec(),pairMode=values.deployment_mode==='pair_code',realm=pluginFormProfile()==='realm',pairEndpoint=pluginRuntime().pair_endpoint||'iran';delete values.deployment_mode;
   values.iran_node_id=Number(values.iran_node_id);values.tunnel_port=Number(values.tunnel_port);
   if(values.certificate_id)values.certificate_id=Number(values.certificate_id);else delete values.certificate_id;
   values.port_mappings=realm?String(values.port_mappings||'').split(/[ ,]+/).filter(Boolean):[];
   values.user_ports=(realm&&values.port_mappings.length?values.port_mappings.map(item=>Number(item.split('>')[0])):String(values.user_ports).split(/[ ,]+/).filter(Boolean).map(Number));
   values.tls_insecure=form.elements.tls_insecure?.checked||false;
   if(!realm){for(const key of ['target_host','port_mappings','tls_domain','tls_insecure','sni','alpn','ws_host','ws_path','ws_mask'])delete values[key];}
-  if(pairMode){delete values.kharej_node_id;if(realm&&!values.kharej_endpoint)return showToast('GATEWAY REQUIRED','Enter the Kharej Realm Gateway IP or domain.',true);}else{values.kharej_node_id=Number(values.kharej_node_id);delete values.remote_label;if(!values.kharej_node_id)return showToast('KHAREJ AGENT REQUIRED','Select an online Global Exit Agent or use Pair Code mode.',true);if(values.iran_node_id===values.kharej_node_id)return showToast('INVALID NODE PAIR','Iran and Kharej must be different servers.',true);}
+  if(pairMode){delete values.kharej_node_id;if(pairEndpoint==='kharej'&&!values.kharej_endpoint)return showToast('KHAREJ ENDPOINT REQUIRED',`Enter the KHAREJ endpoint required by ${plugin?.name||'this plugin'}.`,true);}else{values.kharej_node_id=Number(values.kharej_node_id);delete values.remote_label;if(!values.kharej_node_id)return showToast('KHAREJ AGENT REQUIRED','Select an online Global Exit Agent or use Pair Code mode.',true);if(values.iran_node_id===values.kharej_node_id)return showToast('INVALID NODE PAIR','Iran and Kharej must be different servers.',true);}
   try{
     const pluginId=state.selectedPlugin||'dark-backhaul',plugin=state.plugins.find(item=>item.id===pluginId);
     const deployment=await api(pairMode?`/api/plugins/${pluginId}/pair-code`:`/api/plugins/${pluginId}/deploy`,{method:'POST',body:JSON.stringify(values)});

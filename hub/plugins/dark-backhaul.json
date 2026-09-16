@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "order": 10,
+  "id": "dark-backhaul",
+  "name": "DARK Backhaul",
+  "version": "1.9.2",
+  "publisher": "DARK Tunnel Mika",
+  "repository": "https://github.com/darktunnelmika/dark-backhaul",
+  "description": "Reverse tunnel with coordinated IRAN server and KHAREJ client deployment.",
+  "roles": {
+    "iran": "server",
+    "kharej": "client"
+  },
+  "transports": ["tcp", "tcpmux", "ws", "wsmux", "wss", "wssmux", "udp"],
+  "profiles": ["stable", "balanced", "lowping", "turbo"],
+  "automated": true,
+  "ui": {
+    "icon": "DB",
+    "method": "DARK Backhaul",
+    "inventory_key": "dark_backhaul",
+    "form_profile": "standard",
+    "tls_transports": ["wss", "wssmux"],
+    "endpoint_default_side": "iran",
+    "iran_role_label": "Server · accepts tunnel"
+  },
+  "runtime": {
+    "settings_profile": "standard",
+    "pair_codec": "backhaul",
+    "pair_code": true,
+    "pair_endpoint": "iran",
+    "pair_endpoint_ipv4": false,
+    "managed_endpoint": "iran",
+    "certificate_side": "iran",
+    "certificate_role": "server",
+    "allow_tunnel_port_overlap": false,
+    "iran_endpoint_must_match_node": true,
+    "pair_hides_certificate": false
+  }
+}

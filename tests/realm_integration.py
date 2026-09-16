@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 
@@ -102,12 +103,19 @@ def main() -> None:
     agent_source = (ROOT / "agent" / "agent.py").read_text()
     frontend = (ROOT / "hub" / "static" / "app.js").read_text()
     index = (ROOT / "hub" / "static" / "index.html").read_text()
-    assert '"id": "dark-realm"' in app_source
+    realm_manifest = json.loads((ROOT / "hub" / "plugins" / "dark-realm.json").read_text())
+    assert realm_manifest["id"] == "dark-realm"
+    assert realm_manifest["name"] == "DARK Realm Pro"
+    assert realm_manifest["runtime"]["settings_profile"] == "realm"
+    assert realm_manifest["runtime"]["certificate_side"] == "kharej"
+    assert realm_manifest["roles"] == {"iran": "edge", "kharej": "gateway"}
+    assert "load_plugin_catalog" in app_source
     assert "DARK Realm Pro" in agent_source
-    assert "dark-realm" in frontend
+    assert "function pluginSpec(" in frontend
+    assert "function pluginFormProfile(" in frontend
     assert "plugin-realm" in index
-    assert 'VERSION = "2.9.44"' in app_source
-    assert 'VERSION = "2.9.44"' in agent_source
+    assert 'VERSION = "2.9.45"' in app_source
+    assert 'VERSION = "2.9.45"' in agent_source
     assert "_remove_ufw_rules(firewall_rules)" in (ROOT / "agent" / "realm_plugin.py").read_text()
 
     commands = []

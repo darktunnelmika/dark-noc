@@ -25,6 +25,20 @@ def _catalog_item(plugin_catalog: list[dict[str, Any]], plugin_id: str) -> dict[
     return plugin
 
 
+def _runtime_settings(catalog: dict[str, Any]) -> dict[str, Any]:
+    runtime = catalog.get("runtime")
+    if not isinstance(runtime, dict):
+        raise PluginDeploymentServiceError(500, "Plugin runtime metadata is invalid")
+    return runtime
+
+
+def _validate_catalog_choices(catalog: dict[str, Any], body: Any) -> None:
+    if body.transport not in catalog["transports"]:
+        raise PluginDeploymentServiceError(422, f"Unsupported {catalog['name']} transport")
+    if body.profile not in catalog["profiles"]:
+        raise PluginDeploymentServiceError(422, f"Unsupported {catalog['name']} performance profile")
+
+
 def deploy_pair_code_mutation(
     db: ConnectionFactory,
     plugin_id: str,
@@ -43,27 +57,39 @@ def deploy_pair_code_mutation(
     token_hash: Callable[[str], str],
 ) -> dict[str, Any]:
     catalog = _catalog_item(plugin_catalog, plugin_id)
-    if body.transport not in catalog["transports"]:
-        raise PluginDeploymentServiceError(422, f"Unsupported {catalog['name']} transport")
+    runtime = _runtime_settings(catalog)
+    _validate_catalog_choices(catalog, body)
+    if not runtime.get("pair_code", False):
+        raise PluginDeploymentServiceError(422, f"{catalog['name']} does not support Pair Code mode")
+    settings_profile = str(runtime.get("settings_profile") or "standard")
     ports = sorted(set(body.user_ports))
-    if any(port < 1 or port > 65535 or (plugin_id != "dark-realm" and port == body.tunnel_port) for port in ports):
+    allow_overlap = bool(runtime.get("allow_tunnel_port_overlap"))
+    if any(port < 1 or port > 65535 or (not allow_overlap and port == body.tunnel_port) for port in ports):
         raise PluginDeploymentServiceError(422, "User ports must be unique valid ports and cannot collide with the tunnel port")
+
+    pair_endpoint_side = str(runtime.get("pair_endpoint") or "iran")
+    if pair_endpoint_side == "kharej":
+        if not body.kharej_endpoint:
+            raise PluginDeploymentServiceError(422, f"{catalog['name']} Pair Code requires the KHAREJ endpoint")
+        endpoint = str(body.kharej_endpoint)
+        if runtime.get("pair_endpoint_ipv4"):
+            try:
+                if ipaddress.ip_address(endpoint).version != 4:
+                    raise ValueError
+            except ValueError as exc:
+                raise PluginDeploymentServiceError(422, f"{catalog['name']} KHAREJ endpoint must be an IPv4 address") from exc
+    else:
+        endpoint = str(body.iran_endpoint)
+
     token = secrets.token_urlsafe(24).replace("-", "A").replace("_", "B")
-    if plugin_id in {"dark-packetpro", "dark-realm"} and not body.kharej_endpoint:
-        raise PluginDeploymentServiceError(422, f"{catalog['name']} Pair Code requires the KHAREJ endpoint")
-    if plugin_id == "dark-packetpro":
-        try:
-            if ipaddress.ip_address(body.kharej_endpoint).version != 4:
-                raise ValueError
-        except ValueError as exc:
-            raise PluginDeploymentServiceError(422, "DARK Packet Pro KHAREJ endpoint must be an IPv4 address") from exc
-    endpoint = body.kharej_endpoint if plugin_id in {"dark-packetpro", "dark-realm"} else body.iran_endpoint
     settings: dict[str, Any] = {
         "plugin_id": plugin_id, "name": body.name, "endpoint": endpoint,
         "tunnel_port": body.tunnel_port, "user_ports": ports, "transport": body.transport,
         "profile": body.profile, "restart_every": body.restart_every,
+        "pair_codec": str(runtime.get("pair_codec") or "generic-v1"),
+        "certificate_role": str(runtime.get("certificate_role") or ""),
     }
-    if plugin_id == "dark-realm":
+    if settings_profile == "realm":
         settings = prepare_realm_settings(
             {
                 **settings,
@@ -77,10 +103,13 @@ def deploy_pair_code_mutation(
                 "ws_path": body.ws_path,
                 "ws_mask": body.ws_mask,
             },
-            gateway_host=str(body.kharej_endpoint), pair_mode=True,
+            gateway_host=endpoint, pair_mode=True,
         )
-    elif plugin_id == "dark-packetpro":
+        settings["pair_codec"] = str(runtime.get("pair_codec") or "realm")
+        settings["certificate_role"] = str(runtime.get("certificate_role") or "gateway")
+    elif settings_profile == "packet":
         settings.update({"pair_id": secrets.token_hex(8), "pair_created": utc_ts(), "core_tag": paqet_core_tag})
+
     now = utc_ts()
     with db() as conn:
         iran = conn.execute("SELECT id,name,host,role,last_seen FROM nodes WHERE id=?", (body.iran_node_id,)).fetchone()
@@ -88,14 +117,21 @@ def deploy_pair_code_mutation(
             raise PluginDeploymentServiceError(404, "Iran node was not found")
         if iran["role"] not in {"edge", "hub"}:
             raise PluginDeploymentServiceError(422, "Select an Iran Edge or Hub node for the IRAN side")
-        if plugin_id != "dark-realm":
-            cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
-            if cert:
-                settings.update(cert)
-                if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
-                    raise PluginDeploymentServiceError(422, "TLS endpoint must match the selected certificate domain")
-            elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
+
+        if settings_profile != "realm":
+            certificate_side = str(runtime.get("certificate_side") or "none")
+            cert = None
+            if certificate_side == "iran":
+                cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
+                if cert:
+                    settings.update(cert)
+                    if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
+                        raise PluginDeploymentServiceError(422, "TLS endpoint must match the selected certificate domain")
+            elif certificate_side not in {"none", "kharej"}:
+                raise PluginDeploymentServiceError(500, "Plugin certificate-side metadata is invalid")
+            if not cert and runtime.get("iran_endpoint_must_match_node") and body.iran_endpoint.casefold() != iran["host"].casefold():
                 raise PluginDeploymentServiceError(422, "Iran endpoint must match the selected Iran node host/IP")
+
         if not iran["last_seen"] or iran["last_seen"] < now - node_stale_after:
             raise PluginDeploymentServiceError(409, "The Iran Agent must be online before deployment")
         managed_active = conn.execute(
@@ -142,18 +178,22 @@ def deploy_managed_mutation(
     encrypt: Callable[[str | None], str | None],
 ) -> dict[str, Any]:
     catalog = _catalog_item(plugin_catalog, plugin_id)
-    if body.transport not in catalog["transports"]:
-        raise PluginDeploymentServiceError(422, f"Unsupported {catalog['name']} transport")
+    runtime = _runtime_settings(catalog)
+    _validate_catalog_choices(catalog, body)
+    settings_profile = str(runtime.get("settings_profile") or "standard")
     if body.iran_node_id == body.kharej_node_id:
         raise PluginDeploymentServiceError(422, "IRAN and KHAREJ must be different nodes")
     ports = sorted(set(body.user_ports))
-    if any(port < 1 or port > 65535 or (plugin_id != "dark-realm" and port == body.tunnel_port) for port in ports):
+    allow_overlap = bool(runtime.get("allow_tunnel_port_overlap"))
+    if any(port < 1 or port > 65535 or (not allow_overlap and port == body.tunnel_port) for port in ports):
         raise PluginDeploymentServiceError(422, "User ports must be unique valid ports and cannot collide with the tunnel port")
     token = secrets.token_urlsafe(24).replace("-", "A").replace("_", "B")
     common: dict[str, Any] = {
         "plugin_id": plugin_id, "name": body.name, "endpoint": body.iran_endpoint,
         "tunnel_port": body.tunnel_port, "user_ports": ports, "transport": body.transport,
         "profile": body.profile, "restart_every": body.restart_every, "token": token,
+        "pair_codec": str(runtime.get("pair_codec") or "generic-v1"),
+        "certificate_role": str(runtime.get("certificate_role") or ""),
     }
     now = utc_ts()
     with db() as conn:
@@ -163,15 +203,22 @@ def deploy_managed_mutation(
             raise PluginDeploymentServiceError(404, "One or both nodes were not found")
         if iran["role"] != "edge" or kharej["role"] != "exit":
             raise PluginDeploymentServiceError(422, "Select an Iran Edge node for IRAN and a Global Exit node for KHAREJ")
-        if plugin_id == "dark-packetpro":
+
+        managed_endpoint = str(runtime.get("managed_endpoint") or "iran")
+        if managed_endpoint == "kharej_public_ipv4":
             packet_endpoint = normalize_ip(kharej["observed_ip"] or kharej["host"])
             try:
                 if ipaddress.ip_address(packet_endpoint).version != 4:
                     raise ValueError
             except ValueError as exc:
-                raise PluginDeploymentServiceError(422, "The KHAREJ node needs a detected public IPv4 for Packet Pro") from exc
+                raise PluginDeploymentServiceError(422, f"The KHAREJ node needs a detected public IPv4 for {catalog['name']}") from exc
             common["endpoint"] = packet_endpoint
-        if plugin_id == "dark-realm":
+        elif managed_endpoint == "kharej":
+            common["endpoint"] = str(kharej["observed_ip"] or kharej["host"])
+        elif managed_endpoint != "iran":
+            raise PluginDeploymentServiceError(500, "Plugin managed-endpoint metadata is invalid")
+
+        if settings_profile == "realm":
             cert = certificate_for_deployment(conn, body.certificate_id, kharej["id"], body.transport)
             gateway_host = str(kharej["observed_ip"] or kharej["host"])
             if cert:
@@ -192,14 +239,26 @@ def deploy_managed_mutation(
                 gateway_host=gateway_host, certificate=cert, pair_mode=False,
             )
             common["token"] = token
+            common["pair_codec"] = str(runtime.get("pair_codec") or "realm")
+            common["certificate_role"] = str(runtime.get("certificate_role") or "gateway")
         else:
-            cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
-            if cert:
-                common.update(cert)
-                if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
-                    raise PluginDeploymentServiceError(422, "TLS endpoint must match the selected certificate domain")
-            elif plugin_id != "dark-packetpro" and body.iran_endpoint.casefold() != iran["host"].casefold():
+            certificate_side = str(runtime.get("certificate_side") or "none")
+            cert = None
+            if certificate_side == "iran":
+                cert = certificate_for_deployment(conn, body.certificate_id, iran["id"], body.transport)
+                if cert:
+                    common.update(cert)
+                    if body.iran_endpoint.casefold() != cert["certificate_domain"].casefold():
+                        raise PluginDeploymentServiceError(422, "TLS endpoint must match the selected certificate domain")
+            elif certificate_side == "kharej":
+                cert = certificate_for_deployment(conn, body.certificate_id, kharej["id"], body.transport)
+                if cert:
+                    common.update(cert)
+            elif certificate_side != "none":
+                raise PluginDeploymentServiceError(500, "Plugin certificate-side metadata is invalid")
+            if not cert and runtime.get("iran_endpoint_must_match_node") and body.iran_endpoint.casefold() != iran["host"].casefold():
                 raise PluginDeploymentServiceError(422, "Iran endpoint must match the selected Iran node host/IP")
+
         if (
             not iran["last_seen"] or iran["last_seen"] < now - node_stale_after
             or not kharej["last_seen"] or kharej["last_seen"] < now - node_stale_after
@@ -231,7 +290,6 @@ def deploy_managed_mutation(
         "iran_name": iran["name"],
         "kharej_name": kharej["name"],
     }
-
 
 def recover_pair_code_mutation(
     db: ConnectionFactory,

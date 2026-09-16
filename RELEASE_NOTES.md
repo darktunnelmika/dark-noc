@@ -1,3 +1,20 @@
+# DARK NOC v2.9.45 — Plugin Contract v1
+
+- Replace the hardcoded Hub plugin catalog with validated JSON manifests under `hub/plugins/`.
+- Make plugin icon, method label, inventory key, form profile, TLS transports, endpoint behavior, Pair-Code behavior and certificate ownership declarative.
+- Refactor plugin deployment transactions to consume manifest runtime profiles instead of branching on concrete plugin IDs.
+- Add `DNP1.` generic Pair Code support for future standard plugins while retaining every existing Pair Code format for compatibility.
+- Return plugin identity with Pair-Code recovery so the UI no longer guesses plugin type from secret prefixes.
+- Centralize privileged Agent plugin job dispatch in `plugin_adapter()` and remove the old unknown-plugin fallback to Backhaul.
+- Let new adapters participate in generic monitoring automatically when their service is explicitly recorded in `managed_services`.
+- Add fail-closed manifest validation, duplicate protection, CI regression coverage and `docs/plugin-authoring.md`.
+
+## فارسی
+
+بخش پلاگین به Plugin Contract v1 منتقل شد. از این نسخه مشخصات هر پلاگین داخل Manifest مستقل قرار می‌گیرد و Hub/UI برای نام، آیکون، ترنسپورت، پروفایل، TLS، Pair Code و سمت Endpoint به شرط‌های پراکنده وابسته نیستند. برای پلاگین استاندارد جدید، بخش Hub با اضافه‌کردن Manifest قابل توسعه است و در Agent فقط Adapter همان پلاگین در Registry مرکزی اضافه می‌شود؛ دیگر نیازی به دستکاری Routeها و فرم‌های اصلی پنل نیست.
+
+---
+
 # DARK NOC v2.9.44 — Dependency Lock & Supply-Chain Hardening
 
 - Add separate hash-locked dependency graphs for Hub and Agent (`requirements.lock`).

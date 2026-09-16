@@ -313,7 +313,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.44"
+VERSION = "2.9.45"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -676,37 +676,14 @@ async def security_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store"
     return response
 
-PLUGIN_CATALOG = [{
-    "id": "dark-backhaul", "name": "DARK Backhaul", "version": "1.9.2",
-    "publisher": "DARK Tunnel Mika", "repository": "https://github.com/darktunnelmika/dark-backhaul",
-    "description": "Reverse tunnel with coordinated IRAN server and KHAREJ client deployment.",
-    "roles": {"iran": "server", "kharej": "client"},
-    "transports": ["tcp", "tcpmux", "ws", "wsmux", "wss", "wssmux", "udp"],
-    "profiles": ["stable", "balanced", "lowping", "turbo"],
-    "automated": True,
-}, {
-    "id": "dark-ghostpro", "name": "DARK Ghost Pro", "version": "1.0.0",
-    "publisher": "DARK Tunnel Mika", "repository": "https://github.com/darktunnelmika/dark-ghostpro",
-    "description": "GOST v3 reverse tunnel with native DGP Pair Code and encrypted relay transports.",
-    "roles": {"iran": "server", "kharej": "client"},
-    "transports": ["relay+tls", "relay+wss", "relay+h2", "relay+grpc", "relay+quic", "relay+ws", "relay", "tls", "wss", "h2", "grpc", "quic", "ws", "tcp", "h2c", "dtls", "icmp"],
-    "profiles": ["stable", "balanced", "lowping", "turbo"], "automated": True,
-}, {
-    "id": "dark-packetpro", "name": "DARK Packet Pro", "version": "5.6.0",
-    "publisher": "@mikakhadm", "repository": "https://github.com/darktunnelmika/dark-packetpro",
-    "description": "PAQET/KCP tunnel with managed deployment or offline KHAREJ pairing.",
-    "roles": {"iran": "client", "kharej": "server"},
-    "transports": ["kcp"],
-    "profiles": ["stable", "balanced", "lowping", "turbo"], "automated": True,
-}, {
-    "id": "dark-realm", "name": "DARK Realm Pro", "version": "1.0.0",
-    "publisher": "@mikakhadm", "repository": "https://github.com/darktunnelmika/dark-realm",
-    "description": "Native high-performance Realm direct relay with DR1 Pair Code, Multi-Port and Gateway TLS.",
-    "roles": {"iran": "edge", "kharej": "gateway"},
-    "transports": ["tcp", "tls", "ws", "wss"],
-    "profiles": ["stable", "balanced", "lowping", "turbo"],
-    "certificate_side": "kharej", "automated": True,
-}]
+_PLUGIN_REGISTRY_PATH = Path(__file__).resolve().with_name("plugin_registry.py")
+_plugin_registry_spec = _realm_support_importlib_util.spec_from_file_location("dark_noc_plugin_registry", _PLUGIN_REGISTRY_PATH)
+if _plugin_registry_spec is None or _plugin_registry_spec.loader is None:
+    raise ImportError(f"Could not load Plugin Registry: {_PLUGIN_REGISTRY_PATH}")
+_plugin_registry_module = _realm_support_importlib_util.module_from_spec(_plugin_registry_spec)
+_plugin_registry_spec.loader.exec_module(_plugin_registry_module)
+load_plugin_catalog = _plugin_registry_module.load_plugin_catalog
+PLUGIN_CATALOG = load_plugin_catalog(Path(__file__).resolve().with_name("plugins"))
 
 class NodeUpdateBody(NodeBody):
     pass
@@ -1561,17 +1538,41 @@ def dark_backhaul_pair_code(settings: dict[str, Any], token: str) -> str:
     return "DBH-" + base64.b64encode(raw.encode()).decode()
 
 
+def generic_pair_code(settings: dict[str, Any], token: str) -> str:
+    payload = {
+        "schema": 1,
+        "plugin_id": settings.get("plugin_id"),
+        "name": settings.get("name"),
+        "endpoint": settings.get("endpoint"),
+        "tunnel_port": settings.get("tunnel_port"),
+        "user_ports": settings.get("user_ports", []),
+        "transport": settings.get("transport"),
+        "profile": settings.get("profile"),
+        "restart_every": settings.get("restart_every"),
+        "token": token,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return "DNP1." + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
 def plugin_pair_code(settings: dict[str, Any], token: str) -> str:
-    plugin_id = settings["plugin_id"]
-    if plugin_id == "dark-realm":
+    plugin_id = str(settings.get("plugin_id") or "")
+    legacy_codecs = {
+        "dark-realm": "realm",
+        "dark-backhaul": "backhaul",
+        "dark-ghostpro": "ghostpro",
+        "dark-packetpro": "packetpro",
+    }
+    codec = str(settings.get("pair_codec") or legacy_codecs.get(plugin_id, ""))
+    if codec == "realm":
         return realm_pair_code(settings)
-    if plugin_id == "dark-backhaul":
+    if codec == "backhaul":
         return dark_backhaul_pair_code(settings, token)
-    if plugin_id == "dark-ghostpro":
+    if codec == "ghostpro":
         ports = ",".join(str(port) for port in settings["user_ports"])
         raw = "|".join(("GPC1", settings["endpoint"], str(settings["tunnel_port"]), token, settings["transport"], settings["profile"], settings["restart_every"], ports))
         return "DGP-" + base64.b64encode(raw.encode()).decode()
-    if plugin_id == "dark-packetpro":
+    if codec == "packetpro":
         mode, conn, mtu = PACKET_PROFILES[settings["profile"]]
         mode_index = {"normal": 0, "fast": 1, "fast2": 2, "fast3": 3}[mode]
         ports = ",".join(f"t{port}" for port in settings["user_ports"])
@@ -1581,17 +1582,17 @@ def plugin_pair_code(settings: dict[str, Any], token: str) -> str:
             settings["pair_id"], str(settings["pair_created"]), ports,
         ))
         return "DPP-N1-" + base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
-    raise HTTPException(404, "Plugin not found")
-
+    if codec == "generic-v1":
+        return generic_pair_code(settings, token)
+    raise HTTPException(409, "Plugin Pair Code codec is not supported by this Hub build")
 
 def plugin_job_payload(settings: dict[str, Any], token: str, role: str) -> dict[str, Any]:
     payload = {**settings, "token": token, "role": role}
-    if settings.get("plugin_id") == "dark-realm":
-        if role != "gateway":
-            payload.pop("certificate_path", None)
-            payload.pop("certificate_key_path", None)
-        return payload
-    if role == "client":
+    certificate_role = str(settings.get("certificate_role") or "")
+    if not certificate_role:
+        # Rows created before Plugin Contract v1 did not persist this metadata.
+        certificate_role = "gateway" if settings.get("plugin_id") == "dark-realm" else "server"
+    if role != certificate_role:
         payload.pop("certificate_path", None)
         payload.pop("certificate_key_path", None)
     return payload

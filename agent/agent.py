@@ -60,7 +60,7 @@ except Exception as exc:
     remove_dark_realm = _realm_adapter_unavailable
     realm_inventory = _realm_inventory_unavailable
 
-VERSION = "2.9.44"
+VERSION = "2.9.45"
 CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/config.json"))
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
@@ -931,11 +931,24 @@ def discovery_inventory_complete() -> bool:
 
 
 def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
-    explicit = [
-        item for item in config.get("tunnels", [])
-        if str(item.get("method", "")) in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}
-        and (DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or GHOSTPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or PACKETPRO_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))) or REALM_SERVICE_PATTERN.fullmatch(str(item.get("service", ""))))
-    ]
+    managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
+
+    def explicit_managed(item: dict[str, Any]) -> bool:
+        service = str(item.get("service", ""))
+        method = str(item.get("method", ""))
+        if service in managed_services:
+            return True
+        return bool(
+            method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}
+            and (
+                DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service)
+                or GHOSTPRO_SERVICE_PATTERN.fullmatch(service)
+                or PACKETPRO_SERVICE_PATTERN.fullmatch(service)
+                or REALM_SERVICE_PATTERN.fullmatch(service)
+            )
+        )
+
+    explicit = [item for item in config.get("tunnels", []) if explicit_managed(item)]
     if not config.get("auto_discovery", True):
         return explicit
     known_instances = {(str(item.get("name", "")), str(item.get("service", ""))) for item in explicit}
@@ -955,34 +968,30 @@ def service_reports(config: dict[str, Any]) -> list[dict[str, str]]:
     return result
 
 
-def plugin_inventory() -> dict[str, Any]:
-    core = Path("/usr/local/bin/backhaul")
+def _binary_plugin_inventory(
+    core: Path,
+    version_args: list[str],
+    method: str,
+    tunnels: list[dict[str, Any]],
+) -> dict[str, Any]:
     installed = core.is_file() and os.access(core, os.X_OK)
     version = None
     if installed:
-        code, output = run([str(core), "-v"], timeout=8)
+        code, output = run([str(core), *version_args], timeout=8)
         version = (output.strip().splitlines() or ["unknown"])[-1][:120] if code == 0 else "unknown"
-    gost = Path("/usr/local/bin/gost")
-    gost_installed = gost.is_file() and os.access(gost, os.X_OK)
-    gost_version = None
-    if gost_installed:
-        code, output = run([str(gost), "-V"], timeout=8)
-        gost_version = (output.strip().splitlines() or ["unknown"])[-1][:120] if code == 0 else "unknown"
-    paqet = Path("/usr/local/bin/paqet")
-    paqet_installed = paqet.is_file() and os.access(paqet, os.X_OK)
-    paqet_version = None
-    if paqet_installed:
-        code, output = run([str(paqet), "version"], timeout=8)
-        paqet_version = (output.strip().splitlines() or ["unknown"])[-1][:120] if code == 0 else "unknown"
-    tunnels = discover_tunnels()
     return {
-        "dark_backhaul": {"installed": installed, "version": version, "instances": sum(item["method"] == "DARK Backhaul" for item in tunnels)},
-        "dark_ghostpro": {"installed": gost_installed, "version": gost_version, "instances": sum(item["method"] == "DARK Ghost Pro" for item in tunnels)},
-        "dark_packetpro": {"installed": paqet_installed, "version": paqet_version, "instances": sum(item["method"] == "DARK Packet Pro" for item in tunnels)},
-        "dark_realm": {**realm_inventory(), "instances": sum(item["method"] == "DARK Realm Pro" for item in tunnels)},
+        "installed": installed,
+        "version": version,
+        "instances": sum(item.get("method") == method for item in tunnels),
     }
 
 
+def plugin_inventory() -> dict[str, Any]:
+    tunnels = discover_tunnels()
+    return {
+        str(adapter["inventory_key"]): adapter["inventory"](tunnels)
+        for adapter in plugin_adapters().values()
+    }
 def restart_allowed(service: str, config: dict[str, Any]) -> bool:
     if service in {str(item) for item in config.get("managed_services", [])}:
         return True
@@ -1552,6 +1561,45 @@ def _remove_dark_ghost(payload: dict[str, Any], config: dict[str, Any]) -> str:
     save_json(CONFIG_PATH, config); return f"DARK Ghost Pro tunnel {name} removed; shared GOST core retained"
 
 
+def plugin_adapters() -> dict[str, dict[str, Any]]:
+    """Native plugin capabilities live in one privileged Agent registry."""
+    return {
+        "dark-backhaul": {
+            "name": "DARK Backhaul", "inventory_key": "dark_backhaul", "service_prefix": "backhaul@",
+            "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/backhaul"), ["-v"], "DARK Backhaul", tunnels),
+            "install": _install_darkbh_core,
+            "deploy": lambda payload, config: _deploy_dark_backhaul(payload, config),
+            "remove": lambda payload, config: _remove_dark_backhaul(payload, config),
+        },
+        "dark-ghostpro": {
+            "name": "DARK Ghost Pro", "inventory_key": "dark_ghostpro", "service_prefix": "ghostpro@",
+            "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/gost"), ["-V"], "DARK Ghost Pro", tunnels),
+            "install": _install_gost_core,
+            "deploy": lambda payload, config: _deploy_dark_ghost(payload, config),
+            "remove": lambda payload, config: _remove_dark_ghost(payload, config),
+        },
+        "dark-packetpro": {
+            "name": "DARK Packet Pro", "inventory_key": "dark_packetpro", "service_prefix": "paqetpro@",
+            "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/paqet"), ["version"], "DARK Packet Pro", tunnels),
+            "install": _install_paqet_core,
+            "deploy": lambda payload, config: _deploy_dark_packet(payload, config),
+            "remove": lambda payload, config: _remove_dark_packet(payload, config),
+        },
+        "dark-realm": {
+            "name": "DARK Realm Pro", "inventory_key": "dark_realm", "service_prefix": "dark-realm@",
+            "inventory": lambda tunnels: {**realm_inventory(), "instances": sum(item.get("method") == "DARK Realm Pro" for item in tunnels)},
+            "install": install_dark_realm,
+            "deploy": lambda payload, config: deploy_dark_realm(payload, config, CONFIG_PATH),
+            "remove": lambda payload, config: remove_dark_realm(payload, config, CONFIG_PATH),
+        },
+    }
+
+
+def plugin_adapter(plugin_id: str) -> dict[str, Any]:
+    adapter = plugin_adapters().get(plugin_id)
+    if not adapter:
+        raise ValueError("Plugin is not supported by this Agent build")
+    return adapter
 def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
     kind = str(job.get("kind", ""))
     payload = json.loads(job.get("payload") or "{}")
@@ -1593,36 +1641,26 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
             return "failed", "Service is not in managed_services allowlist"
         code, output = run(["journalctl", "-u", service, "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15)
         return ("completed" if code == 0 else "failed"), output
-    if kind == "plugin_deploy":
+    if kind in {"plugin_deploy", "plugin_install", "plugin_remove"}:
         try:
-            if payload.get("plugin_id") == "dark-realm": return "completed", deploy_dark_realm(payload, config, CONFIG_PATH)
-            if payload.get("plugin_id") == "dark-ghostpro": return "completed", _deploy_dark_ghost(payload, config)
-            if payload.get("plugin_id") == "dark-packetpro": return "completed", _deploy_dark_packet(payload, config)
-            return "completed", _deploy_dark_backhaul(payload, config)
+            adapter = plugin_adapter(str(payload.get("plugin_id") or ""))
+            if kind == "plugin_deploy":
+                return "completed", str(adapter["deploy"](payload, config))
+            if kind == "plugin_install":
+                return "completed", f"{adapter['name']} core ready: {adapter['install']()}"
+            return "completed", str(adapter["remove"](payload, config))
         except Exception as exc:
-            return "failed", f"Plugin deployment failed: {exc}"
-    if kind == "plugin_install":
-        try:
-            if payload.get("plugin_id") == "dark-realm": return "completed", f"DARK Realm Pro core ready: {install_dark_realm()}"
-            if payload.get("plugin_id") == "dark-ghostpro": return "completed", f"DARK Ghost Pro core ready: {_install_gost_core()}"
-            if payload.get("plugin_id") == "dark-packetpro": return "completed", f"DARK Packet Pro core ready: {_install_paqet_core()}"
-            return "completed", f"DARK Backhaul core ready: {_install_darkbh_core()}"
-        except Exception as exc:
-            return "failed", f"Plugin installation failed: {exc}"
-    if kind == "plugin_remove":
-        try:
-            if payload.get("plugin_id") == "dark-realm": return "completed", remove_dark_realm(payload, config, CONFIG_PATH)
-            if payload.get("plugin_id") == "dark-ghostpro": return "completed", _remove_dark_ghost(payload, config)
-            if payload.get("plugin_id") == "dark-packetpro": return "completed", _remove_dark_packet(payload, config)
-            return "completed", _remove_dark_backhaul(payload, config)
-        except Exception as exc:
-            return "failed", f"Plugin removal failed: {exc}"
+            action = "deployment" if kind == "plugin_deploy" else "installation" if kind == "plugin_install" else "removal"
+            return "failed", f"Plugin {action} failed: {exc}"
     if kind == "tunnel_control":
         name, action = str(payload.get("name", "")), str(payload.get("action", ""))
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", name) or action not in {"start", "stop", "restart"}:
             return "failed", "Invalid tunnel control request"
-        plugin_id = str(payload.get("plugin_id", "dark-backhaul"))
-        service = f"dark-realm@{name}.service" if plugin_id == "dark-realm" else f"ghostpro@{name}.service" if plugin_id == "dark-ghostpro" else f"paqetpro@{name}.service" if plugin_id == "dark-packetpro" else f"backhaul@{name}.service"
+        try:
+            adapter = plugin_adapter(str(payload.get("plugin_id") or "dark-backhaul"))
+        except Exception as exc:
+            return "failed", str(exc)
+        service = f"{adapter['service_prefix']}{name}.service"
         if not restart_allowed(service, config):
             return "failed", "Tunnel is not managed by DARK NOC"
         code, output = run(["systemctl", action, service], timeout=30)
