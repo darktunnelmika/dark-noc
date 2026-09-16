@@ -85,7 +85,13 @@ assert "state.selectedPlugin==='dark-packetpro'" not in frontend
 assert "state.selectedPlugin==='dark-realm'" not in actions
 assert "plugin?.profiles||[]" in actions
 assert "plugin?.runtime?.pair_code===false" in actions
+assert "def plugin_adapters(" in agent
 assert "def plugin_adapter(" in agent
+assert '"inventory_key": "dark_backhaul"' in agent
+assert '"inventory_key": "dark_ghostpro"' in agent
+assert '"inventory_key": "dark_packetpro"' in agent
+assert '"inventory_key": "dark_realm"' in agent
+assert "for adapter in plugin_adapters().values()" in agent
 assert 'if kind in {"plugin_deploy", "plugin_install", "plugin_remove"}' in agent
 assert "service in managed_services" in agent
 assert 'method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}' in agent
