@@ -14,6 +14,8 @@ Required manifest groups:
 - UI: icon, tunnel method label, Agent inventory key, form profile, TLS transports and endpoint defaults
 - runtime: deployment profile, Pair-Code codec, endpoint side, certificate side/role and collision rules
 
+The deployment form reads transports, performance profiles and Pair-Code availability directly from the manifest. A plugin which declares `pair_code=false` is exposed as managed-only without a custom UI branch.
+
 ## 2. Reuse an existing Hub runtime profile
 
 Most plugins should use `runtime.settings_profile=standard`. Standard plugins can define different transports, roles, TLS behavior and Pair-Code behavior entirely in the manifest.
@@ -29,24 +31,29 @@ A new standard plugin using `pair_codec=generic-v1` does not require a new Hub P
 
 ## 3. Add the Agent adapter in one place
 
-The Agent owns privileged install/deploy/remove operations. Built-in adapters are centralized in `plugin_adapter()` in `agent/agent.py`; job dispatch no longer contains per-plugin branches.
+The Agent owns privileged install/deploy/remove operations. Native plugin capabilities are centralized in `plugin_adapters()` in `agent/agent.py`; job dispatch and inventory collection no longer contain separate per-plugin branches.
 
 For a new native plugin:
 
 1. implement its install/deploy/remove helpers,
-2. add one `plugin_adapter()` registry entry with the service prefix and display name,
+2. add one `plugin_adapters()` registry entry with `name`, `inventory_key`, `service_prefix`, `inventory`, `install`, `deploy` and `remove`,
 3. make the deploy helper add its service to `managed_services` and its tunnel description to `tunnels`.
 
-Any tunnel whose service is in `managed_services` is accepted by the generic monitor path, so a new plugin does not need to be added to the explicit tunnel allow-list. Add an auto-discovery parser only when the plugin must discover instances created outside DARK NOC.
+That single registry entry drives Core inventory, install, deploy, remove and tunnel-control dispatch. Any tunnel whose service is in `managed_services` is accepted by the generic monitor path, so a new plugin does not need to be added to the explicit tunnel allow-list. Add an auto-discovery parser only when the plugin must discover instances created outside DARK NOC.
+
+Legacy Backhaul/Ghost/Packet/Realm tunnel records remain recognized even when an older Agent configuration has no `managed_services` entry, so upgrading the plugin architecture does not hide existing tunnels.
 
 ## 4. Inventory contract
 
-The manifest `ui.inventory_key` must match the key reported by the Agent under `plugins`. Rich core/version inventory may be added to `plugin_inventory()`; this is optional for tunnel execution but is required for the UI to show the core as already installed instead of offering INSTALL CORE again.
+The manifest `ui.inventory_key` must exactly match the Agent adapter `inventory_key`. The adapter `inventory` callback returns at least `installed`, `version` and `instances`. Binary-based plugins can reuse `_binary_plugin_inventory()`; specialized plugins such as Realm may return richer inventory.
+
+Keeping inventory in the same adapter registry means a newly installed Core immediately appears installed in the Plugin Store instead of repeatedly offering `INSTALL CORE`.
 
 ## 5. Compatibility rules
 
 - Existing API URLs and deployment database rows keep their current format.
 - Existing DB rows without `pair_codec` or `certificate_role` continue through legacy-safe defaults.
+- Existing built-in tunnel records without `managed_services` remain monitored through the legacy compatibility path.
 - Pair codes remain secret-bearing credentials; never log or expose them outside the authenticated reveal flow.
 - Plugin IDs are lowercase `[a-z0-9-]`; inventory keys are lowercase `[a-z0-9_]`.
 - Plugin manifests are trusted code configuration and must be reviewed like source changes.
@@ -90,4 +97,20 @@ The manifest `ui.inventory_key` must match the key reported by the Agent under `
     "pair_hides_certificate": false
   }
 }
+```
+
+## Minimal Agent adapter entry
+
+```python
+"dark-example": {
+    "name": "DARK Example",
+    "inventory_key": "dark_example",
+    "service_prefix": "dark-example@",
+    "inventory": lambda tunnels: _binary_plugin_inventory(
+        Path("/usr/local/bin/dark-example"), ["--version"], "DARK Example", tunnels
+    ),
+    "install": _install_dark_example,
+    "deploy": lambda payload, config: _deploy_dark_example(payload, config),
+    "remove": lambda payload, config: _remove_dark_example(payload, config),
+},
 ```
