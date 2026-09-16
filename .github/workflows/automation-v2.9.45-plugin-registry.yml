@@ -147,6 +147,22 @@ jobs:
           ''')
           text = text[:adapter_start] + adapter_runtime + text[adapter_end + 1:]
           path.write_text(text)
+
+          replacements = (
+              ('install-node.sh', 'Zero-touch Node v2.9.44', 'Zero-touch Node v2.9.45'),
+              ('install-hub.sh', "row[1] == '2.9.44'", "row[1] == '2.9.45'"),
+              ('install-hub.sh', 'fresh v2.9.44 heartbeat', 'fresh v2.9.45 heartbeat'),
+              ('upgrade.sh', 'row[1] == "2.9.44"', 'row[1] == "2.9.45"'),
+              ('upgrade.sh', 'fresh v2.9.44 post-upgrade pulse', 'fresh v2.9.45 post-upgrade pulse'),
+              ('hub/static/index.html', 'plugin-actions.js?v=1.0.0', 'plugin-actions.js?v=1.1.0'),
+              ('hub/static/index.html', 'app.js?v=2.9.44', 'app.js?v=2.9.45'),
+          )
+          for filename, old_marker, new_marker in replacements:
+              target = Path(filename)
+              source = target.read_text()
+              if source.count(old_marker) != 1:
+                  raise SystemExit(f'{filename}: expected exactly one marker {old_marker!r}')
+              target.write_text(source.replace(old_marker, new_marker, 1))
           PY
           git diff --check
 
@@ -173,6 +189,9 @@ jobs:
           python tests/agent_logic.py
           python tests/noc_features.py
           python tests/smoke.py
+          python tests/realm_integration.py
+          python tests/realm_runtime_regression.py
+          python tests/installer_contracts.py
           python tests/frontend_runtime_contract.py
           python tests/github_actions_supply_chain_contract.py
           python tests/dependency_lock_contract.py
