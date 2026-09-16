@@ -25,6 +25,7 @@
   },
   "runtime": {
     "settings_profile": "packet",
+    "service_prefix": "paqetpro@",
     "pair_codec": "packetpro",
     "pair_code": true,
     "pair_endpoint": "kharej",
