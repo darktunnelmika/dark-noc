@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "order": 40,
+  "id": "dark-realm",
+  "name": "DARK Realm Pro",
+  "version": "1.0.0",
+  "publisher": "@mikakhadm",
+  "repository": "https://github.com/darktunnelmika/dark-realm",
+  "description": "Native high-performance Realm direct relay with DR1 Pair Code, Multi-Port and Gateway TLS.",
+  "roles": {
+    "iran": "edge",
+    "kharej": "gateway"
+  },
+  "transports": ["tcp", "tls", "ws", "wss"],
+  "profiles": ["stable", "balanced", "lowping", "turbo"],
+  "automated": true,
+  "ui": {
+    "icon": "DR",
+    "method": "DARK Realm Pro",
+    "inventory_key": "dark_realm",
+    "form_profile": "realm",
+    "tls_transports": ["tls", "wss"],
+    "endpoint_default_side": "kharej",
+    "iran_role_label": "Edge · exposes public user ports"
+  },
+  "runtime": {
+    "settings_profile": "realm",
+    "pair_codec": "realm",
+    "pair_code": true,
+    "pair_endpoint": "kharej",
+    "pair_endpoint_ipv4": false,
+    "managed_endpoint": "kharej",
+    "certificate_side": "kharej",
+    "certificate_role": "gateway",
+    "allow_tunnel_port_overlap": true,
+    "iran_endpoint_must_match_node": false,
+    "pair_hides_certificate": true
+  }
+}

@@ -61,6 +61,34 @@ assert client["status"] == "healthy"
 assert client["sessions"] == 3
 assert client["latency_ms"] == 22.5
 
+# Plugin Contract v1 must preserve explicit built-in tunnels from older Agent
+# configs even when managed_services was never populated, while allowing future
+# adapters through the managed service allow-list without hardcoding their names.
+legacy_tunnel = {
+    "name": "legacy-link", "method": "DARK Backhaul", "role": "server",
+    "service": "backhaul@legacy-link.service",
+}
+future_tunnel = {
+    "name": "future-link", "method": "DARK Future", "role": "server",
+    "service": "dark-future@future-link.service",
+}
+with patch.object(agent, "discover_tunnels", return_value=[]):
+    assert agent.monitored_tunnels({
+        "auto_discovery": False,
+        "tunnels": [legacy_tunnel],
+        "managed_services": [],
+    }) == [legacy_tunnel]
+    assert agent.monitored_tunnels({
+        "auto_discovery": False,
+        "tunnels": [future_tunnel],
+        "managed_services": ["dark-future@future-link.service"],
+    }) == [future_tunnel]
+    assert agent.monitored_tunnels({
+        "auto_discovery": False,
+        "tunnels": [future_tunnel],
+        "managed_services": [],
+    }) == []
+
 agent._TUNNEL_TRAFFIC_CACHE.clear()
 with patch.object(agent, "run", return_value=(0, "ESTAB 0 0 10.0.0.1:443 198.51.100.2:55000\n cubic bytes_sent:5000 bytes_received:7000\n")):
     assert agent.socket_byte_snapshot() == [({443, 55000}, 7000, 5000)]

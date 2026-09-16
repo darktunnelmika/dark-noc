@@ -130,7 +130,8 @@ def register_plugin_deployments_router(app, **deps):
         except PluginDeploymentServiceError as exc:
             raise HTTPException(exc.status_code, exc.detail) from exc
         audit(user["id"], "plugin_pair_reveal", row["name"], str(deployment_id), request.client.host if request.client else None)
-        return {"deployment_id": deployment_id, "pair_code": pair_code}
+        plugin = next((item for item in PLUGIN_CATALOG if item["id"] == row["plugin_id"]), None)
+        return {"deployment_id": deployment_id, "pair_code": pair_code, "plugin_id": row["plugin_id"], "plugin_name": plugin["name"] if plugin else row["plugin_id"]}
 
     @router.post("/api/hybrid-deployments/{deployment_id}/retry", status_code=202)
     def retry_hybrid_deployment(deployment_id: int, request: Request, user: sqlite3.Row = Depends(current_user)):

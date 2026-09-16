@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "order": 30,
+  "id": "dark-packetpro",
+  "name": "DARK Packet Pro",
+  "version": "5.6.0",
+  "publisher": "@mikakhadm",
+  "repository": "https://github.com/darktunnelmika/dark-packetpro",
+  "description": "PAQET/KCP tunnel with managed deployment or offline KHAREJ pairing.",
+  "roles": {
+    "iran": "client",
+    "kharej": "server"
+  },
+  "transports": ["kcp"],
+  "profiles": ["stable", "balanced", "lowping", "turbo"],
+  "automated": true,
+  "ui": {
+    "icon": "DP",
+    "method": "DARK Packet Pro",
+    "inventory_key": "dark_packetpro",
+    "form_profile": "packet",
+    "tls_transports": [],
+    "endpoint_default_side": "iran",
+    "iran_role_label": "Client · exposes local user ports"
+  },
+  "runtime": {
+    "settings_profile": "packet",
+    "pair_codec": "packetpro",
+    "pair_code": true,
+    "pair_endpoint": "kharej",
+    "pair_endpoint_ipv4": true,
+    "managed_endpoint": "kharej_public_ipv4",
+    "certificate_side": "none",
+    "certificate_role": "",
+    "allow_tunnel_port_overlap": false,
+    "iran_endpoint_must_match_node": false,
+    "pair_hides_certificate": false
+  }
+}

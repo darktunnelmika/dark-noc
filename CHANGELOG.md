@@ -1,3 +1,10 @@
+## v2.9.45
+- Add Plugin Contract v1 with validated per-plugin manifests and a fail-closed Hub registry.
+- Move plugin card identity, form/TLS behavior and deployment semantics to catalog metadata instead of plugin-ID branches.
+- Add a generic `DNP1.` Pair-Code codec for future standard plugins while preserving existing DBH/DGP/DPP/DR1 formats.
+- Centralize Agent install/deploy/remove/control dispatch behind one adapter registry and allow any explicitly managed service into generic tunnel monitoring.
+- Add permanent Plugin Registry contract coverage and a plugin-authoring guide.
+
 ## v2.9.44
 - Supply-chain hardening: add SHA256 hash-locked Hub and Agent dependency graphs.
 - Enforce `--require-hashes` in install, provisioning and upgrade paths.
