@@ -83,8 +83,12 @@ assert "function pluginSpec(" in frontend
 assert "state.selectedPlugin==='dark-realm'" not in frontend
 assert "state.selectedPlugin==='dark-packetpro'" not in frontend
 assert "state.selectedPlugin==='dark-realm'" not in actions
+assert "plugin?.profiles||[]" in actions
+assert "plugin?.runtime?.pair_code===false" in actions
 assert "def plugin_adapter(" in agent
 assert 'if kind in {"plugin_deploy", "plugin_install", "plugin_remove"}' in agent
+assert "service in managed_services" in agent
+assert 'method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}' in agent
 assert '"plugin_name":' in router
 assert 'VERSION = "2.9.45"' in app
 assert 'VERSION = "2.9.45"' in agent
