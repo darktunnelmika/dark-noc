@@ -14,14 +14,17 @@ function handlePluginActions(event) {
     state.selectedPlugin=pluginDeploy.dataset.pluginId;
     const plugin=state.plugins.find(item=>item.id===state.selectedPlugin);
     $('#plugin-title').textContent=`Deploy ${plugin?.name||state.selectedPlugin}`;
-    const transport=$('#plugin-form').elements.transport;
+    const form=$('#plugin-form'),transport=form.elements.transport,profile=form.elements.profile,mode=form.elements.deployment_mode;
     transport.innerHTML=(plugin?.transports||[]).map((item,index)=>`<option value="${esc(item)}">${esc(item.toUpperCase())}${index===0?' · Recommended':''}</option>`).join('');
+    const profiles=plugin?.profiles||[],preferredProfile=profiles.includes('balanced')?'balanced':profiles[0];
+    profile.innerHTML=profiles.map(item=>`<option value="${esc(item)}"${item===preferredProfile?' selected':''}>${esc(item.replaceAll('_',' ').toUpperCase())}${item===preferredProfile?' · Recommended':''}</option>`).join('');
+    mode.innerHTML=plugin?.runtime?.pair_code===false?'<option value="managed">FULLY MANAGED · Agents on both servers</option>':'<option value="pair_code">PAIR CODE · No SSH/Agent required on KHAREJ</option><option value="managed">FULLY MANAGED · Agents on both servers</option>';
     const online=state.nodes.filter(node=>node.status==='online');
     const iranNodes=online.filter(node=>['edge','hub'].includes(node.role)),kharejNodes=online.filter(node=>node.role==='exit');
     if(!iranNodes.length){showToast('IRAN AGENT REQUIRED','At least one online Iran Edge or Hub Agent is required.',true);return true;}
     $('#plugin-iran-node').innerHTML=iranNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
     $('#plugin-kharej-node').innerHTML=kharejNodes.map(node=>`<option value="${Number(node.id)}">${esc(node.name)} · ${esc(node.host)}</option>`).join('');
-    const form=$('#plugin-form');form.reset();form.elements.name.value='dark-link';form.elements.tunnel_port.value='3080';form.elements.target_host.value='127.0.0.1';form.elements.ws_path.value=`/dark-${crypto.getRandomValues(new Uint32Array(2)).join('')}`;form.elements.ws_mask.value='skipped';
+    form.reset();form.elements.name.value='dark-link';form.elements.tunnel_port.value='3080';form.elements.target_host.value='127.0.0.1';form.elements.ws_path.value=`/dark-${crypto.getRandomValues(new Uint32Array(2)).join('')}`;form.elements.ws_mask.value='skipped';
     const iran=iranNodes[0],kharej=kharejNodes[0];
     $('#plugin-iran-node').value=iran.id;if(kharej){$('#plugin-kharej-node').value=kharej.id;form.elements.kharej_endpoint.value=kharej.host;}$('#plugin-endpoint').value=state.selectedPlugin==='dark-realm'?(kharej?.host||''):iran.host;updatePluginMode();openModal('#plugin-modal');return true;
   }
