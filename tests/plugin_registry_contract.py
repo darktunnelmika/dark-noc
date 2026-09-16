@@ -18,12 +18,14 @@ assert [item["id"] for item in catalog] == [
 ]
 assert len({item["ui"]["method"] for item in catalog}) == len(catalog)
 assert len({item["ui"]["inventory_key"] for item in catalog}) == len(catalog)
+assert len({item["runtime"]["service_prefix"] for item in catalog}) == len(catalog)
 for item in catalog:
     assert item["schema_version"] == 1
     assert item["roles"]["iran"] and item["roles"]["kharej"]
     assert item["transports"] and item["profiles"]
     assert item["ui"]["icon"] and item["ui"]["method"] and item["ui"]["inventory_key"]
     assert item["runtime"]["settings_profile"]
+    assert item["runtime"]["service_prefix"]
     assert item["runtime"]["pair_codec"]
     assert isinstance(item["runtime"]["pair_code"], bool)
 
@@ -38,8 +40,8 @@ example = {
     "repository": "https://github.com/darktunnelmika/dark-example",
     "description": "Registry contract example.",
     "roles": {"iran": "server", "kharej": "client"},
-    "transports": ["tcp"],
-    "profiles": ["stable"],
+    "transports": ["tcp-next"],
+    "profiles": ["latency2"],
     "automated": True,
     "ui": {
         "icon": "DX", "method": "DARK Example", "inventory_key": "dark_example",
@@ -47,7 +49,8 @@ example = {
         "endpoint_default_side": "iran", "iran_role_label": "Server",
     },
     "runtime": {
-        "settings_profile": "standard", "pair_codec": "generic-v1", "pair_code": True,
+        "settings_profile": "standard", "service_prefix": "dark-example@",
+        "pair_codec": "generic-v1", "pair_code": True,
         "pair_endpoint": "iran", "pair_endpoint_ipv4": False, "managed_endpoint": "iran",
         "certificate_side": "none", "certificate_role": "",
         "allow_tunnel_port_overlap": False, "iran_endpoint_must_match_node": True,
@@ -59,6 +62,7 @@ with tempfile.TemporaryDirectory() as temporary:
     (directory / "dark-example.json").write_text(json.dumps(example), encoding="utf-8")
     loaded = module.load_plugin_catalog(directory)
     assert len(loaded) == 1 and loaded[0]["id"] == "dark-example"
+    assert loaded[0]["runtime"]["service_prefix"] == "dark-example@"
     (directory / "duplicate.json").write_text(json.dumps(example), encoding="utf-8")
     try:
         module.load_plugin_catalog(directory)
@@ -73,6 +77,7 @@ frontend = (root / "hub/static/app.js").read_text()
 actions = (root / "hub/static/plugin-actions.js").read_text()
 agent = (root / "agent/agent.py").read_text()
 router = (root / "hub/plugin_deployments_router.py").read_text()
+schemas = (root / "hub/schemas.py").read_text()
 
 assert "load_plugin_catalog" in app
 assert "PLUGIN_CATALOG = [{" not in app
@@ -101,7 +106,7 @@ assert 'VERSION = "2.9.45"' in agent
 
 # Hub manifests and privileged Agent adapters must move together. This prevents
 # a Plugin Store entry from shipping without an executable Agent capability or
-# with an inventory key that can never report as installed.
+# with an inventory/service key that can never match runtime telemetry.
 agent_module_path = root / "agent/agent.py"
 agent_spec = importlib.util.spec_from_file_location("dark_noc_plugin_registry_agent", agent_module_path)
 assert agent_spec is not None and agent_spec.loader is not None
@@ -113,7 +118,13 @@ for item in catalog:
     adapter = adapters[item["id"]]
     assert adapter["name"] == item["name"]
     assert adapter["inventory_key"] == item["ui"]["inventory_key"]
+    assert adapter["service_prefix"] == item["runtime"]["service_prefix"]
     for capability in ("inventory", "install", "deploy", "remove"):
         assert callable(adapter[capability]), (item["id"], capability)
+
+# Pydantic validates safe tokens only; the per-plugin manifest is authoritative
+# for whether a transport/profile is supported. This keeps new plugin choices
+# from requiring edits to Hub request schemas.
+assert 'pattern=r"^[A-Za-z0-9+._-]+$"' in schemas
 
 print("Plugin Registry v1 contract passed")
