@@ -38,6 +38,7 @@ jobs:
 
           path = Path('agent/agent.py')
           text = path.read_text()
+
           old = textwrap.dedent('''\
           def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
               managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
@@ -69,7 +70,83 @@ jobs:
           ''')
           if text.count(old) != 1:
               raise SystemExit('monitored_tunnels Plugin Contract boundary changed')
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          inventory_start = text.index('def plugin_inventory() -> dict[str, Any]:')
+          inventory_end = text.index('\ndef restart_allowed(', inventory_start)
+          inventory_runtime = textwrap.dedent('''\
+          def _binary_plugin_inventory(
+              core: Path,
+              version_args: list[str],
+              method: str,
+              tunnels: list[dict[str, Any]],
+          ) -> dict[str, Any]:
+              installed = core.is_file() and os.access(core, os.X_OK)
+              version = None
+              if installed:
+                  code, output = run([str(core), *version_args], timeout=8)
+                  version = (output.strip().splitlines() or ["unknown"])[-1][:120] if code == 0 else "unknown"
+              return {
+                  "installed": installed,
+                  "version": version,
+                  "instances": sum(item.get("method") == method for item in tunnels),
+              }
+
+
+          def plugin_inventory() -> dict[str, Any]:
+              tunnels = discover_tunnels()
+              return {
+                  str(adapter["inventory_key"]): adapter["inventory"](tunnels)
+                  for adapter in plugin_adapters().values()
+              }
+          ''')
+          text = text[:inventory_start] + inventory_runtime + text[inventory_end + 1:]
+
+          adapter_start = text.index('def plugin_adapter(plugin_id: str) -> dict[str, Any]:')
+          adapter_end = text.index('\ndef execute_job(', adapter_start)
+          adapter_runtime = textwrap.dedent('''\
+          def plugin_adapters() -> dict[str, dict[str, Any]]:
+              """Native plugin capabilities live in one privileged Agent registry."""
+              return {
+                  "dark-backhaul": {
+                      "name": "DARK Backhaul", "inventory_key": "dark_backhaul", "service_prefix": "backhaul@",
+                      "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/backhaul"), ["-v"], "DARK Backhaul", tunnels),
+                      "install": _install_darkbh_core,
+                      "deploy": lambda payload, config: _deploy_dark_backhaul(payload, config),
+                      "remove": lambda payload, config: _remove_dark_backhaul(payload, config),
+                  },
+                  "dark-ghostpro": {
+                      "name": "DARK Ghost Pro", "inventory_key": "dark_ghostpro", "service_prefix": "ghostpro@",
+                      "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/gost"), ["-V"], "DARK Ghost Pro", tunnels),
+                      "install": _install_gost_core,
+                      "deploy": lambda payload, config: _deploy_dark_ghost(payload, config),
+                      "remove": lambda payload, config: _remove_dark_ghost(payload, config),
+                  },
+                  "dark-packetpro": {
+                      "name": "DARK Packet Pro", "inventory_key": "dark_packetpro", "service_prefix": "paqetpro@",
+                      "inventory": lambda tunnels: _binary_plugin_inventory(Path("/usr/local/bin/paqet"), ["version"], "DARK Packet Pro", tunnels),
+                      "install": _install_paqet_core,
+                      "deploy": lambda payload, config: _deploy_dark_packet(payload, config),
+                      "remove": lambda payload, config: _remove_dark_packet(payload, config),
+                  },
+                  "dark-realm": {
+                      "name": "DARK Realm Pro", "inventory_key": "dark_realm", "service_prefix": "dark-realm@",
+                      "inventory": lambda tunnels: {**realm_inventory(), "instances": sum(item.get("method") == "DARK Realm Pro" for item in tunnels)},
+                      "install": install_dark_realm,
+                      "deploy": lambda payload, config: deploy_dark_realm(payload, config, CONFIG_PATH),
+                      "remove": lambda payload, config: remove_dark_realm(payload, config, CONFIG_PATH),
+                  },
+              }
+
+
+          def plugin_adapter(plugin_id: str) -> dict[str, Any]:
+              adapter = plugin_adapters().get(plugin_id)
+              if not adapter:
+                  raise ValueError("Plugin is not supported by this Agent build")
+              return adapter
+          ''')
+          text = text[:adapter_start] + adapter_runtime + text[adapter_end + 1:]
+          path.write_text(text)
           PY
           git diff --check
 
