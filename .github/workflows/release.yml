@@ -19,7 +19,7 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -144,12 +144,12 @@ jobs:
           printf 'publish=true\ntag=%s\nrelease_id=%s\ntarget_sha=%s\nmarker=%s\n' \
             "$release_tag" "$release_id" "$target_sha" "$marker" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: steps.version.outputs.publish == 'true'
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.version.outputs.publish == 'true'
         with:
           node-version: "22"
@@ -177,6 +177,7 @@ jobs:
           python tests/local_hub_recovery.py
           python tests/installer_contracts.py
           python tests/dependency_lock_contract.py
+          python tests/github_actions_supply_chain_contract.py
 
       - name: Build reproducible packages
         if: steps.version.outputs.publish == 'true'
