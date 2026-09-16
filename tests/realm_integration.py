@@ -111,7 +111,8 @@ def main() -> None:
     assert realm_manifest["roles"] == {"iran": "edge", "kharej": "gateway"}
     assert "load_plugin_catalog" in app_source
     assert "DARK Realm Pro" in agent_source
-    assert "dark-realm" in frontend
+    assert "function pluginSpec(" in frontend
+    assert "function pluginFormProfile(" in frontend
     assert "plugin-realm" in index
     assert 'VERSION = "2.9.44"' in app_source
     assert 'VERSION = "2.9.44"' in agent_source
