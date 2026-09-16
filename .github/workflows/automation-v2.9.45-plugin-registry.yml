@@ -1,0 +1,84 @@
+name: Validate v2.9.45 Plugin Contract v1
+
+on:
+  push:
+    branches: [automation/v2.9.45-plugin-registry]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dark-noc-v2.9.45-plugin-registry
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: automation/v2.9.45-plugin-registry
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Apply Plugin Contract v1 transform
+        run: |
+          set -Eeuo pipefail
+          python scripts/prepare-v2.9.45-plugin-registry.py
+          git diff --check
+
+      - name: Install locked dependencies
+        run: |
+          pip install --disable-pip-version-check --require-hashes -r hub/requirements.lock
+          pip install --disable-pip-version-check --require-hashes -r agent/requirements.lock
+          pip check
+
+      - name: Static validation
+        run: |
+          python -m compileall -q hub agent tests
+          node --check hub/static/app.js
+          node --check hub/static/plugin-actions.js
+          node --check hub/static/ops-actions.js
+          for script in *.sh scripts/*.sh; do bash -n "$script"; done
+          bash -n darknoc
+
+      - name: Plugin architecture tests
+        run: |
+          python tests/plugin_registry_contract.py
+          python tests/backend_plugin_deployment_service_contract.py
+          python tests/backend_router_contract.py
+          python tests/agent_logic.py
+          python tests/noc_features.py
+          python tests/smoke.py
+          python tests/frontend_runtime_contract.py
+          python tests/github_actions_supply_chain_contract.py
+          python tests/dependency_lock_contract.py
+
+      - name: Reproducible release validation
+        run: |
+          scripts/build-release.sh
+          first_build="$(mktemp -d)"
+          cp -a dist/. "$first_build/"
+          scripts/build-release.sh
+          diff -qr "$first_build" dist
+          tar -tzf dist/DARK-NOC-HUB-v2.9.45.tar.gz | grep -q 'dark-noc-pro/hub/plugins/dark-backhaul.json'
+          tar -tzf dist/DARK-NOC-HUB-v2.9.45.tar.gz | grep -q 'dark-noc-pro/hub/plugin_registry.py'
+
+      - name: Publish verified candidate branch
+        run: |
+          set -Eeuo pipefail
+          git rm .github/workflows/automation-v2.9.45-plugin-registry.yml scripts/prepare-v2.9.45-plugin-registry.py
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B release/v2.9.45-plugin-registry
+          git add -A
+          git commit -m 'DARK NOC v2.9.45 — Plugin Contract v1'
+          git push --force-with-lease origin HEAD:refs/heads/release/v2.9.45-plugin-registry
