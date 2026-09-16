@@ -32,6 +32,42 @@ jobs:
         run: |
           set -Eeuo pipefail
           python scripts/prepare-v2.9.45-plugin-registry.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('agent/agent.py')
+          text = path.read_text()
+          old = '''def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
+              managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
+              explicit = [
+                  item for item in config.get("tunnels", [])
+                  if str(item.get("service", "")) in managed_services
+              ]
+          '''.replace('          ', '')
+          new = '''def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
+              managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
+
+              def explicit_managed(item: dict[str, Any]) -> bool:
+                  service = str(item.get("service", ""))
+                  method = str(item.get("method", ""))
+                  if service in managed_services:
+                      return True
+                  return bool(
+                      method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}
+                      and (
+                          DARK_BACKHAUL_SERVICE_PATTERN.fullmatch(service)
+                          or GHOSTPRO_SERVICE_PATTERN.fullmatch(service)
+                          or PACKETPRO_SERVICE_PATTERN.fullmatch(service)
+                          or REALM_SERVICE_PATTERN.fullmatch(service)
+                      )
+                  )
+
+              explicit = [item for item in config.get("tunnels", []) if explicit_managed(item)]
+          '''.replace('          ', '')
+          if text.count(old) != 1:
+              raise SystemExit('monitored_tunnels Plugin Contract boundary changed')
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
 
       - name: Install locked dependencies
