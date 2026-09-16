@@ -80,8 +80,9 @@ jobs:
             ':(exclude).github/workflows/ci.yml' \
             ':(exclude).github/workflows/release.yml' \
             ':(exclude)scripts/prepare-v2.9.45-plugin-registry.py' > "$candidate_patch"
-          git checkout -B release/v2.9.45-plugin-registry origin/main
+          git reset --hard origin/main
           git clean -fdx
+          git checkout -B release/v2.9.45-plugin-registry origin/main
           git apply --index "$candidate_patch"
           git diff --cached --check
           git config user.name github-actions[bot]
