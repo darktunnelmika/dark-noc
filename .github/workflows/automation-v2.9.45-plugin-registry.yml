@@ -33,18 +33,21 @@ jobs:
           set -Eeuo pipefail
           python scripts/prepare-v2.9.45-plugin-registry.py
           python - <<'PY'
+          import textwrap
           from pathlib import Path
 
           path = Path('agent/agent.py')
           text = path.read_text()
-          old = '''def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
+          old = textwrap.dedent('''\
+          def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
               managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
               explicit = [
                   item for item in config.get("tunnels", [])
                   if str(item.get("service", "")) in managed_services
               ]
-          '''.replace('          ', '')
-          new = '''def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
+          ''')
+          new = textwrap.dedent('''\
+          def monitored_tunnels(config: dict[str, Any]) -> list[dict[str, Any]]:
               managed_services = {str(item) for item in config.get("managed_services", []) if str(item)}
 
               def explicit_managed(item: dict[str, Any]) -> bool:
@@ -63,7 +66,7 @@ jobs:
                   )
 
               explicit = [item for item in config.get("tunnels", []) if explicit_managed(item)]
-          '''.replace('          ', '')
+          ''')
           if text.count(old) != 1:
               raise SystemExit('monitored_tunnels Plugin Contract boundary changed')
           path.write_text(text.replace(old, new, 1))
