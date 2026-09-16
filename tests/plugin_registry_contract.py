@@ -98,4 +98,22 @@ assert 'method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK R
 assert '"plugin_name":' in router
 assert 'VERSION = "2.9.45"' in app
 assert 'VERSION = "2.9.45"' in agent
+
+# Hub manifests and privileged Agent adapters must move together. This prevents
+# a Plugin Store entry from shipping without an executable Agent capability or
+# with an inventory key that can never report as installed.
+agent_module_path = root / "agent/agent.py"
+agent_spec = importlib.util.spec_from_file_location("dark_noc_plugin_registry_agent", agent_module_path)
+assert agent_spec is not None and agent_spec.loader is not None
+agent_module = importlib.util.module_from_spec(agent_spec)
+agent_spec.loader.exec_module(agent_module)
+adapters = agent_module.plugin_adapters()
+assert set(adapters) == {item["id"] for item in catalog}
+for item in catalog:
+    adapter = adapters[item["id"]]
+    assert adapter["name"] == item["name"]
+    assert adapter["inventory_key"] == item["ui"]["inventory_key"]
+    for capability in ("inventory", "install", "deploy", "remove"):
+        assert callable(adapter[capability]), (item["id"], capability)
+
 print("Plugin Registry v1 contract passed")
