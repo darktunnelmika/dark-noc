@@ -136,6 +136,8 @@ jobs:
           candidate_patch="$(mktemp)"
           git diff --binary origin/main -- . \
             ':(exclude).github/workflows/automation-v2.9.46-runtime-security.yml' \
+            ':(exclude).github/workflows/ci.yml' \
+            ':(exclude).github/workflows/release.yml' \
             ':(exclude)scripts/prepare-v2.9.46-runtime-security.py' \
             ':(exclude)scripts/prepare-v2.9.46-plugin-schema.py' \
             ':(exclude)scripts/prepare-v2.9.46-test-fixtures.py' > "$candidate_patch"
