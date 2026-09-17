@@ -127,4 +127,17 @@ for item in catalog:
 # from requiring edits to Hub request schemas.
 assert 'pattern=r"^[A-Za-z0-9+._-]+$"' in schemas
 
+schemas_path = root / "hub/schemas.py"
+schemas_spec = importlib.util.spec_from_file_location("dark_noc_schemas_contract", schemas_path)
+assert schemas_spec is not None and schemas_spec.loader is not None
+schemas_module = importlib.util.module_from_spec(schemas_spec)
+schemas_spec.loader.exec_module(schemas_module)
+blank_endpoint = schemas_module.PairCodeDeployBody(
+    name="test-link", iran_node_id=1, iran_endpoint="127.0.0.1",
+    remote_label="KHAREJ", kharej_endpoint="", tunnel_port=3080,
+    user_ports=[443], transport="tcpmux", profile="balanced", restart_every="off",
+)
+assert blank_endpoint.kharej_endpoint is None
+assert "if(!values.kharej_endpoint)delete values.kharej_endpoint" in frontend
+
 print("Plugin Registry v1 contract passed")
