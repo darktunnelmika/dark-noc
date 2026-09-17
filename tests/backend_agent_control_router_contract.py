@@ -40,5 +40,5 @@ for helper in [
     assert helper in app, helper
 assert 'globals()[_agent_control_name] = _agent_control_handler' in app
 assert 'globals()[_live_name] = _live_handler' in app
-assert 'VERSION = "2.9.47"' in app
+assert 'VERSION = "2.9.48"' in app
 print('Agent Control/Live router boundary passed')

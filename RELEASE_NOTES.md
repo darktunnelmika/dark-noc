@@ -1,3 +1,17 @@
+# DARK NOC v2.9.48 — Plugin Deployment Validation Hotfix
+
+- Fix Pair Code tunnel creation when the optional KHAREJ endpoint field is left blank.
+- The browser now omits an empty `kharej_endpoint` instead of sending an invalid empty string.
+- The Hub normalizes cached/legacy `kharej_endpoint: ""` payloads to `null` before Pydantic length validation.
+- Managed dual-Agent deployments explicitly drop the Pair-Code-only endpoint field.
+- Add a regression contract that submits a blank Pair Code endpoint and requires successful schema normalization.
+
+## فارسی
+
+خطای `PLUGIN DEPLOYMENT FAILED — String should have at least 1 character` هنگام ساخت بعضی تونل‌های Pair Code رفع شد. فیلد اختیاری KHAREJ در حالت خالی دیگر به‌صورت رشته خالی ارسال نمی‌شود و Hub نیز برای سازگاری با Cache قدیمی مرورگر مقدار خالی را به `null` تبدیل می‌کند.
+
+---
+
 # DARK NOC v2.9.47 — Mobile Command UI
 
 - Mobile now has a dedicated responsive layer rather than inheriting desktop-only layouts.
