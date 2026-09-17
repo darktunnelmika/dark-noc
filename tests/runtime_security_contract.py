@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -56,6 +57,35 @@ finally:
         os.environ["DARK_NOC_PUBLIC_PORT"] = old_port
 
 
+file_router_spec = importlib.util.spec_from_file_location("dark_noc_ssh_file_security_test", ROOT / "hub/ssh_file_router.py")
+assert file_router_spec is not None and file_router_spec.loader is not None
+file_router_module = importlib.util.module_from_spec(file_router_spec)
+file_router_spec.loader.exec_module(file_router_module)
+
+
+class FakeResolvedSFTP:
+    async def realpath(self, path: str) -> str:
+        return {"/tmp/link": "/etc", "/tmp/work": "/tmp/work"}.get(path, path)
+
+
+async def check_symlink_guard() -> None:
+    safe = await file_router_module.resolved_destructive_path(
+        FakeResolvedSFTP(), "/tmp/work/report.txt", lambda path: not path.startswith("/etc")
+    )
+    assert safe == "/tmp/work/report.txt"
+    try:
+        await file_router_module.resolved_destructive_path(
+            FakeResolvedSFTP(), "/tmp/link/shadow", lambda path: not path.startswith("/etc")
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("symlinked parent escaped the protected-tree guard")
+
+
+asyncio.run(check_symlink_guard())
+
+
 def load_hub_app():
     data_dir = tempfile.TemporaryDirectory(prefix="dark-noc-security-")
     os.environ["DARK_NOC_DATA"] = data_dir.name
@@ -87,9 +117,11 @@ with TestClient(HUB.app, base_url="https://testserver") as client:
         json={"username": "admin", "password": "Runtime-Security-Test-1234"},
     )
     assert login.status_code == 200, login.text
-    assert "HttpOnly" in login.headers.get("set-cookie", "")
-    assert "SameSite=strict" in login.headers.get("set-cookie", "")
-    assert "Path=/" in login.headers.get("set-cookie", "")
+    set_cookie = login.headers.get("set-cookie", "")
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=strict" in set_cookie
+    assert "Path=/" in set_cookie
+    assert "Secure" in set_cookie
 
     me = client.get("/api/auth/me")
     assert me.status_code == 200
@@ -131,6 +163,8 @@ assert "resolved_destructive_path" in file_router
 assert "await sftp.realpath" in file_router
 assert "websocket_origin_allowed" in terminal
 assert "SSH_TERMINAL_MESSAGE_LIMIT" in terminal
+assert '"type": "output"' in terminal
+assert "tmux new-session -A" in terminal
 assert "websocket_origin_allowed" in live_router
 assert "LIVE_MESSAGE_LIMIT" in live_router
 assert 'VERSION = "2.9.46"' in app_source
