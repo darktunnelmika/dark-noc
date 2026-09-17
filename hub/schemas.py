@@ -209,10 +209,11 @@ class PairCodeDeployBody(BaseModel):
     def validate_endpoint(cls, value: str) -> str:
         return PluginDeployBody.validate_endpoint(value)
 
-    @field_validator("kharej_endpoint")
+    @field_validator("kharej_endpoint", mode="before")
     @classmethod
     def validate_kharej_endpoint(cls, value: str | None) -> str | None:
-        return PluginDeployBody.validate_endpoint(value) if value else None
+        text = str(value or "").strip()
+        return PluginDeployBody.validate_endpoint(text) if text else None
 
 class TunnelActionBody(BaseModel):
     action: str = Field(pattern=r"^(start|stop|restart|logs|status|test|install)$")
