@@ -33,5 +33,5 @@ assert 'Depends(current_user)' in system and 'metric_raw_retention_days' in syst
 assert 'app.mount("/static"' in app
 assert "with_name('live_router.py')" in app
 assert "with_name('agent_control_router.py')" in app and "with_name('agent_control_router.py')" in app
-assert 'VERSION = "2.9.47"' in app
+assert 'VERSION = "2.9.48"' in app
 print('Auth/Dashboard/System router boundary passed')
