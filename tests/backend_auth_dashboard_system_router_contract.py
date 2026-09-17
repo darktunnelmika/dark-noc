@@ -23,12 +23,15 @@ for path in ['/healthz', '/readyz', '"/"', '/api/system/status']:
     assert path in system, path
 assert 'login_rate_check(client_ip)' in auth
 assert 'login_rate_record(client_ip, False)' in auth
-assert 'response.set_cookie("dark_noc_session"' in auth
+assert 'response.set_cookie(' in auth and '"dark_noc_session"' in auth
+assert 'httponly=True' in auth and 'samesite="strict"' in auth and 'path="/"' in auth
+assert 'secure=cookie_secure(request)' in auth
+assert 'response.delete_cookie(' in auth and 'audit(user["id"], "logout"' in auth
 assert 'SSH_UPLOAD_LIMIT' in dashboard and 'open_incidents' in dashboard
 assert 'Hub is not ready' in system and 'FileResponse(STATIC_DIR / "index.html")' in system
 assert 'Depends(current_user)' in system and 'metric_raw_retention_days' in system
 assert 'app.mount("/static"' in app
 assert "with_name('live_router.py')" in app
 assert "with_name('agent_control_router.py')" in app and "with_name('agent_control_router.py')" in app
-assert 'VERSION = "2.9.45"' in app
+assert 'VERSION = "2.9.46"' in app
 print('Auth/Dashboard/System router boundary passed')

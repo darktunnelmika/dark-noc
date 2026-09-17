@@ -62,6 +62,15 @@ for _runtime_name in ['SSH_UPLOAD_LIMIT', 'SSH_RELAY_LIMIT', 'SSH_TRANSFER_CONCU
     globals()[_runtime_name] = getattr(_runtime_config_module, _runtime_name)
 del _runtime_name
 
+_SECURITY_RUNTIME_PATH = Path(__file__).resolve().with_name("security_runtime.py")
+_security_runtime_spec = _realm_support_importlib_util.spec_from_file_location("dark_noc_security_runtime", _SECURITY_RUNTIME_PATH)
+if _security_runtime_spec is None or _security_runtime_spec.loader is None:
+    raise ImportError(f"Could not load runtime security helpers: {_SECURITY_RUNTIME_PATH}")
+_security_runtime_module = _realm_support_importlib_util.module_from_spec(_security_runtime_spec)
+_security_runtime_spec.loader.exec_module(_security_runtime_module)
+browser_origin_allowed = _security_runtime_module.browser_origin_allowed
+enforce_http_origin = _security_runtime_module.enforce_http_origin
+
 _SCHEMAS_PATH = Path(__file__).resolve().with_name('schemas.py')
 _schemas_spec = _realm_support_importlib_util.spec_from_file_location('dark_noc_schemas', _SCHEMAS_PATH)
 if _schemas_spec is None or _schemas_spec.loader is None:
@@ -313,7 +322,7 @@ SESSION_TTL = 12 * 60 * 60
 NODE_STALE_AFTER = 180
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_LOCK = threading.Lock()
-VERSION = "2.9.45"
+VERSION = "2.9.46"
 LIVE_CLIENTS: set[WebSocket] = set()
 LOGGER = logging.getLogger("dark-noc")
 
@@ -621,6 +630,15 @@ app = FastAPI(title="DARK NOC Hub", version=VERSION, lifespan=lifespan)
 
 
 @app.middleware("http")
+async def browser_origin_guard(request: Request, call_next):
+    try:
+        enforce_http_origin(request.method, request.url.path, request.headers, request.url.scheme)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def security_headers(request: Request, call_next):
     is_ssh_upload = request.method == "POST" and request.url.path.startswith("/api/ssh/upload/") and request.url.path.removeprefix("/api/ssh/upload/").isdigit()
 
@@ -671,9 +689,12 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    if request.url.path in {"/", "/static/app.js", "/static/styles.css"}:
+    if request.url.path.startswith("/api/") or request.url.path in {"/", "/static/app.js", "/static/styles.css"}:
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
     return response
 
 _PLUGIN_REGISTRY_PATH = Path(__file__).resolve().with_name("plugin_registry.py")
@@ -1685,11 +1706,11 @@ del _job_handler_name, _job_handler, _job_handlers
 
 
 def managed_tunnel_report(method: str, service: str) -> bool:
-    return (
-        (method == "DARK Backhaul" and service.startswith("backhaul@"))
-        or (method == "DARK Ghost Pro" and service.startswith("ghostpro@"))
-        or (method == "DARK Packet Pro" and service.startswith("paqetpro@"))
-        or (method == "DARK Realm Pro" and service.startswith("dark-realm@"))
+    return any(
+        method == str(plugin.get("ui", {}).get("method", ""))
+        and service.startswith(str(plugin.get("runtime", {}).get("service_prefix", "")))
+        for plugin in PLUGIN_CATALOG
+        if str(plugin.get("runtime", {}).get("service_prefix", ""))
     )
 
 
@@ -1764,10 +1785,15 @@ async def websocket_session_guard(session_digest: str, user_id: int, lifetime_de
     return False
 
 
+def websocket_origin_allowed(websocket: WebSocket) -> bool:
+    return browser_origin_allowed(websocket.headers, websocket.url.scheme)
+
+
 _ssh_terminal_router, _ssh_terminal_handlers = register_ssh_terminal_router(
     app,
     websocket_user=websocket_user, db=db, decrypt=decrypt, token_hash=token_hash, utc_ts=utc_ts, audit=audit,
-    websocket_session_valid=websocket_session_valid, websocket_session_guard=websocket_session_guard, LOGGER=LOGGER,
+    websocket_session_valid=websocket_session_valid, websocket_session_guard=websocket_session_guard,
+    websocket_origin_allowed=websocket_origin_allowed, LOGGER=LOGGER,
     get_session_ttl=lambda: SESSION_TTL, get_ssh_keepalive_interval=lambda: SSH_KEEPALIVE_INTERVAL,
     get_ssh_keepalive_count_max=lambda: SSH_KEEPALIVE_COUNT_MAX,
 )
@@ -1779,8 +1805,8 @@ del _ssh_terminal_name, _ssh_terminal_handler, _ssh_terminal_handlers
 _live_router, _live_handlers = register_live_router(
     app,
     websocket_user=websocket_user, token_hash=token_hash, utc_ts=utc_ts,
-    websocket_session_guard=websocket_session_guard, get_session_ttl=lambda: SESSION_TTL,
-    get_live_clients=lambda: LIVE_CLIENTS,
+    websocket_session_guard=websocket_session_guard, websocket_origin_allowed=websocket_origin_allowed,
+    get_session_ttl=lambda: SESSION_TTL, get_live_clients=lambda: LIVE_CLIENTS,
 )
 for _live_name, _live_handler in _live_handlers.items():
     globals()[_live_name] = _live_handler

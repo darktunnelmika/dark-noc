@@ -10,6 +10,17 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import StreamingResponse
 
 
+async def resolved_destructive_path(sftp, path: str, destructive_remote_path_allowed) -> str:
+    """Resolve a path's parent so symlinked directories cannot bypass protected trees."""
+    parent = posixpath.dirname(path) or "/"
+    basename = posixpath.basename(path)
+    resolved_parent = str(await sftp.realpath(parent))
+    resolved = posixpath.normpath(posixpath.join(resolved_parent, basename))
+    if not destructive_remote_path_allowed(resolved):
+        raise HTTPException(400, "Resolved remote path enters a protected system tree")
+    return resolved
+
+
 def register_ssh_file_router(app, **deps):
     router = APIRouter()
     current_user = deps["current_user"]
@@ -71,6 +82,7 @@ def register_ssh_file_router(app, **deps):
                                 parent_attrs = await sftp.stat(parent)
                                 if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
                                     raise HTTPException(400, "Destination parent is not a directory")
+                                await resolved_destructive_path(sftp, destination, destructive_remote_path_allowed)
                                 if await sftp_path_exists(sftp, destination) and not overwrite:
                                     raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
                                 async with sftp.open(
@@ -138,6 +150,7 @@ def register_ssh_file_router(app, **deps):
                                     parent_attrs = await destination_sftp.stat(posixpath.dirname(body.destination_path))
                                     if parent_attrs.permissions is not None and not statmod.S_ISDIR(parent_attrs.permissions):
                                         raise HTTPException(400, "Destination parent is not a directory")
+                                    await resolved_destructive_path(destination_sftp, body.destination_path, destructive_remote_path_allowed)
                                     if await sftp_path_exists(destination_sftp, body.destination_path) and not body.overwrite:
                                         raise HTTPException(409, "Destination already exists; enable overwrite to replace it")
                                     source_mode = statmod.S_IMODE(source_attrs.permissions) if source_attrs.permissions is not None else 0o600
@@ -251,6 +264,7 @@ def register_ssh_file_router(app, **deps):
                                 parent = await sftp.stat(posixpath.dirname(body.path))
                                 if parent.permissions is not None and not statmod.S_ISDIR(parent.permissions):
                                     raise HTTPException(400, "Destination parent is not a directory")
+                                await resolved_destructive_path(sftp, body.path, destructive_remote_path_allowed)
                                 if await sftp_path_exists(sftp, body.path) and not body.overwrite:
                                     raise HTTPException(409, "File already exists; enable overwrite to replace it")
                                 async with sftp.open(temporary, "xb", attrs=asyncssh.SFTPAttrs(permissions=0o600)) as remote:
@@ -288,6 +302,13 @@ def register_ssh_file_router(app, **deps):
                     async with asyncssh.connect(**ssh_connection_options(node, password, key)) as ssh:
                         async with ssh.start_sftp_client() as sftp:
                             async with disconnect_aware_semaphore(request, ssh_destination_lock(node["id"], body.destination or body.path)):
+                                await resolved_destructive_path(sftp, body.path, destructive_remote_path_allowed)
+                                if body.action == "rename" and body.destination:
+                                    await resolved_destructive_path(sftp, body.destination, destructive_remote_path_allowed)
+                                if body.action == "chmod":
+                                    link_attrs = await sftp.lstat(body.path)
+                                    if link_attrs.permissions is not None and statmod.S_ISLNK(link_attrs.permissions):
+                                        raise HTTPException(400, "CHMOD through a symbolic link is not allowed")
                                 if body.action == "mkdir":
                                     await sftp.mkdir(body.path, attrs=asyncssh.SFTPAttrs(permissions=0o750))
                                 elif body.action == "rename":

@@ -25,6 +25,7 @@
   },
   "runtime": {
     "settings_profile": "standard",
+    "service_prefix": "ghostpro@",
     "pair_codec": "ghostpro",
     "pair_code": true,
     "pair_endpoint": "iran",

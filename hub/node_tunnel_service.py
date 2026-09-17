@@ -247,6 +247,8 @@ def reconfigure_tunnel_mutation(
         plugin = next((item for item in plugin_catalog if item["id"] == settings.get("plugin_id")), None)
         if not plugin or body.transport not in plugin["transports"]:
             raise NodeTunnelServiceError(422, "Transport is not supported by this plugin")
+        if body.profile not in plugin["profiles"]:
+            raise NodeTunnelServiceError(422, "Performance profile is not supported by this plugin")
         if any(
             port < 1 or port > 65535
             or (settings.get("plugin_id") != "dark-realm" and port == int(settings["tunnel_port"]))
