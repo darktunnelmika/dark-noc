@@ -18,8 +18,11 @@ def register_auth_router(app, **deps):
     utc_ts = deps["utc_ts"]
     SESSION_TTL = deps["session_ttl"]
 
-    def cookie_secure() -> bool:
-        return os.getenv("DARK_NOC_COOKIE_SECURE", "0") == "1"
+    def cookie_secure(request: Request) -> bool:
+        if os.getenv("DARK_NOC_COOKIE_SECURE", "0") == "1":
+            return True
+        forwarded_proto = str(request.headers.get("x-forwarded-proto", "")).split(",", 1)[0].strip().casefold()
+        return forwarded_proto == "https" or request.url.scheme.casefold() == "https"
 
     @router.post("/api/auth/login")
     def login(body: LoginBody, request: Request):
@@ -43,7 +46,7 @@ def register_auth_router(app, **deps):
             "dark_noc_session",
             token,
             httponly=True,
-            secure=cookie_secure(),
+            secure=cookie_secure(request),
             samesite="strict",
             path="/",
             max_age=SESSION_TTL,
@@ -64,7 +67,7 @@ def register_auth_router(app, **deps):
         response.delete_cookie(
             "dark_noc_session",
             httponly=True,
-            secure=cookie_secure(),
+            secure=cookie_secure(request),
             samesite="strict",
             path="/",
         )
