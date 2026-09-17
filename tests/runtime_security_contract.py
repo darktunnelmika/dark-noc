@@ -122,6 +122,8 @@ with TestClient(HUB.app, base_url="https://testserver") as client:
     assert "SameSite=strict" in set_cookie
     assert "Path=/" in set_cookie
     assert "Secure" in set_cookie
+    session_cookie = client.cookies.get("dark_noc_session")
+    assert session_cookie
 
     me = client.get("/api/auth/me")
     assert me.status_code == 200
@@ -137,12 +139,21 @@ with TestClient(HUB.app, base_url="https://testserver") as client:
     assert denied_logout.status_code == 403
 
     try:
-        with client.websocket_connect("/ws/live", headers={"origin": "https://evil.example"}):
+        with client.websocket_connect(
+            "/ws/live",
+            headers={"origin": "https://evil.example", "cookie": f"dark_noc_session={session_cookie}"},
+        ):
             raise AssertionError("cross-origin WebSocket unexpectedly opened")
     except WebSocketDisconnect as exc:
         assert exc.code == 4403
 
-    with client.websocket_connect("/ws/live", headers={"origin": "https://testserver"}) as websocket:
+    # Starlette's in-process WebSocket transport uses ws:// even when the HTTP
+    # TestClient has an https:// base URL, so explicitly carry the Secure cookie.
+    # Production browsers connect over wss:// through nginx and send it normally.
+    with client.websocket_connect(
+        "/ws/live",
+        headers={"origin": "https://testserver", "cookie": f"dark_noc_session={session_cookie}"},
+    ) as websocket:
         ready = websocket.receive_json()
         assert ready["type"] == "ready"
         websocket.send_text("x" * 5000)
