@@ -1,3 +1,12 @@
+## v2.9.47
+- Rebuild the phone layout as a production responsive surface instead of a reduced desktop layout.
+- Add a safe mobile navigation drawer with backdrop, Escape/outside-tap close behavior and iPhone safe-area support.
+- Make Plugins, Fleet Operations, Servers, Incidents, SSH Terminal and File Manager adapt cleanly to narrow screens.
+- Convert the tunnel table into readable mobile cards while keeping the desktop table unchanged.
+- Make modals/forms mobile bottom sheets with viewport-aware height and safe bottom spacing.
+- Compact the Live Tunnel Matrix for phones without changing its desktop visual style or route logic.
+- Add a permanent mobile responsive regression contract.
+
 ## v2.9.46
 - Harden browser-origin validation for unsafe API requests and both authenticated WebSocket endpoints.
 - Preserve the existing persistent SSH terminal protocol while bounding terminal messages, input size and resize dimensions.

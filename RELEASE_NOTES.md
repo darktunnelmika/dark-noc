@@ -1,3 +1,18 @@
+# DARK NOC v2.9.47 — Mobile Command UI
+
+- Mobile now has a dedicated responsive layer rather than inheriting desktop-only layouts.
+- The sidebar becomes a safe navigation drawer with backdrop, body scroll lock, Escape/outside-tap close and iOS safe-area handling.
+- Plugin cards, deployments, Fleet Operations, server cards, incidents, SSH Terminal and File Manager are usable at phone widths.
+- Tunnel rows become compact mobile cards with labels for method, latency, loss, throughput, sessions and status.
+- Forms and dialogs become viewport-aware bottom sheets so controls remain reachable above the iPhone home indicator and mobile browser UI.
+- The Live Tunnel Matrix keeps the existing DARK NOC visual language while using smaller nodes and mobile-friendly controls.
+
+## فارسی
+
+حالت موبایل پنل بازطراحی شد. منوی کناری روی گوشی به Drawer واقعی تبدیل شده، کارت‌ها و فرم‌ها تک‌ستونه و قابل لمس شده‌اند، جدول تونل به کارت موبایلی تبدیل می‌شود و Terminal/File Manager/Plugins/Fleet/Modalها روی نمایشگر کوچک بدون به‌هم‌ریختگی قابل استفاده هستند. طراحی دسکتاپ دست‌نخورده باقی می‌ماند.
+
+---
+
 # DARK NOC v2.9.46 — Runtime Security Hardening
 
 - Enforce same-origin browser metadata on unsafe API requests and authenticated WebSocket handshakes.
