@@ -32,5 +32,5 @@ for method in ['get', 'post', 'put', 'delete', 'patch', 'websocket']:
     assert f'@app.{method}(' not in app, method
 assert '@app.middleware("http")' in app
 assert 'app.mount("/static"' in app
-assert 'VERSION = "2.9.47"' in app
+assert 'VERSION = "2.9.48"' in app
 print('Maintenance runtime/final backend composition contract passed')
