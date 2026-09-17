@@ -178,5 +178,5 @@ assert '"type": "output"' in terminal
 assert "tmux new-session -A" in terminal
 assert "websocket_origin_allowed" in live_router
 assert "LIVE_MESSAGE_LIMIT" in live_router
-assert 'VERSION = "2.9.46"' in app_source
+assert 'VERSION = "2.9.47"' in app_source
 print("Runtime security contract passed")

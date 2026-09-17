@@ -101,8 +101,8 @@ assert 'if kind in {"plugin_deploy", "plugin_install", "plugin_remove"}' in agen
 assert "service in managed_services" in agent
 assert 'method in {"DARK Backhaul", "DARK Ghost Pro", "DARK Packet Pro", "DARK Realm Pro"}' in agent
 assert '"plugin_name":' in router
-assert 'VERSION = "2.9.46"' in app
-assert 'VERSION = "2.9.46"' in agent
+assert 'VERSION = "2.9.47"' in app
+assert 'VERSION = "2.9.47"' in agent
 
 # Hub manifests and privileged Agent adapters must move together. This prevents
 # a Plugin Store entry from shipping without an executable Agent capability or
