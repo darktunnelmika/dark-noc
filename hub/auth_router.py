@@ -29,19 +29,32 @@ def register_auth_router(app, **deps):
         client_ip = request.client.host if request.client else "unknown"
         login_rate_check(client_ip)
         now = utc_ts()
+        failed_user_id: int | None = None
+        authenticated_user: dict | None = None
+        token: str | None = None
         with db() as conn:
             conn.execute("DELETE FROM sessions WHERE expires_at<=? OR created_at<=?", (now, now - SESSION_TTL))
             user = conn.execute("SELECT * FROM users WHERE username=?", (body.username,)).fetchone()
             if not user or not verify_password(body.password, user["password_hash"]):
-                login_rate_record(client_ip, False)
-                audit(user["id"] if user else None, "login_failed", body.username, "Invalid credentials", client_ip)
-                raise HTTPException(401, "Invalid username or password")
-            token = secrets.token_urlsafe(42)
-            conn.execute(
-                "INSERT INTO sessions(token_hash,user_id,expires_at,ip,created_at) VALUES(?,?,?,?,?)",
-                (token_hash(token), user["id"], now + SESSION_TTL, client_ip, now),
-            )
-        response = JSONResponse({"ok": True, "username": user["username"], "role": user["role"]})
+                failed_user_id = int(user["id"]) if user else None
+            else:
+                token = secrets.token_urlsafe(42)
+                conn.execute(
+                    "INSERT INTO sessions(token_hash,user_id,expires_at,ip,created_at) VALUES(?,?,?,?,?)",
+                    (token_hash(token), user["id"], now + SESSION_TTL, client_ip, now),
+                )
+                authenticated_user = dict(user)
+
+        # Audit uses its own database connection. Keep it outside the login
+        # transaction so SQLite never sees nested writers on the same request.
+        if authenticated_user is None or token is None:
+            login_rate_record(client_ip, False)
+            audit(failed_user_id, "login_failed", body.username, "Invalid credentials", client_ip)
+            raise HTTPException(401, "Invalid username or password")
+
+        response = JSONResponse(
+            {"ok": True, "username": authenticated_user["username"], "role": authenticated_user["role"]}
+        )
         response.set_cookie(
             "dark_noc_session",
             token,
@@ -52,7 +65,7 @@ def register_auth_router(app, **deps):
             max_age=SESSION_TTL,
         )
         login_rate_record(client_ip, True)
-        audit(user["id"], "login", user["username"], "Session created", client_ip)
+        audit(authenticated_user["id"], "login", authenticated_user["username"], "Session created", client_ip)
         return response
 
     @router.post("/api/auth/logout")
