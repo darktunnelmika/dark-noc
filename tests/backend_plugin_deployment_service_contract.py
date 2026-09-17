@@ -35,5 +35,5 @@ for sql in [
     assert sql in service
     assert sql not in app
 assert '@router.get("/api/plugin-deployments")' in router
-assert 'VERSION = "2.9.47"' in app
+assert 'VERSION = "2.9.48"' in app
 print('Plugin Deployment service boundary passed')
