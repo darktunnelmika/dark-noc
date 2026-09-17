@@ -3,6 +3,8 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+LIVE_MESSAGE_LIMIT = 4096
+
 
 def register_live_router(app, **deps):
     router = APIRouter()
@@ -10,11 +12,15 @@ def register_live_router(app, **deps):
     token_hash = deps["token_hash"]
     utc_ts = deps["utc_ts"]
     websocket_session_guard = deps["websocket_session_guard"]
+    websocket_origin_allowed = deps["websocket_origin_allowed"]
     get_session_ttl = deps["get_session_ttl"]
     get_live_clients = deps["get_live_clients"]
 
     @router.websocket("/ws/live")
     async def live_updates(websocket: WebSocket):
+        if not websocket_origin_allowed(websocket):
+            await websocket.close(code=4403)
+            return
         user = await websocket_user(websocket)
         if not user:
             await websocket.close(code=4401)
@@ -33,6 +39,9 @@ def register_live_router(app, **deps):
             async def receive_live_messages() -> None:
                 while True:
                     raw_message = await websocket.receive_text()
+                    if len(raw_message.encode("utf-8")) > LIVE_MESSAGE_LIMIT:
+                        await websocket.close(code=4409)
+                        return
                     try:
                         message = json.loads(raw_message)
                     except json.JSONDecodeError:
@@ -54,8 +63,6 @@ def register_live_router(app, **deps):
         finally:
             get_live_clients().discard(websocket)
 
-    handlers = {
-        "live_updates": live_updates
-    }
+    handlers = {"live_updates": live_updates}
     app.include_router(router)
     return router, handlers

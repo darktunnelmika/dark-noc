@@ -1,3 +1,18 @@
+# DARK NOC v2.9.46 — Runtime Security Hardening
+
+- Enforce same-origin browser metadata on unsafe API requests and authenticated WebSocket handshakes.
+- Keep the existing tmux-backed SSH Terminal behavior while limiting WebSocket frame/input size and terminal resize ranges.
+- Resolve remote parent directories before destructive File Manager actions so symlinked directories cannot redirect writes, deletes, renames or chmod into protected system trees.
+- Send authenticated API responses with `Cache-Control: no-store`, `Pragma: no-cache`, COOP and CORP isolation headers.
+- Add `runtime.service_prefix` to Plugin Contract v1 and use it for Hub tunnel telemetry acceptance, removing the last four-plugin hardcode from that path.
+- Add permanent runtime-security regression coverage.
+
+## فارسی
+
+در این نسخه امنیت Runtime پنل، WebSocketهای Live/SSH و File Manager سخت‌گیرانه‌تر شده است. مسیرهای تخریبی File Manager قبل از اجرا روی سرور Resolve می‌شوند تا Symlink نتواند محدودیت مسیرهای محافظت‌شده را دور بزند. همچنین Telemetry پلاگین‌ها از `service_prefix` داخل Manifest استفاده می‌کند تا اضافه‌کردن پلاگین جدید نیازمند هاردکد جدید در Hub نباشد.
+
+---
+
 # DARK NOC v2.9.45 — Plugin Contract v1
 
 - Replace the hardcoded Hub plugin catalog with validated JSON manifests under `hub/plugins/`.

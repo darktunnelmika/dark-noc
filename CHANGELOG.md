@@ -1,3 +1,10 @@
+## v2.9.46
+- Harden browser-origin validation for unsafe API requests and both authenticated WebSocket endpoints.
+- Preserve the existing persistent SSH terminal protocol while bounding terminal messages, input size and resize dimensions.
+- Prevent File Manager destructive operations from escaping protected trees through symlinked parent directories.
+- Mark authenticated API responses no-store and add COOP/CORP response isolation headers.
+- Extend Plugin Contract v1 with `runtime.service_prefix` so Hub telemetry acceptance is manifest-driven for future plugins.
+
 ## v2.9.45
 - Add Plugin Contract v1 with validated per-plugin manifests and a fail-closed Hub registry.
 - Move plugin card identity, form/TLS behavior and deployment semantics to catalog metadata instead of plugin-ID branches.

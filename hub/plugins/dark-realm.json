@@ -25,6 +25,7 @@
   },
   "runtime": {
     "settings_profile": "realm",
+    "service_prefix": "dark-realm@",
     "pair_codec": "realm",
     "pair_code": true,
     "pair_endpoint": "kharej",

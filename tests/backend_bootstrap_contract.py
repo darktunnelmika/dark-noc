@@ -13,5 +13,5 @@ assert 'interrupted_operations' in bootstrap
 assert 'DARK_NOC_ADMIN_PASSWORD' in bootstrap
 assert 'ALTER TABLE plugin_deployments' not in app
 assert 'interrupted_operations = conn.execute' not in app
-assert 'VERSION = \"2.9.45\"' in app
+assert 'VERSION = \"2.9.46\"' in app
 print('Backend database bootstrap module boundary passed')

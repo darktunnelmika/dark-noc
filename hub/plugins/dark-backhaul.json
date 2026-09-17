@@ -25,6 +25,7 @@
   },
   "runtime": {
     "settings_profile": "standard",
+    "service_prefix": "backhaul@",
     "pair_codec": "backhaul",
     "pair_code": true,
     "pair_endpoint": "iran",

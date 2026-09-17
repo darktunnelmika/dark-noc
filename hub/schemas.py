@@ -156,8 +156,8 @@ class PluginDeployBody(BaseModel):
     iran_endpoint: str = Field(min_length=1, max_length=253)
     tunnel_port: int = Field(default=3080, ge=1, le=65535)
     user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
+    transport: str = Field(default="tcpmux", max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
+    profile: str = Field(default="balanced", max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
     restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
     certificate_id: int | None = Field(default=None, gt=0)
     target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
@@ -190,8 +190,8 @@ class PairCodeDeployBody(BaseModel):
     kharej_endpoint: str | None = Field(default=None, min_length=1, max_length=253)
     tunnel_port: int = Field(default=3080, ge=1, le=65535)
     user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(default="tcpmux", pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(default="balanced", pattern=r"^(stable|balanced|lowping|turbo)$")
+    transport: str = Field(default="tcpmux", max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
+    profile: str = Field(default="balanced", max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
     restart_every: str = Field(default="off", pattern=r"^(off|1h|6h|12h|24h)$")
     certificate_id: int | None = Field(default=None, gt=0)
     target_host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
@@ -219,8 +219,8 @@ class TunnelActionBody(BaseModel):
 
 class TunnelReconfigureBody(BaseModel):
     user_ports: list[int] = Field(min_length=1, max_length=256)
-    transport: str = Field(pattern=r"^(tcp|tcpmux|ws|wsmux|wss|wssmux|udp|kcp|relay|tls|h2|h2c|grpc|quic|dtls|icmp|relay\+(?:tls|wss|h2|grpc|quic|ws))$")
-    profile: str = Field(pattern=r"^(stable|balanced|lowping|turbo)$")
+    transport: str = Field(max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
+    profile: str = Field(max_length=64, pattern=r"^[A-Za-z0-9+._-]+$")
     restart_every: str = Field(pattern=r"^(off|1h|6h|12h|24h)$")
     certificate_id: int | None = Field(default=None, gt=0)
 

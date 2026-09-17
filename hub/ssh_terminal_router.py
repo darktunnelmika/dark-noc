@@ -1,11 +1,19 @@
 import asyncio
 import hmac
+import json
 import re
 import shlex
 from typing import Any
 
 import asyncssh
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+SSH_TERMINAL_MESSAGE_LIMIT = 512 * 1024
+SSH_TERMINAL_INPUT_LIMIT = 256 * 1024
+SSH_TERMINAL_MIN_COLS = 20
+SSH_TERMINAL_MAX_COLS = 1000
+SSH_TERMINAL_MIN_ROWS = 5
+SSH_TERMINAL_MAX_ROWS = 300
 
 
 def register_ssh_terminal_router(app, **deps):
@@ -18,6 +26,7 @@ def register_ssh_terminal_router(app, **deps):
     audit = deps["audit"]
     websocket_session_valid = deps["websocket_session_valid"]
     websocket_session_guard = deps["websocket_session_guard"]
+    websocket_origin_allowed = deps["websocket_origin_allowed"]
     LOGGER = deps["LOGGER"]
     get_session_ttl = deps["get_session_ttl"]
     get_ssh_keepalive_interval = deps["get_ssh_keepalive_interval"]
@@ -25,6 +34,9 @@ def register_ssh_terminal_router(app, **deps):
 
     @router.websocket("/ws/ssh/{node_id}")
     async def ssh_terminal(websocket: WebSocket, node_id: int):
+        if not websocket_origin_allowed(websocket):
+            await websocket.close(code=4403)
+            return
         user = await websocket_user(websocket)
         if not user:
             await websocket.close(code=4401)
@@ -34,12 +46,12 @@ def register_ssh_terminal_router(app, **deps):
             node = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
         if not node:
             await websocket.send_json({"type": "error", "message": "Node not found"})
-            await websocket.close()
+            await websocket.close(code=4404)
             return
         password, key = decrypt(node["ssh_password_enc"]), decrypt(node["ssh_key_enc"])
         if not password and not key:
             await websocket.send_json({"type": "error", "message": "SSH credentials are not configured"})
-            await websocket.close()
+            await websocket.close(code=4403)
             return
         session_digest = token_hash(websocket.cookies.get("dark_noc_session", ""))
         session_deadline = min(
@@ -68,16 +80,27 @@ def register_ssh_terminal_router(app, **deps):
                             return False
                         if current["ssh_host_fingerprint"]:
                             return hmac.compare_digest(current["ssh_host_fingerprint"], fingerprint)
-                        changed = pin_conn.execute("UPDATE nodes SET ssh_host_fingerprint=?,updated_at=? WHERE id=? AND ssh_host_fingerprint IS NULL", (fingerprint, utc_ts(), node_id)).rowcount
+                        changed = pin_conn.execute(
+                            "UPDATE nodes SET ssh_host_fingerprint=?,updated_at=? WHERE id=? AND ssh_host_fingerprint IS NULL",
+                            (fingerprint, utc_ts(), node_id),
+                        ).rowcount
                         if changed == 1:
                             return True
                         saved = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-                        return bool(saved and saved["ssh_host_fingerprint"] and hmac.compare_digest(saved["ssh_host_fingerprint"], fingerprint))
+                        return bool(
+                            saved
+                            and saved["ssh_host_fingerprint"]
+                            and hmac.compare_digest(saved["ssh_host_fingerprint"], fingerprint)
+                        )
 
             options: dict[str, Any] = {
-                "host": node["host"], "port": node["ssh_port"], "username": node["ssh_user"],
-                "known_hosts": ([], [], [], [], [], [], []), "client_factory": PinnedSSHClient,
-                "connect_timeout": 12, "keepalive_interval": get_ssh_keepalive_interval(),
+                "host": node["host"],
+                "port": node["ssh_port"],
+                "username": node["ssh_user"],
+                "known_hosts": ([], [], [], [], [], [], []),
+                "client_factory": PinnedSSHClient,
+                "connect_timeout": 12,
+                "keepalive_interval": get_ssh_keepalive_interval(),
                 "keepalive_count_max": get_ssh_keepalive_count_max(),
             }
             if key:
@@ -104,23 +127,50 @@ def register_ssh_terminal_router(app, **deps):
 
                 async def ws_to_ssh():
                     while True:
-                        message = await websocket.receive_json()
+                        raw = await websocket.receive_text()
+                        if len(raw.encode("utf-8")) > SSH_TERMINAL_MESSAGE_LIMIT:
+                            await websocket.close(code=4409)
+                            return
+                        try:
+                            message = json.loads(raw)
+                        except json.JSONDecodeError:
+                            await websocket.close(code=4400)
+                            return
+                        if not isinstance(message, dict):
+                            await websocket.close(code=4400)
+                            return
                         if message.get("type") == "input":
-                            process.stdin.write(str(message.get("data", "")))
+                            data = str(message.get("data", ""))
+                            if len(data.encode("utf-8")) > SSH_TERMINAL_INPUT_LIMIT:
+                                await websocket.close(code=4409)
+                                return
+                            process.stdin.write(data)
                         elif message.get("type") == "resize":
-                            process.change_terminal_size(int(message.get("cols", 120)), int(message.get("rows", 32)))
+                            try:
+                                cols = int(message.get("cols", 120))
+                                rows = int(message.get("rows", 32))
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if not (
+                                SSH_TERMINAL_MIN_COLS <= cols <= SSH_TERMINAL_MAX_COLS
+                                and SSH_TERMINAL_MIN_ROWS <= rows <= SSH_TERMINAL_MAX_ROWS
+                            ):
+                                continue
+                            process.change_terminal_size(cols, rows)
                         elif message.get("type") == "ping":
                             await websocket.send_json({"type": "pong", "server_time": utc_ts()})
 
                 with db() as pin_conn:
                     pinned = pin_conn.execute("SELECT ssh_host_fingerprint FROM nodes WHERE id=?", (node_id,)).fetchone()
-                await websocket.send_json({
-                    "type": "connected",
-                    "node": node["name"],
-                    "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None,
-                    "persistent": persistent,
-                    "session": terminal_session,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "connected",
+                        "node": node["name"],
+                        "fingerprint": pinned["ssh_host_fingerprint"] if pinned else None,
+                        "persistent": persistent,
+                        "session": terminal_session,
+                    }
+                )
                 auth_task = asyncio.create_task(websocket_session_guard(session_digest, user["id"], session_deadline))
                 tasks = {asyncio.create_task(ssh_to_ws()), asyncio.create_task(ws_to_ssh()), auth_task}
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -145,8 +195,6 @@ def register_ssh_terminal_router(app, **deps):
             except Exception:
                 pass
 
-    handlers = {
-        "ssh_terminal": ssh_terminal
-    }
+    handlers = {"ssh_terminal": ssh_terminal}
     app.include_router(router)
     return router, handlers

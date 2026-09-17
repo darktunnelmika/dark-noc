@@ -15,5 +15,5 @@ assert "with_name('agent_control_router.py')" in app
 assert "with_name('agent_control_router.py')" in app
 assert "with_name('agent_control_router.py')" in app and "with_name('live_router.py')" in app
 assert 'globals()[_job_handler_name] = _job_handler' in app
-assert 'VERSION = "2.9.45"' in app
+assert 'VERSION = "2.9.46"' in app
 print('Generic Jobs/System status router boundary passed')

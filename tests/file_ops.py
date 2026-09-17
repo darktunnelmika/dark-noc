@@ -71,6 +71,9 @@ class FakeSFTP:
     async def lstat(self, path: str) -> SimpleNamespace:
         return await self.stat(path)
 
+    async def realpath(self, path: str) -> str:
+        return path
+
     async def scandir(self, directory: str):
         prefix = directory.rstrip("/") + "/"
         for path in sorted(self.files):

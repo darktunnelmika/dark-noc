@@ -8,6 +8,7 @@ from typing import Any
 PLUGIN_SCHEMA_VERSION = 1
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 INVENTORY_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{1,63}$")
+SERVICE_PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}@$|^[A-Za-z0-9_.-]{1,96}-$")
 ALLOWED_ROLES = {"server", "client", "edge", "gateway"}
 ALLOWED_FORM_PROFILES = {"standard", "packet", "realm", "generic"}
 ALLOWED_SETTINGS_PROFILES = {"standard", "packet", "realm", "generic"}
@@ -98,6 +99,9 @@ def validate_plugin_manifest(raw: Any, *, source: str = "plugin manifest") -> di
     settings_profile = _text(runtime.get("settings_profile"), f"{source}.runtime.settings_profile", maximum=24)
     if settings_profile not in ALLOWED_SETTINGS_PROFILES:
         raise PluginRegistryError(f"{source}: unsupported settings_profile")
+    service_prefix = _text(runtime.get("service_prefix"), f"{source}.runtime.service_prefix", maximum=96)
+    if not SERVICE_PREFIX_RE.fullmatch(service_prefix):
+        raise PluginRegistryError(f"{source}: service_prefix must end in @ or - and use safe service-name characters")
     pair_codec = _text(runtime.get("pair_codec"), f"{source}.runtime.pair_codec", maximum=24)
     if pair_codec not in ALLOWED_PAIR_CODECS:
         raise PluginRegistryError(f"{source}: unsupported pair_codec")
@@ -146,6 +150,7 @@ def validate_plugin_manifest(raw: Any, *, source: str = "plugin manifest") -> di
         "runtime": {
             **runtime,
             "settings_profile": settings_profile,
+            "service_prefix": service_prefix,
             "pair_codec": pair_codec,
             "pair_endpoint": pair_endpoint,
             "managed_endpoint": managed_endpoint,
@@ -164,6 +169,7 @@ def load_plugin_catalog(manifest_dir: Path | str | None = None) -> list[dict[str
     seen_ids: set[str] = set()
     seen_methods: set[str] = set()
     seen_inventory_keys: set[str] = set()
+    seen_service_prefixes: set[str] = set()
     files = sorted(directory.glob("*.json"))
     if not files:
         raise PluginRegistryError("Plugin manifest directory is empty")
@@ -176,15 +182,19 @@ def load_plugin_catalog(manifest_dir: Path | str | None = None) -> list[dict[str
         plugin_id = manifest["id"]
         method = manifest["ui"]["method"]
         inventory_key = manifest["ui"]["inventory_key"]
+        service_prefix = manifest["runtime"]["service_prefix"]
         if plugin_id in seen_ids:
             raise PluginRegistryError(f"Duplicate plugin id: {plugin_id}")
         if method in seen_methods:
             raise PluginRegistryError(f"Duplicate plugin method label: {method}")
         if inventory_key in seen_inventory_keys:
             raise PluginRegistryError(f"Duplicate plugin inventory key: {inventory_key}")
+        if service_prefix in seen_service_prefixes:
+            raise PluginRegistryError(f"Duplicate plugin service prefix: {service_prefix}")
         seen_ids.add(plugin_id)
         seen_methods.add(method)
         seen_inventory_keys.add(inventory_key)
+        seen_service_prefixes.add(service_prefix)
         manifests.append(manifest)
     manifests.sort(key=lambda item: (int(item.get("order", 1000)), item["id"]))
     return manifests
