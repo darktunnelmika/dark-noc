@@ -46,6 +46,7 @@ jobs:
           node --check hub/static/ops-actions.js
           node --check hub/static/app.js
           node --check hub/static/live-matrix.js
+          node --check hub/static/mobile-runtime.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
           bash -n darknoc
       - name: Tests
@@ -84,6 +85,7 @@ jobs:
           python tests/backend_plugin_deployment_service_contract.py
           python tests/plugin_registry_contract.py
           python tests/runtime_security_contract.py
+          python tests/mobile_responsive_contract.py
           python tests/backend_monitor_incident_service_contract.py
           python tests/backend_certificate_fleet_service_contract.py
           python tests/backend_router_contract.py
