@@ -1,3 +1,10 @@
+# DARK NOC v2.9.48 — Plugin Pair-Code Validation Hotfix
+
+- Fix Create Tunnel / Pair Code requests failing with `String should have at least 1 character` when an optional KHAREJ endpoint field is present but empty.
+- Normalize blank optional KHAREJ endpoints before Pydantic length validation.
+- Omit empty optional KHAREJ endpoint values in the browser before deployment requests.
+- Add regression coverage for cached/older frontend forms that still submit an empty hidden field.
+
 ## v2.9.47
 - Rebuild the phone layout as a production responsive surface instead of a reduced desktop layout.
 - Add a safe mobile navigation drawer with backdrop, Escape/outside-tap close behavior and iPhone safe-area support.
