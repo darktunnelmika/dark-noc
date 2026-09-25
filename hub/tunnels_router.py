@@ -41,6 +41,22 @@ def register_tunnels_router(app, **deps):
             deployment = dict(row)
             deployment_index.setdefault((row["name"], row["iran_node_id"]), deployment)
             deployment_index.setdefault((row["name"], row["kharej_node_id"]), deployment)
+        local_endpoint_values = {"", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::"}
+
+        def remote_values(values: Any) -> list[str]:
+            if not isinstance(values, list):
+                return []
+            result_values: list[str] = []
+            for value in values:
+                normalized = normalize_ip(value)
+                if not normalized or normalized.casefold() in local_endpoint_values:
+                    continue
+                if normalized not in result_values:
+                    result_values.append(normalized)
+                if len(result_values) >= 32:
+                    break
+            return result_values
+
         result: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
@@ -61,7 +77,8 @@ def register_tunnels_router(app, **deps):
                 item["service_uptime"] = max(0, int(details.get("service_uptime") or 0))
             except (TypeError, ValueError):
                 item["service_uptime"] = 0
-            item["peer_ips"] = [normalize_ip(value) for value in details.get("peer_ips", []) if value] if isinstance(details.get("peer_ips"), list) else []
+            item["peer_ips"] = remote_values(details.get("peer_ips"))
+            item["last_known_peer_ips"] = remote_values(details.get("last_known_peer_ips"))
             item["node_agent_online"] = bool(item["node_last_seen"] and item["node_last_seen"] >= now - NODE_STALE_AFTER)
             if not item["node_agent_online"]:
                 item["status"] = "stale"
@@ -80,8 +97,8 @@ def register_tunnels_router(app, **deps):
                     else deployment["iran_node_id"]
                 )
 
-            remote_addresses = {normalize_ip(value) for value in item["peer_ips"] if normalize_ip(value)}
-            if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+            remote_addresses = set(item["peer_ips"]) | set(item["last_known_peer_ips"])
+            if item["target_host"] and item["target_host"].casefold() not in local_endpoint_values:
                 remote_addresses.add(item["target_host"])
             if not peer_id and remote_addresses:
                 matching_nodes = [
@@ -113,17 +130,22 @@ def register_tunnels_router(app, **deps):
             peer = node_index.get(peer_id) if peer_id else None
             item["peer_node_id"] = peer_id
             item["peer_name"] = peer["name"] if peer else None
-            item["peer_host"] = (
-                (peer.get("observed_ip") or peer["host"])
-                if peer else (
-                    item["peer_ips"][0]
-                    if item["peer_ips"] else (
-                        item["target_host"]
-                        if item["target_host"] not in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}
-                        else None
-                    )
-                )
-            )
+            if peer:
+                item["peer_host"] = peer.get("observed_ip") or peer["host"]
+                item["peer_host_source"] = "node"
+            elif item["peer_ips"]:
+                item["peer_host"] = item["peer_ips"][0]
+                item["peer_host_source"] = "live"
+            elif item["last_known_peer_ips"]:
+                item["peer_host"] = item["last_known_peer_ips"][0]
+                item["peer_host_source"] = "last_known"
+            elif item["target_host"] and item["target_host"].casefold() not in local_endpoint_values:
+                item["peer_host"] = item["target_host"]
+                item["peer_host_source"] = "target"
+            else:
+                item["peer_host"] = None
+                item["peer_host_source"] = None
+            item["peer_host_last_known"] = item["peer_host_source"] == "last_known"
             item["peer_role"] = peer["role"] if peer else None
             item["peer_agent_online"] = bool(peer and peer.get("last_seen") and peer["last_seen"] >= now - NODE_STALE_AFTER)
             item["peer_ssh_configured"] = bool(peer and peer.get("ssh_configured"))

@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             "/api/agent/pulse",
             headers=auth,
             json={
-                "agent_version": "2.9.48",
+                "agent_version": "2.9.49",
                 "agent_loop_ts": app.utc_ts(),
                 "telemetry_status": "collecting",
                 "telemetry_age_seconds": 0,
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
             assert pulsed["status"] == "online" and int(pulsed["last_seen"] or 0) > 0
 
         full_report = {
-            "agent_version": "2.9.48",
+            "agent_version": "2.9.49",
             "metrics": {
                 "cpu": 1, "ram": 2, "swap": 0, "disk": 3, "load1": 0.1,
                 "rx_bps": 10, "tx_bps": 20, "uptime": 30, "connections": 4,
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
 
         # A liveness-only heartbeat must preserve the last authoritative inventory.
         incomplete = {
-            "agent_version": "2.9.48",
+            "agent_version": "2.9.49",
             "metrics": {
                 "cpu": 5, "ram": 6, "disk": 7, "telemetry_status": "collecting",
                 "inventory_complete": False, "inventory_snapshot_at": 0,
@@ -100,6 +100,26 @@ with tempfile.TemporaryDirectory(prefix="dark-noc-topology-") as data_dir:
         assert visible[0]["node_role"] == "hub"
         assert visible[0]["topology_side"] == "iran"
         assert visible[0]["peer_host"] == "198.51.100.20"
+        assert visible[0]["peer_host_source"] == "live"
+        assert visible[0]["peer_host_last_known"] is False
+
+        # When the TCP peer disappears, keep the last real remote identity.
+        # target_host=127.0.0.1 is a local listener detail, never a remote server.
+        down_report = json.loads(json.dumps(full_report))
+        down_report["metrics"]["inventory_snapshot_at"] = app.utc_ts()
+        down_report["tunnels"][0].update({
+            "status": "down", "packet_loss": 100, "sessions": 0, "peer_ips": [],
+            "checks": {"process": True, "path": False},
+        })
+        assert client.post("/api/agent/heartbeat", headers=auth, json=down_report).status_code == 200
+        down_visible = client.get("/api/tunnels").json()
+        assert len(down_visible) == 1
+        assert down_visible[0]["target_host"] == "127.0.0.1"
+        assert down_visible[0]["peer_ips"] == []
+        assert down_visible[0]["last_known_peer_ips"] == ["198.51.100.20"]
+        assert down_visible[0]["peer_host"] == "198.51.100.20"
+        assert down_visible[0]["peer_host_source"] == "last_known"
+        assert down_visible[0]["peer_host_last_known"] is True
 
         # A fresh authoritative empty snapshot is the only report allowed to prune.
         fresh_empty = dict(incomplete)
@@ -158,6 +178,8 @@ assert "cyber-route-backbone" in app_js and "cyber-route-flow" in app_js
 assert ".cyber-route-backbone" in styles and "@keyframes route-energy-pulse" in styles
 assert "route-packet-core" in app_js and "route-packet-halo" in app_js
 assert "No matching tunnel path" in app_js
+assert "LAST KNOWN" in app_js
+assert "remoteHost(" in topology_js and "last_known_peer_ips" in topology_js
 flow_css = styles.split(".cyber-route-flow{", 1)[1].split("}", 1)[0]
 backbone_css = styles.split(".cyber-route-backbone{", 1)[1].split("}", 1)[0]
 assert "stroke-dasharray" not in flow_css

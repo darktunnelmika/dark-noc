@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -7,6 +8,32 @@ import socket
 import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocket
+
+
+def _usable_peer_ips(values) -> list[str]:
+    """Keep only routable/non-local peer identities reported by tunnel telemetry."""
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text.casefold() == "localhost":
+            continue
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            normalized = text
+        else:
+            if address.is_loopback or address.is_unspecified:
+                continue
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            normalized = str(address)
+        if normalized not in result:
+            result.append(normalized)
+        if len(result) >= 32:
+            break
+    return result
 
 
 def register_agent_control_router(app, **deps):
@@ -186,7 +213,21 @@ def register_agent_control_router(app, **deps):
                     continue
                 name = str(tunnel.get("name", "unnamed"))[:128]
                 old = conn.execute("SELECT * FROM tunnels WHERE node_id=? AND name=?", (node["id"], name)).fetchone()
-                conn.execute("INSERT INTO tunnels(node_id,name,method,target,service,listen_port,status,latency_ms,packet_loss,sessions,rx_bps,tx_bps,last_check,details) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id,name) DO UPDATE SET method=excluded.method,target=excluded.target,service=excluded.service,listen_port=excluded.listen_port,status=excluded.status,latency_ms=excluded.latency_ms,packet_loss=excluded.packet_loss,sessions=excluded.sessions,rx_bps=excluded.rx_bps,tx_bps=excluded.tx_bps,last_check=excluded.last_check,details=excluded.details", (node["id"], name, tunnel.get("method"), tunnel.get("target"), tunnel.get("service"), tunnel.get("listen_port"), tunnel.get("status"), tunnel.get("latency_ms"), tunnel.get("packet_loss"), tunnel.get("sessions"), tunnel.get("rx_bps"), tunnel.get("tx_bps"), now, json.dumps(tunnel)))
+                stored_tunnel = dict(tunnel)
+                live_peer_ips = _usable_peer_ips(stored_tunnel.get("peer_ips"))
+                previous_details = {}
+                if old:
+                    try:
+                        previous_details = json.loads(old["details"] or "{}")
+                    except (TypeError, ValueError):
+                        previous_details = {}
+                remembered_peer_ips = (
+                    _usable_peer_ips(previous_details.get("last_known_peer_ips"))
+                    or _usable_peer_ips(previous_details.get("peer_ips"))
+                )
+                stored_tunnel["peer_ips"] = live_peer_ips
+                stored_tunnel["last_known_peer_ips"] = live_peer_ips or remembered_peer_ips
+                conn.execute("INSERT INTO tunnels(node_id,name,method,target,service,listen_port,status,latency_ms,packet_loss,sessions,rx_bps,tx_bps,last_check,details) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id,name) DO UPDATE SET method=excluded.method,target=excluded.target,service=excluded.service,listen_port=excluded.listen_port,status=excluded.status,latency_ms=excluded.latency_ms,packet_loss=excluded.packet_loss,sessions=excluded.sessions,rx_bps=excluded.rx_bps,tx_bps=excluded.tx_bps,last_check=excluded.last_check,details=excluded.details", (node["id"], name, tunnel.get("method"), tunnel.get("target"), tunnel.get("service"), tunnel.get("listen_port"), tunnel.get("status"), tunnel.get("latency_ms"), tunnel.get("packet_loss"), tunnel.get("sessions"), tunnel.get("rx_bps"), tunnel.get("tx_bps"), now, json.dumps(stored_tunnel)))
                 current = str(tunnel.get("status", "unknown"))
                 previous = old["status"] if old else None
                 tunnel_row = conn.execute("SELECT id FROM tunnels WHERE node_id=? AND name=?", (node["id"], name)).fetchone()

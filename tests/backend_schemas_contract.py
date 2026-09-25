@@ -11,7 +11,7 @@ assert '.model_rebuild()' in schemas
 assert "with_name('schemas.py')" in app
 assert '_schemas_spec.loader.exec_module' in app
 assert 'from pydantic import BaseModel, Field, field_validator' not in app
-assert 'VERSION = "2.9.48"' in app
+assert 'VERSION = "2.9.49"' in app
 pair=PairCodeDeployBody(name='blank-endpoint',iran_node_id=1,iran_endpoint='127.0.0.1',kharej_endpoint='',tunnel_port=3080,user_ports=[443])
 assert pair.kharej_endpoint is None
 frontend=(root/'hub/static/app.js').read_text()

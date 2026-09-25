@@ -13,7 +13,16 @@
     if(method==='DARK Backhaul'||method==='DARK Ghost Pro')return role==='server'?'iran':role==='client'?'kharej':'unknown';
     return 'unknown';
   }
-  function endpoint(node,name,host){return {node,name:node?.name||name||'UNRESOLVED ENDPOINT',host:displayHost(node?.observed_ip||node?.host||host||'IP UNAVAILABLE')};}
+  const localRemoteHosts=new Set(['','127.0.0.1','localhost','::1','0.0.0.0','::','::ffff:127.0.0.1']);
+  function remoteHost(...candidates){
+    for(const value of candidates.flat(Infinity)){
+      const text=String(value||'').trim();
+      if(!text||localRemoteHosts.has(text.toLowerCase()))continue;
+      return text;
+    }
+    return null;
+  }
+  function endpoint(node,name,host,lastKnown=false){return {node,name:node?.name||name||'UNRESOLVED ENDPOINT',host:displayHost(node?.observed_ip||node?.host||host||'IP UNAVAILABLE'),lastKnown:Boolean(lastKnown&&!node)};}
   function buildLinks({nodes=[],tunnels=[],filter='all',search=''}) {
     const nodeIndex=new Map(nodes.map(node=>[Number(node.id),node]));
     const groups=new Map();
@@ -29,7 +38,8 @@
       if(!iran&&!kharej&&records.length){const first=records[0];if(first.node?.role==='exit')kharej=first;else iran=first;}
       const representative=iran?.tunnel||kharej?.tunnel||rows[0],peerId=Number(representative.peer_node_id||0),peerNode=nodeIndex.get(peerId);
       const left=iran?endpoint(iran.node,iran.tunnel.node_name,iran.tunnel.node_observed_ip||iran.tunnel.node_host):endpoint(peerNode,kharej?.tunnel.peer_name||'IRAN / HUB',kharej?.tunnel.peer_host);
-      const right=kharej?endpoint(kharej.node,kharej.tunnel.node_name,kharej.tunnel.node_observed_ip||kharej.tunnel.node_host):endpoint(peerNode,iran?.tunnel.peer_name||'REMOTE ENDPOINT',iran?.tunnel.peer_host||iran?.tunnel.target_host);
+      const remoteIdentity=remoteHost(iran?.tunnel.peer_host,iran?.tunnel.last_known_peer_ips,iran?.tunnel.target_host);
+      const right=kharej?endpoint(kharej.node,kharej.tunnel.node_name,kharej.tunnel.node_observed_ip||kharej.tunnel.node_host):endpoint(peerNode,iran?.tunnel.peer_name||'REMOTE ENDPOINT',remoteIdentity,Boolean(iran?.tunnel.peer_host_last_known));
       const statuses=rows.map(item=>String(item.status||'unknown').toLowerCase());if(left.node&&left.node.status!=='online')statuses.push('stale');if(right.node&&right.node.status!=='online')statuses.push('stale');
       const worst=statuses.reduce((current,value)=>(severity[value]??1)>(severity[current]??1)?value:current,'healthy');
       const status=['down','offline'].includes(worst)?'DOWN':worst==='stale'?'STALE':worst==='degraded'?'DEGRADED':'ONLINE',tone=status==='ONLINE'?'online':status==='DEGRADED'?'degraded':status==='STALE'?'stale':'down';
