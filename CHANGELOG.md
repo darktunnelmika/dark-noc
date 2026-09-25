@@ -1,3 +1,11 @@
+# DARK NOC v2.9.49 — Persistent Remote Identity
+
+- Preserve the last real remote peer IP for tunnel paths when live TCP peer discovery becomes empty after a disconnect.
+- Keep live peer identity separate from Last Known identity; the API exposes the source explicitly.
+- Never render 127.0.0.1, localhost, ::1 or unspecified addresses as a Global Exit.
+- Mark remembered remote endpoints as LAST KNOWN in the Live Tunnel Matrix.
+- Add a regression that transitions a healthy Pair-Code-style tunnel to DOWN while retaining its previous foreign IP.
+
 # DARK NOC v2.9.48 — Plugin Deployment Validation Hotfix
 
 - Fix Pair Code tunnel creation when the optional KHAREJ endpoint field is left blank.

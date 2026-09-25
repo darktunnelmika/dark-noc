@@ -1,3 +1,17 @@
+# DARK NOC v2.9.49 — Persistent Remote Identity
+
+- Live Tunnel Matrix no longer changes a disconnected foreign endpoint to `127.0.0.1`.
+- The Hub remembers the last valid remote peer independently from current socket telemetry.
+- DOWN/OFFLINE paths continue to show the correct previous foreign IP with a `LAST KNOWN` marker.
+- Loopback/unspecified addresses are rejected as remote identities at Hub API and frontend layers.
+- Existing v2.9.48 tunnel records migrate automatically the next time telemetry is received; no database migration is required.
+
+## فارسی
+
+وقتی تونل قطع می‌شود، IP واقعی سرور خارج دیگر با `127.0.0.1` جایگزین نمی‌شود. Hub آخرین Peer واقعی را نگه می‌دارد و در حالت قطع با علامت `LAST KNOWN` نمایش می‌دهد تا مشخص باشد این IP هویت آخرین اتصال معتبر است، نه وضعیت زنده.
+
+---
+
 # DARK NOC v2.9.48 — Plugin Deployment Validation Hotfix
 
 - Fix Pair Code tunnel creation when the optional KHAREJ endpoint field is left blank.

@@ -114,8 +114,8 @@ def main() -> None:
     assert "function pluginSpec(" in frontend
     assert "function pluginFormProfile(" in frontend
     assert "plugin-realm" in index
-    assert 'VERSION = "2.9.48"' in app_source
-    assert 'VERSION = "2.9.48"' in agent_source
+    assert 'VERSION = "2.9.49"' in app_source
+    assert 'VERSION = "2.9.49"' in agent_source
     assert "_remove_ufw_rules(firewall_rules)" in (ROOT / "agent" / "realm_plugin.py").read_text()
 
     commands = []

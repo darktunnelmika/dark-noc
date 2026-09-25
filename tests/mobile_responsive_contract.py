@@ -5,10 +5,10 @@ index = (ROOT / "hub/static/index.html").read_text(encoding="utf-8")
 css = (ROOT / "hub/static/mobile.css").read_text(encoding="utf-8")
 runtime = (ROOT / "hub/static/mobile-runtime.js").read_text(encoding="utf-8")
 
-assert '/static/mobile.css?v=2.9.48' in index
-assert '/static/mobile-runtime.js?v=2.9.48' in index
-assert index.index('/static/mobile.css?v=2.9.48') > index.index('/static/live-matrix.css')
-assert index.index('/static/mobile-runtime.js?v=2.9.48') > index.index('/static/live-matrix.js')
+assert '/static/mobile.css?v=2.9.49' in index
+assert '/static/mobile-runtime.js?v=2.9.49' in index
+assert index.index('/static/mobile.css?v=2.9.49') > index.index('/static/live-matrix.css')
+assert index.index('/static/mobile-runtime.js?v=2.9.49') > index.index('/static/live-matrix.js')
 
 for marker in [
     '@media (max-width: 850px)',
@@ -34,5 +34,5 @@ assert "sidebar.classList.remove('open')" in runtime
 assert "document.body.classList.toggle('mobile-nav-open'" in runtime
 assert "visualViewport" in runtime
 assert "aria-expanded" in runtime
-assert 'VERSION = "2.9.48"' in (ROOT / 'hub/app.py').read_text(encoding='utf-8')
+assert 'VERSION = "2.9.49"' in (ROOT / 'hub/app.py').read_text(encoding='utf-8')
 print('Mobile responsive contract passed')

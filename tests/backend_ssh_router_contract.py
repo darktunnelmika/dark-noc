@@ -45,5 +45,5 @@ assert "with_name('agent_control_router.py')" in app and "with_name('agent_contr
 # Compatibility aliases are retained for regression tests and internal callers.
 assert 'globals()[_ssh_file_name] = _ssh_file_handler' in app
 assert 'globals()[_ssh_terminal_name] = _ssh_terminal_handler' in app
-assert 'VERSION = "2.9.48"' in app
+assert 'VERSION = "2.9.49"' in app
 print('SSH/File Transfer router boundary passed')

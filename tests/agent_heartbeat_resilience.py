@@ -19,10 +19,10 @@ def load_agent():
 
 
 agent = load_agent()
-assert agent.VERSION == "2.9.48"
+assert agent.VERSION == "2.9.49"
 
 payload = agent.minimal_heartbeat_payload({"autoheal": {"enabled": False}})
-assert payload["agent_version"] == "2.9.48"
+assert payload["agent_version"] == "2.9.49"
 assert payload["metrics"]["telemetry_status"] == "starting"
 assert payload["metrics"]["uptime"] >= 0
 
