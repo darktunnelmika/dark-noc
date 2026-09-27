@@ -166,10 +166,14 @@ jobs:
         run: |
           python -m compileall -q hub agent tests
           node --check hub/static/app.js
+          node --check hub/static/refresh-runtime.js
+          node --check hub/static/session-runtime.js
+          node --check hub/static/tunnel-scan.js
           for script in *.sh scripts/*.sh; do bash -n "$script"; done
           bash -n darknoc
           python tests/smoke.py
           python tests/agent_logic.py
+          python tests/tunnel_scan_performance_contract.py
           python tests/file_ops.py
           python tests/noc_features.py
           python tests/server_cli.py
