@@ -38,7 +38,7 @@ function terminateAuthenticatedActivity({showLoginGate = true, transferMessage =
 }
 
 async function boot() {
-  try { const me=await api('/api/auth/me'); authenticatedActivityTerminated=false;$('.operator strong').textContent=me.username; $('#login-gate').classList.add('hidden'); await refresh(); connectLive(); }
+  try { const me=await api('/api/auth/me'); authenticatedActivityTerminated=false;$('.operator strong').textContent=me.username; $('#login-gate').classList.add('hidden'); await refreshActiveView(activeViewName(), {force:true}); connectLive(); }
   catch { $('#login-gate').classList.remove('hidden'); }
 }
 
