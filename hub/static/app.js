@@ -322,7 +322,7 @@ $('#login-form').addEventListener('submit', async event => {
     $('.operator strong').textContent=session.username;
     connectLive();
     event.target.reset();
-    await refresh();
+    await refreshActiveView(activeViewName(), {force:true});
   } catch (error) { $('#login-error').textContent = error.message; }
 });
 
