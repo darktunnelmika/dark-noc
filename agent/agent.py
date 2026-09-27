@@ -65,7 +65,7 @@ CONFIG_PATH = Path(os.getenv("DARK_NOC_AGENT_CONFIG", "/etc/dark-noc-agent/confi
 STATE_PATH = Path(os.getenv("DARK_NOC_AGENT_STATE", "/var/lib/dark-noc-agent/state.json"))
 LOCAL_HUB_ENV_PATH = Path(os.getenv("DARK_NOC_LOCAL_HUB_ENV", "/etc/dark-noc/hub.env"))
 LOGGER = logging.getLogger("dark-noc-agent")
-ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
+ALLOWED_JOB_KINDS = {"diagnostics", "tunnel_test", "tunnel_scan", "restart_service", "service_status", "speed_test", "logs", "plugin_deploy", "plugin_remove", "plugin_install", "tunnel_control", "configure_autoheal", "certificate_issue", "monitor_run"}
 
 DARKBH_RELEASE_API = "https://api.github.com/repos/Musixal/Backhaul/releases/latest"
 GOST_RELEASE_API = "https://api.github.com/repos/go-gost/gost/releases/latest"
@@ -713,7 +713,29 @@ REALM_SERVICE_PATTERN = re.compile(r"^dark-realm@[A-Za-z0-9_-]{1,64}\.service$")
 _DISCOVERY_CACHE: tuple[float, list[dict[str, Any]], bool] = (0.0, [], False)
 
 
-def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
+def _discovered_user_ports(path: Path, *, packet: bool = False) -> list[int]:
+    """Read both NOC-native and standalone Packet Pro ports.list formats."""
+    ports: list[int] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ports
+    for line in lines:
+        parts = line.split()
+        if not parts:
+            continue
+        raw_port = parts[1] if packet and parts[0].casefold() in {"tcp", "udp"} and len(parts) > 1 else parts[0]
+        if not raw_port.isdigit():
+            continue
+        port = int(raw_port)
+        if 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+        if len(ports) >= 256:
+            break
+    return ports
+
+
+def discover_tunnels_snapshot(force: bool = False) -> tuple[list[dict[str, Any]], bool]:
     """Return DARK tunnel instances plus whether the inventory is authoritative.
 
     Local tunnel directories are scanned in addition to loaded systemd units so
@@ -723,7 +745,7 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
     """
     global _DISCOVERY_CACHE
     now = time.time()
-    if now - _DISCOVERY_CACHE[0] < 60:
+    if not force and now - _DISCOVERY_CACHE[0] < 60:
         return [dict(item) for item in _DISCOVERY_CACHE[1]], bool(_DISCOVERY_CACHE[2])
 
     previous_by_service = {
@@ -891,14 +913,10 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
             role = configured_role if configured_role in {"server", "client"} else ("server" if listeners else "client")
             target_host = "127.0.0.1" if role == "server" else (meta.get("PEER_IP") or (remote.ip if remote else "127.0.0.1"))
             target_port = configured_port or (remote.port if remote else 0)
-            try:
-                user_ports = [
-                    int(line.split()[0])
-                    for line in (tunnel_dir / "ports.list").read_text(encoding="utf-8").splitlines()
-                    if line.split() and line.split()[0].isdigit()
-                ]
-            except OSError:
-                pass
+            user_ports = _discovered_user_ports(tunnel_dir / "ports.list", packet=packet)
+        packet_profile = {
+            "normal": "stable", "fast": "balanced", "fast2": "lowping", "fast3": "turbo",
+        }.get(str(meta.get("MODE", "")).casefold(), "unknown")
         discovered.append({
             "name": instance,
             "method": method,
@@ -911,8 +929,8 @@ def discover_tunnels_snapshot() -> tuple[list[dict[str, Any]], bool]:
             "backbone_ports": backbone_ports,
             "target_ports": target_ports,
             "port_mappings": port_mappings,
-            "transport": meta.get("TRANSPORT", "unknown"),
-            "profile": meta.get("PROFILE", "unknown"),
+            "transport": meta.get("TRANSPORT") or ("kcp" if packet else "unknown"),
+            "profile": meta.get("PROFILE") or (packet_profile if packet else "unknown"),
             "restart_every": meta.get("SCHEDULE", meta.get("RESTART_EVERY", "off")),
             "tls_domain": meta.get("TLS_DOMAIN", ""),
             "auto_discovered": True,
@@ -1617,6 +1635,17 @@ def execute_job(job: dict[str, Any], config: dict[str, Any]) -> tuple[str, str]:
             code, text = run(command)
             output.append(f"$ {shlex.join(command)}\n{text.strip()}\n[exit={code}]")
         return "completed", "\n\n".join(output)
+    if kind == "tunnel_scan":
+        refresh_connection_snapshot()
+        tunnels, complete = discover_tunnels_snapshot(force=True)
+        reports = asyncio.run(_collect_tunnel_reports(tunnels)) if tunnels else []
+        packet_count = sum(item.get("method") == "DARK Packet Pro" for item in reports)
+        return "completed", json.dumps({
+            "inventory_complete": complete,
+            "found": len(reports),
+            "packet_pro": packet_count,
+            "tunnels": reports,
+        }, indent=2)
     if kind == "tunnel_test":
         tunnels = monitored_tunnels(config)
         if not tunnels:
