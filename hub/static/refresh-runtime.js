@@ -12,6 +12,11 @@ const REFRESH_ENDPOINTS = Object.freeze({
   fleetOperations: '/api/fleet/operations?limit=50'
 });
 
+const COMMON_REFRESH_KEYS = Object.freeze(['summary','nodes','tunnels']);
+const COMMON_REFRESH_TTL_MS = 8000;
+const LIVE_REFRESH_MIN_INTERVAL_MS = 4000;
+let lastCommonRefreshAt = 0;
+
 const VIEW_REFRESH_PLAN = Object.freeze({
   overview: ['incidents', 'traffic'],
   servers: [],
@@ -40,8 +45,12 @@ function applyRefreshData(data) {
   }
   const summary = data.summary || null;
   if (summary) {
+    next.summary = summary;
     next.hubVersion = summary.version || next.hubVersion;
     next.limits = dashboardLimits(summary);
+  }
+  if (COMMON_REFRESH_KEYS.some(key => Object.prototype.hasOwnProperty.call(data, key))) {
+    lastCommonRefreshAt = Date.now();
   }
   state = next;
   return summary;
@@ -54,10 +63,18 @@ function refreshFailure(error) {
 }
 
 async function refreshLive() {
-  if (liveRefreshInFlight || refreshInFlight || viewRefreshInFlight || document.hidden) return;
+  if (document.hidden) return;
+  const now = Date.now(), elapsed = now - (refreshLive.lastStarted || 0);
+  if (elapsed < LIVE_REFRESH_MIN_INTERVAL_MS) {
+    clearTimeout(refreshLive.throttleTimer);
+    refreshLive.throttleTimer = setTimeout(refreshLive, LIVE_REFRESH_MIN_INTERVAL_MS - elapsed);
+    return;
+  }
+  if (liveRefreshInFlight || refreshInFlight || viewRefreshInFlight) return;
+  refreshLive.lastStarted = now;
   liveRefreshInFlight = true;
   try {
-    const data = await fetchRefreshData(['summary','nodes','tunnels']);
+    const data = await fetchRefreshData(COMMON_REFRESH_KEYS);
     const summary = applyRefreshData(data);
     const active = activeViewName();
     if (active === 'overview') { renderLiveTopology(); renderNodeHealth(); }
@@ -92,10 +109,11 @@ function renderCachedView(name = activeViewName()) {
 }
 
 function refreshCommonUI(summary) {
+  const effectiveSummary = summary || state.summary;
   populateSSHServers();
   renderTransferLimits();
-  updateNavigationCounts(summary);
-  updateOverview(summary);
+  updateNavigationCounts(effectiveSummary);
+  if (effectiveSummary) updateOverview(effectiveSummary);
 }
 
 async function refreshActiveView(name = activeViewName(), { force = false } = {}) {
@@ -103,7 +121,8 @@ async function refreshActiveView(name = activeViewName(), { force = false } = {}
   if ((!force && document.hidden) || refreshInFlight || viewRefreshInFlight) return;
   viewRefreshInFlight = true;
   try {
-    const data = await fetchRefreshData(['summary','nodes','tunnels', ...VIEW_REFRESH_PLAN[name]]);
+    const commonKeys = (force || Date.now() - lastCommonRefreshAt >= COMMON_REFRESH_TTL_MS) ? COMMON_REFRESH_KEYS : [];
+    const data = await fetchRefreshData([...commonKeys, ...VIEW_REFRESH_PLAN[name]]);
     const summary = applyRefreshData(data);
     refreshCommonUI(summary);
     renderCachedView(name);
