@@ -145,7 +145,7 @@ class SSHFileWriteBody(BaseModel):
         return clean_remote_path(value)
 
 class JobBody(BaseModel):
-    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|restart_service|service_status|speed_test|logs|plugin_deploy|plugin_remove|plugin_install|tunnel_control|configure_autoheal)$")
+    kind: str = Field(pattern=r"^(diagnostics|tunnel_test|tunnel_scan|restart_service|service_status|speed_test|logs|plugin_deploy|plugin_remove|plugin_install|tunnel_control|configure_autoheal)$")
     service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.@-]{1,128}$")
     payload: dict[str, Any] = Field(default_factory=dict)
 
