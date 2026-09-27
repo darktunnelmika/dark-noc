@@ -52,6 +52,7 @@ assert "tunnel-scan.js?v=1.0.0" in index
 assert "async function scanTunnelInventory" in scan
 assert "kind: 'tunnel_scan'" in scan
 assert "setInterval(()=>refreshActiveView(),30000)" in app
+assert "await refreshActiveView(activeViewName(), {force:true});" in app
 
 assert "summary: null" in state
 assert "COMMON_REFRESH_TTL_MS = 8000" in refresh
@@ -59,5 +60,6 @@ assert "LIVE_REFRESH_MIN_INTERVAL_MS = 4000" in refresh
 assert "lastCommonRefreshAt" in refresh
 assert "setTimeout(refreshLive,650)" in session
 assert ">=60000" in session
+assert "await refreshActiveView(activeViewName(), {force:true}); connectLive();" in session
 
 print("Tunnel scan, Packet Pro discovery and refresh performance contract passed")
