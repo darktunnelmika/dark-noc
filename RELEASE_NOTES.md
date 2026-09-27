@@ -1,3 +1,17 @@
+# DARK NOC v2.9.50 — Tunnel Scan & Runtime Performance
+
+- Network Command now includes **SCAN TUNNELS**. It queues a forced inventory rescan on every online Agent and bypasses the normal 60-second discovery cache.
+- Standalone DARK Packet Pro tunnels are discovered correctly whether `ports.list` uses `tcp PORT TARGET` / `udp PORT TARGET` or the NOC-native `PORT TARGET` format.
+- Packet Pro standalone metadata is normalized to KCP plus Stable/Balanced/Low Ping/Turbo profile labels.
+- The browser reuses recently refreshed summary/node/tunnel state, limits live refresh bursts, refreshes auxiliary view data less aggressively and doubles the periodic fallback from 15 to 30 seconds.
+- WebSocket telemetry remains live; the optimization removes duplicate HTTP fetch/render work rather than disabling live updates.
+
+## فارسی
+
+در صفحه فرماندهی گزینه **SCAN TUNNELS** اضافه شد. این گزینه تمام Agentهای آنلاین را مجبور می‌کند Cache اسکن را کنار بگذارند و تونل‌های DARK را دوباره از systemd و فایل‌های واقعی پیدا کنند. شناسایی DARK Packet Pro مستقل نیز برای فرمت اصلی `ports.list` اصلاح شد. هم‌زمان رفرش‌های تکراری پنل کاهش پیدا کرده تا UI سبک‌تر اجرا شود، بدون اینکه Live Telemetry غیرفعال شود.
+
+---
+
 # DARK NOC v2.9.49 — Persistent Remote Identity
 
 - Live Tunnel Matrix no longer changes a disconnected foreign endpoint to `127.0.0.1`.

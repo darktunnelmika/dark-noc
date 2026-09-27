@@ -41,6 +41,7 @@ jobs:
           node --check hub/static/node-actions.js
           node --check hub/static/plugin-actions.js
           node --check hub/static/tunnel-actions.js
+          node --check hub/static/tunnel-scan.js
           node --check hub/static/refresh-runtime.js
           node --check hub/static/session-runtime.js
           node --check hub/static/ops-actions.js
@@ -62,6 +63,7 @@ jobs:
           python tests/installer_contracts.py
           python tests/agent_heartbeat_resilience.py
           python tests/topology_inventory_regression.py
+          python tests/tunnel_scan_performance_contract.py
           python tests/topology_refresh_contract.py
           python tests/view_render_contract.py
           python tests/frontend_core_contract.py

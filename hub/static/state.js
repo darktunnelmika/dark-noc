@@ -1,5 +1,6 @@
 // DARK NOC shared frontend state. Classic-script globals are intentional.
 let state = {
+  summary: null,
   nodes: [], tunnels: [], incidents: [], plugins: [], deployments: [], certificates: [], traffic: [], monitors: [], fleetOperations: [],
   limits: { ssh_upload_bytes: null, ssh_relay_bytes: null }, sockets: new Map(), terminals: new Map(),
   hubVersion: null, paneCounter: 2, replayTimer: null,

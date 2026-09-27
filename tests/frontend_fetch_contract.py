@@ -8,7 +8,8 @@ for marker in [
     "const REFRESH_ENDPOINTS = Object.freeze({",
     "const VIEW_REFRESH_PLAN = Object.freeze({",
     "async function refreshActiveView(",
-    "fetchRefreshData(['summary','nodes','tunnels', ...VIEW_REFRESH_PLAN[name]])",
+    "const commonKeys = (force || Date.now() - lastCommonRefreshAt >= COMMON_REFRESH_TTL_MS) ? COMMON_REFRESH_KEYS : [];",
+    "fetchRefreshData([...commonKeys, ...VIEW_REFRESH_PLAN[name]])",
     "fetchRefreshData(Object.keys(REFRESH_ENDPOINTS))",
 ]:
     assert marker in refresh, marker
@@ -23,9 +24,9 @@ for marker in [
     assert marker in refresh, marker
 assert 'let viewRefreshInFlight = false;' in state
 assert 'let refreshPendingFull = false;' in state
-assert 'setInterval(()=>refreshActiveView(),15000)' in app
-assert "refreshActiveView(activeViewName(),{force:true})" in app
-assert 'setTimeout(()=>refreshActiveView(),1200)' in session
+assert 'setInterval(()=>refreshActiveView(),30000)' in app
+assert "refreshActiveView(activeViewName(), {force:true})" in app
+assert 'setTimeout(()=>refreshActiveView(),1500)' in session
 assert 'clearTimeout(connectLive.fullRefreshTimer);' in session
 assert "if (active === 'overview') { renderLiveTopology(); renderNodeHealth(); }" in refresh
 print('View-aware fetch contract passed')

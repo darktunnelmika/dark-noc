@@ -1,3 +1,12 @@
+# DARK NOC v2.9.50 — Tunnel Scan & Runtime Performance
+
+- Add **SCAN TUNNELS** to Network Command and the command palette.
+- Force every online Agent to bypass the discovery cache and rescan DARK-owned tunnel services/configs.
+- Fix standalone DARK Packet Pro `ports.list` parsing for both protocol-first and NOC-native formats.
+- Normalize standalone Packet Pro discovery to KCP and map its MODE metadata to Stable/Balanced/Low Ping/Turbo profiles.
+- Coalesce WebSocket telemetry bursts, reuse recent common state and reduce duplicate periodic API/render work.
+- Keep live telemetry active while increasing the fallback view refresh interval from 15 to 30 seconds.
+
 # DARK NOC v2.9.49 — Persistent Remote Identity
 
 - Preserve the last real remote peer IP for tunnel paths when live TCP peer discovery becomes empty after a disconnect.
