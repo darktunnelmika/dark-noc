@@ -111,6 +111,7 @@
               <div class="topology-tools">
                 <input id="topology-search" placeholder="SEARCH NODE / TUNNEL" aria-label="Search topology" />
                 <select id="topology-filter" aria-label="Filter topology"><option value="all">ALL PATHS</option><option value="online">HEALTHY</option><option value="degraded">DEGRADED</option><option value="stale">STALE</option><option value="down">DOWN</option></select>
+                <button class="ghost-btn" data-scan-tunnels title="Force every online Agent to rescan DARK tunnel services and configs">SCAN TUNNELS</button>
                 <button id="topology-fullscreen" title="Fullscreen topology">⛶</button>
                 <div class="segmented" role="group" aria-label="Topology view"><button class="active" id="map-view">MAP</button><button id="list-view">LIST</button></div>
               </div>
@@ -361,6 +362,7 @@
       <div class="command-search"><span>›_</span><input id="command-input" placeholder="Search nodes, tunnels, incidents or commands…" /><kbd>ESC</kbd></div>
       <div class="command-results">
         <small>QUICK COMMANDS</small>
+        <button class="command-option" data-scan-tunnels><i>⌁</i><span><strong>Scan tunnel inventory</strong><small>Force all online Agents to rediscover DARK tunnels, including Packet Pro</small></span><kbd>↵</kbd></button>
         <button class="command-option" data-jump="terminal"><i>›_</i><span><strong>Open split SSH terminal</strong><small>Secure browser terminal</small></span><kbd>↵</kbd></button>
         <button class="command-option" data-jump="incidents"><i>⚠</i><span><strong>Open active incidents</strong><small>Live Agent incident feed</small></span><kbd>↵</kbd></button>
         <button class="command-option" data-jump="tunnels"><i>⇄</i><span><strong>Open tunnel matrix</strong><small>Process → Port → Path → Service</small></span><kbd>↵</kbd></button>
