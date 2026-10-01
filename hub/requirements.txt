@@ -1,5 +1,5 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.54.0
 asyncssh==2.24.0
 cryptography==50.0.1
 python-multipart==0.0.32
